@@ -839,13 +839,13 @@ pub fn active_profile_name() -> String {
     std::env::var("LEAN_CTX_PROFILE")
         .ok()
         .filter(|s| !s.trim().is_empty())
-        .unwrap_or_else(|| "exploration".to_string())
+        .unwrap_or_else(|| "coder".to_string())
 }
 
 /// Loads the currently active profile.
 pub fn active_profile() -> Profile {
     let name = active_profile_name();
-    load_profile(&name).unwrap_or_else(builtin_exploration)
+    load_profile(&name).unwrap_or_else(builtin_coder)
 }
 
 /// Sets the active profile for the current process by updating `LEAN_CTX_PROFILE`.
@@ -1093,14 +1093,16 @@ mod tests {
     }
 
     #[test]
-    fn active_profile_defaults_to_exploration() {
+    fn active_profile_defaults_to_coder() {
+        let _lock = crate::core::data_dir::test_env_lock();
         std::env::remove_var("LEAN_CTX_PROFILE");
         let p = active_profile();
-        assert_eq!(p.profile.name, "exploration");
+        assert_eq!(p.profile.name, "coder");
     }
 
     #[test]
     fn active_profile_from_env() {
+        let _lock = crate::core::data_dir::test_env_lock();
         std::env::set_var("LEAN_CTX_PROFILE", "hotfix");
         let name = active_profile_name();
         assert_eq!(name, "hotfix");

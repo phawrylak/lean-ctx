@@ -253,7 +253,11 @@ impl LeanCtxServer {
                     crate::core::events::emit_budget_warning(&snap.role, dim, &used, &limit, pct);
                 }
             }
-            Some(format!("[BUDGET WARNING] {}", snap.format_compact()))
+            if crate::core::protocol::meta_visible() {
+                Some(format!("[BUDGET WARNING] {}", snap.format_compact()))
+            } else {
+                None
+            }
         } else {
             None
         }

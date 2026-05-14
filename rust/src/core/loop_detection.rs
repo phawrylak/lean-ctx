@@ -90,6 +90,13 @@ impl LoopDetector {
             };
         }
         if count > self.reduced_threshold {
+            if !crate::core::protocol::meta_visible() {
+                return ThrottleResult {
+                    level: ThrottleLevel::Reduced,
+                    call_count: count,
+                    message: None,
+                };
+            }
             return ThrottleResult {
                 level: ThrottleLevel::Reduced,
                 call_count: count,
@@ -100,6 +107,13 @@ impl LoopDetector {
             };
         }
         if count > self.normal_threshold {
+            if !crate::core::protocol::meta_visible() {
+                return ThrottleResult {
+                    level: ThrottleLevel::Reduced,
+                    call_count: count,
+                    message: None,
+                };
+            }
             return ThrottleResult {
                 level: ThrottleLevel::Reduced,
                 call_count: count,
@@ -160,6 +174,13 @@ impl LoopDetector {
         }
 
         if similar_count >= self.reduced_threshold {
+            if !crate::core::protocol::meta_visible() {
+                return ThrottleResult {
+                    level: ThrottleLevel::Reduced,
+                    call_count: similar_count,
+                    message: None,
+                };
+            }
             return ThrottleResult {
                 level: ThrottleLevel::Reduced,
                 call_count: similar_count,
@@ -174,6 +195,13 @@ impl LoopDetector {
             let per_fp = self.record_call(tool, args_fingerprint);
             if per_fp.level != ThrottleLevel::Normal {
                 return per_fp;
+            }
+            if !crate::core::protocol::meta_visible() {
+                return ThrottleResult {
+                    level: ThrottleLevel::Reduced,
+                    call_count: search_count,
+                    message: None,
+                };
             }
             return ThrottleResult {
                 level: ThrottleLevel::Reduced,
@@ -362,6 +390,8 @@ mod tests {
 
     #[test]
     fn repeated_calls_trigger_reduced() {
+        let _lock = crate::core::data_dir::test_env_lock();
+        std::env::set_var("LEAN_CTX_META", "1");
         let cfg = LoopDetectionConfig::default();
         let mut detector = LoopDetector::with_config(&cfg);
         for _ in 0..cfg.normal_threshold {
@@ -370,6 +400,7 @@ mod tests {
         let result = detector.record_call("ctx_read", "same_fp");
         assert_eq!(result.level, ThrottleLevel::Reduced);
         assert!(result.message.is_some());
+        std::env::remove_var("LEAN_CTX_META");
     }
 
     #[test]

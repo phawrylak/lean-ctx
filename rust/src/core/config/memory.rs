@@ -101,15 +101,15 @@ impl MemoryProfile {
 
 /// Controls visibility of token savings footers in tool output.
 ///
-/// - `auto` (default): suppressed in MCP responses (agent context), shown in CLI (human context)
+/// - `never` (default): suppressed everywhere
 /// - `always`: shown everywhere
-/// - `never`: suppressed everywhere
+/// - `auto`: legacy compatibility mode; behavior is transport/context dependent
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "lowercase")]
 pub enum SavingsFooter {
-    #[default]
     Auto,
     Always,
+    #[default]
     Never,
 }
 
@@ -149,5 +149,23 @@ impl MemoryGuardConfig {
         Self {
             max_ram_percent: pct,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn savings_footer_defaults_to_never() {
+        assert_eq!(SavingsFooter::default(), SavingsFooter::Never);
+    }
+
+    #[test]
+    fn savings_footer_from_env_accepts_auto() {
+        let _guard = crate::core::data_dir::test_env_lock();
+        std::env::set_var("LEAN_CTX_SAVINGS_FOOTER", "auto");
+        assert_eq!(SavingsFooter::from_env(), Some(SavingsFooter::Auto));
+        std::env::remove_var("LEAN_CTX_SAVINGS_FOOTER");
     }
 }

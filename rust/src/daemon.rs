@@ -104,11 +104,13 @@ pub fn start_daemon(args: &[String]) -> Result<()> {
     }
 
     let addr = daemon_addr();
-    eprintln!(
-        "lean-ctx daemon started (PID {pid})\n  Endpoint: {}\n  PID file: {}",
-        addr.display(),
-        daemon_pid_path().display()
-    );
+    if crate::core::protocol::meta_visible() {
+        eprintln!(
+            "lean-ctx daemon started (PID {pid})\n  Endpoint: {}\n  PID file: {}",
+            addr.display(),
+            daemon_pid_path().display()
+        );
+    }
 
     Ok(())
 }

@@ -119,7 +119,13 @@ Role: {role_name}. To allow: switch role to 'admin' or set io.allow_secret_paths
 
     match mode {
         BoundaryMode::Enforce => Err(format!("ERROR: {msg}")),
-        BoundaryMode::Warn => Ok(Some(format!("[BOUNDARY WARNING] {msg}"))),
+        BoundaryMode::Warn => {
+            if crate::core::protocol::meta_visible() {
+                Ok(Some(format!("[BOUNDARY WARNING] {msg}")))
+            } else {
+                Ok(None)
+            }
+        }
     }
 }
 

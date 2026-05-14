@@ -335,7 +335,7 @@ pub struct Config {
     #[serde(default = "serde_defaults::default_max_ram_percent")]
     pub max_ram_percent: u8,
     /// Controls visibility of token savings footers in tool output.
-    /// Values: "auto" (default, suppress in MCP/show in CLI), "always", "never".
+    /// Values: "never" (default, suppress everywhere), "always", "auto" (legacy compatibility).
     /// Override via LEAN_CTX_SAVINGS_FOOTER env var.
     #[serde(default)]
     pub savings_footer: SavingsFooter,

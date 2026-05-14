@@ -486,13 +486,30 @@ fn handle_full_with_auto_delta(
 ) -> (String, usize) {
     let Ok(disk_content) = read_file_lossy(path) else {
         cache.record_cache_hit(path);
-        let out = if let Some(existing) = cache.get(path) {
-            format!(
+        if let Some(existing) = cache.get(path) {
+            if !crate::core::protocol::meta_visible() {
+                let cached = existing.content();
+                return format_full_output(
+                    file_ref,
+                    short,
+                    ext,
+                    &cached,
+                    existing.original_tokens,
+                    existing.line_count,
+                    task,
+                );
+            }
+            let out = format!(
                 "[using cached version — file read failed]\n{file_ref}={short} cached {}t {}L",
                 existing.read_count, existing.line_count
-            )
-        } else {
+            );
+            let sent = count_tokens(&out);
+            return (out, sent);
+        }
+        let out = if crate::core::protocol::meta_visible() && !file_ref.is_empty() {
             format!("[file read failed and no cached version available] {file_ref}={short}")
+        } else {
+            format!("[file read failed and no cached version available] {short}")
         };
         let sent = count_tokens(&out);
         return (out, sent);
@@ -506,12 +523,15 @@ fn handle_full_with_auto_delta(
 
     if store_result.was_hit {
         if store_result.full_content_delivered {
-            let out = format!(
-                "{file_ref}={short} cached {}t {}L\nFile content unchanged since last read (same hash). Already in your context window.",
-                store_result.read_count, store_result.line_count
-            );
-            let sent = count_tokens(&out);
-            return (out, sent);
+            if crate::core::protocol::meta_visible() {
+                let out = format!(
+                    "{file_ref}={short} cached {}t {}L\nFile content unchanged since last read (same hash). Already in your context window.",
+                    store_result.read_count, store_result.line_count
+                );
+                let sent = count_tokens(&out);
+                return (out, sent);
+            }
+            return (String::new(), 0);
         }
         cache.mark_full_delivered(path);
         return format_full_output(
@@ -531,8 +551,13 @@ fn handle_full_with_auto_delta(
 
     if full_tokens > 0 && (diff_tokens as f64) < (full_tokens as f64 * AUTO_DELTA_THRESHOLD) {
         let savings = protocol::format_savings(full_tokens, diff_tokens);
+        let head = if crate::core::protocol::meta_visible() && !file_ref.is_empty() {
+            format!("{file_ref}={short}")
+        } else {
+            short.to_string()
+        };
         let out = format!(
-            "{file_ref}={short} [auto-delta] ∆{}L\n{diff}\n{savings}",
+            "{head} [auto-delta] ∆{}L\n{diff}\n{savings}",
             disk_content.lines().count()
         );
         return (out, diff_tokens);
@@ -596,15 +621,13 @@ fn format_full_output(
         if original_tok > 0 && net_saving * 100 / original_tok >= 5 {
             let output = format!("{metadata}\n{compressed}{sym_table}");
             let sent = count_tokens(&output);
-            let savings = protocol::format_savings(tokens, sent);
-            return (format!("{output}\n{savings}"), sent);
+            return (protocol::append_savings(&output, tokens, sent), sent);
         }
     }
 
     let output = format!("{metadata}\n{content_for_output}");
     let sent = count_tokens(&output);
-    let savings = protocol::format_savings(tokens, sent);
-    (format!("{output}\n{savings}"), sent)
+    (protocol::append_savings(&output, tokens, sent), sent)
 }
 
 fn build_header(
@@ -615,7 +638,11 @@ fn build_header(
     line_count: usize,
     include_deps: bool,
 ) -> String {
-    let mut header = format!("{file_ref}={short} {line_count}L");
+    let mut header = if crate::core::protocol::meta_visible() && !file_ref.is_empty() {
+        format!("{file_ref}={short} {line_count}L")
+    } else {
+        format!("{short} {line_count}L")
+    };
 
     if include_deps {
         let dep_info = deps::extract_deps(content, ext);
@@ -684,7 +711,11 @@ fn process_mode(
             let sigs = signatures::extract_signatures(content, ext);
             let dep_info = deps::extract_deps(content, ext);
 
-            let mut output = format!("{file_ref}={short} {line_count}L");
+            let mut output = if crate::core::protocol::meta_visible() && !file_ref.is_empty() {
+                format!("{file_ref}={short} {line_count}L")
+            } else {
+                format!("{short} {line_count}L")
+            };
             if !dep_info.imports.is_empty() {
                 let imports_str: Vec<&str> = dep_info
                     .imports
@@ -703,9 +734,11 @@ fn process_mode(
                 }
             }
             let sent = count_tokens(&output);
-            let savings = protocol::format_savings(original_tokens, sent);
             (
-                append_compressed_hint(&format!("{output}\n{savings}"), file_path),
+                append_compressed_hint(
+                    &protocol::append_savings(&output, original_tokens, sent),
+                    file_path,
+                ),
                 sent,
             )
         }
@@ -713,11 +746,13 @@ fn process_mode(
             if ext == "php" {
                 if let Some(php_map) = crate::core::patterns::php::compress_php_map(content, short)
                 {
-                    let mut output = format!("{file_ref}={short} {line_count}L\n{php_map}");
+                    let output = if crate::core::protocol::meta_visible() && !file_ref.is_empty() {
+                        format!("{file_ref}={short} {line_count}L\n{php_map}")
+                    } else {
+                        format!("{short} {line_count}L\n{php_map}")
+                    };
                     let sent = count_tokens(&output);
-                    let savings = protocol::format_savings(original_tokens, sent);
-                    output.push('\n');
-                    output.push_str(&savings);
+                    let output = protocol::append_savings(&output, original_tokens, sent);
                     return (append_compressed_hint(&output, file_path), sent);
                 }
             }
@@ -725,7 +760,11 @@ fn process_mode(
             let sigs = signatures::extract_signatures(content, ext);
             let dep_info = deps::extract_deps(content, ext);
 
-            let mut output = format!("{file_ref}={short} {line_count}L");
+            let mut output = if crate::core::protocol::meta_visible() && !file_ref.is_empty() {
+                format!("{file_ref}={short} {line_count}L")
+            } else {
+                format!("{short} {line_count}L")
+            };
 
             if !dep_info.imports.is_empty() {
                 output.push_str("\n  deps: ");
@@ -755,9 +794,11 @@ fn process_mode(
             }
 
             let sent = count_tokens(&output);
-            let savings = protocol::format_savings(original_tokens, sent);
             (
-                append_compressed_hint(&format!("{output}\n{savings}"), file_path),
+                append_compressed_hint(
+                    &protocol::append_savings(&output, original_tokens, sent),
+                    file_path,
+                ),
                 sent,
             )
         }
@@ -857,9 +898,11 @@ fn process_mode(
             let filtered =
                 crate::core::task_relevance::information_bottleneck_filter(content, &keywords, 0.3);
             let filtered_lines = filtered.lines().count();
-            let header = format!(
-                "{file_ref}={short} {line_count}L [task-filtered: {line_count}→{filtered_lines}]"
-            );
+            let header = if crate::core::protocol::meta_visible() && !file_ref.is_empty() {
+                format!("{file_ref}={short} {line_count}L [task-filtered: {line_count}→{filtered_lines}]")
+            } else {
+                format!("{short} {line_count}L [task-filtered: {line_count}→{filtered_lines}]")
+            };
             let project_root = detect_project_root(file_path);
             let graph_ctx = crate::core::graph_context::build_graph_context(
                 file_path,
@@ -881,7 +924,11 @@ fn process_mode(
         }
         "reference" => {
             let tok = count_tokens(content);
-            let output = format!("{file_ref}={short}: {line_count} lines, {tok} tok ({ext})");
+            let output = if crate::core::protocol::meta_visible() && !file_ref.is_empty() {
+                format!("{file_ref}={short}: {line_count} lines, {tok} tok ({ext})")
+            } else {
+                format!("{short}: {line_count} lines, {tok} tok ({ext})")
+            };
             let sent = count_tokens(&output);
             let savings = protocol::format_savings(original_tokens, sent);
             (format!("{output}\n{savings}"), sent)
@@ -889,7 +936,11 @@ fn process_mode(
         mode if mode.starts_with("lines:") => {
             let range_str = &mode[6..];
             let extracted = extract_line_range(content, range_str);
-            let header = format!("{file_ref}={short} {line_count}L lines:{range_str}");
+            let header = if crate::core::protocol::meta_visible() && !file_ref.is_empty() {
+                format!("{file_ref}={short} {line_count}L lines:{range_str}")
+            } else {
+                format!("{short} {line_count}L lines:{range_str}")
+            };
             let sent = count_tokens(&extracted);
             let savings = protocol::format_savings(original_tokens, sent);
             (format!("{header}\n{extracted}\n{savings}"), sent)
@@ -959,10 +1010,12 @@ fn handle_diff(cache: &mut SessionCache, path: &str, file_ref: &str) -> (String,
 
     let sent = count_tokens(&diff_output);
     let savings = protocol::format_savings(original_tokens, sent);
-    (
-        format!("{file_ref}={short} [diff]\n{diff_output}\n{savings}"),
-        sent,
-    )
+    let head = if crate::core::protocol::meta_visible() && !file_ref.is_empty() {
+        format!("{file_ref}={short}")
+    } else {
+        short.clone()
+    };
+    (format!("{head} [diff]\n{diff_output}\n{savings}"), sent)
 }
 
 #[cfg(test)]
@@ -972,15 +1025,20 @@ mod tests {
 
     #[test]
     fn test_header_toon_format_no_brackets() {
+        let _lock = crate::core::data_dir::test_env_lock();
+        std::env::set_var("LEAN_CTX_META", "1");
         let content = "use std::io;\nfn main() {}\n";
         let header = build_header("F1", "main.rs", "rs", content, 2, false);
         assert!(!header.contains('['));
         assert!(!header.contains(']'));
         assert!(header.contains("F1=main.rs 2L"));
+        std::env::remove_var("LEAN_CTX_META");
     }
 
     #[test]
     fn test_header_toon_deps_indented() {
+        let _lock = crate::core::data_dir::test_env_lock();
+        std::env::set_var("LEAN_CTX_META", "1");
         let content = "use crate::core::cache;\nuse crate::tools;\npub fn main() {}\n";
         let header = build_header("F1", "main.rs", "rs", content, 3, true);
         if header.contains("deps") {
@@ -993,10 +1051,13 @@ mod tests {
                 "deps should not use bracket format"
             );
         }
+        std::env::remove_var("LEAN_CTX_META");
     }
 
     #[test]
     fn test_header_toon_saves_tokens() {
+        let _lock = crate::core::data_dir::test_env_lock();
+        std::env::set_var("LEAN_CTX_META", "1");
         let content = "use crate::foo;\nuse crate::bar;\npub fn baz() {}\npub fn qux() {}\n";
         let old_header = "F1=main.rs [4L +] deps:[foo,bar] exports:[baz,qux]".to_string();
         let new_header = build_header("F1", "main.rs", "rs", content, 4, true);
@@ -1006,6 +1067,7 @@ mod tests {
             new_tokens <= old_tokens,
             "TOON header ({new_tokens} tok) should be <= old format ({old_tokens} tok)"
         );
+        std::env::remove_var("LEAN_CTX_META");
     }
 
     #[test]

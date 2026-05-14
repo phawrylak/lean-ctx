@@ -86,8 +86,11 @@ pub fn cmd_read(args: &[String]) {
                 "fresh": force_fresh,
             })),
         ) {
-            println!("{}", super::common::filter_daemon_output(&out));
-            return;
+            let filtered = super::common::filter_daemon_output(&out);
+            if !filtered.trim().is_empty() {
+                println!("{filtered}");
+                return;
+            }
         }
     }
     super::common::daemon_fallback_hint();

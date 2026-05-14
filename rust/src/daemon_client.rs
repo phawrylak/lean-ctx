@@ -182,7 +182,7 @@ pub fn try_daemon_tool_call_blocking(
                 std::thread::sleep(Duration::from_millis(50));
             }
 
-            if ready && did_start {
+            if ready && did_start && crate::core::protocol::meta_visible() {
                 eprintln!("\x1b[2m▸ daemon auto-started\x1b[0m");
             }
         } else {

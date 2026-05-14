@@ -485,7 +485,11 @@ impl ServerHandler for LeanCtxServer {
                         );
                     }
                 }
-                Some(format!("[BUDGET WARNING] {}", snap.format_compact()))
+                if crate::core::protocol::meta_visible() {
+                    Some(format!("[BUDGET WARNING] {}", snap.format_compact()))
+                } else {
+                    None
+                }
             } else {
                 None
             }
@@ -552,7 +556,9 @@ impl ServerHandler for LeanCtxServer {
 
         if !is_raw_shell {
             if let Some(ctx) = auto_context {
-                result_text = format!("{ctx}\n\n{result_text}");
+                if crate::core::protocol::meta_visible() {
+                    result_text = format!("{ctx}\n\n{result_text}");
+                }
             }
         }
 
@@ -900,10 +906,12 @@ impl ServerHandler for LeanCtxServer {
         if !skip_checkpoint && self.increment_and_check() {
             if let Some(checkpoint) = self.auto_checkpoint().await {
                 let interval = LeanCtxServer::checkpoint_interval_effective();
-                let combined = format!(
-                    "{result_text}\n\n--- AUTO CHECKPOINT (every {interval} calls) ---\n{checkpoint}"
-                );
-                return Ok(CallToolResult::success(vec![Content::text(combined)]));
+                if crate::core::protocol::meta_visible() {
+                    let combined = format!(
+                        "{result_text}\n\n--- AUTO CHECKPOINT (every {interval} calls) ---\n{checkpoint}"
+                    );
+                    return Ok(CallToolResult::success(vec![Content::text(combined)]));
+                }
             }
         }
 

@@ -148,8 +148,8 @@ pub fn shorten_path(path: &str) -> String {
 
 /// Whether savings footers should be suppressed in tool output.
 ///
-/// In `auto` mode (default): suppressed when running as MCP server (agent context),
-/// shown when running as CLI (human context).
+/// Default config is `never` to keep CLI output quiet; `auto` remains available for
+/// legacy compatibility and still follows transport context when explicitly enabled.
 static MCP_CONTEXT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// Mark the current process as serving MCP tool calls (suppresses savings footers in `auto` mode).
@@ -172,6 +172,17 @@ pub fn savings_footer_visible() -> bool {
             !MCP_CONTEXT.load(std::sync::atomic::Ordering::Relaxed)
         }
     }
+}
+
+/// Whether non-essential meta lines (cache refs, budget warnings, repetition hints) should be shown.
+///
+/// Default is false to keep tool outputs clean for agents; opt-in via env var.
+pub fn meta_visible() -> bool {
+    if matches!(std::env::var("LEAN_CTX_QUIET"), Ok(v) if v.trim() == "1") {
+        return false;
+    }
+    matches!(std::env::var("LEAN_CTX_META"), Ok(v) if v.trim() == "1")
+        || matches!(std::env::var("LEAN_CTX_DIAGNOSTICS"), Ok(v) if v.trim() == "1")
 }
 
 /// Formats a token savings summary like `[42 tok saved (30%)]`.

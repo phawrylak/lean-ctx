@@ -188,10 +188,14 @@ fn evict_stale(store: &mut CliCacheStore, now: u64) {
 }
 
 pub fn format_hit(entry: &CliCacheEntry, file_ref: &str, short_path: &str) -> String {
-    format!(
-        "{file_ref} cached {short_path} [{}L {}t] (read #{})",
-        entry.line_count, entry.original_tokens, entry.read_count
-    )
+    if crate::core::protocol::savings_footer_visible() {
+        format!(
+            "{file_ref} cached {short_path} [{}L {}t] (read #{})",
+            entry.line_count, entry.original_tokens, entry.read_count
+        )
+    } else {
+        format!("cached {short_path} [{}L]", entry.line_count)
+    }
 }
 
 #[cfg(test)]
@@ -260,6 +264,7 @@ mod tests {
 
     #[test]
     fn format_hit_output() {
+        let _lock = crate::core::data_dir::test_env_lock();
         let entry = CliCacheEntry {
             path: "/test.rs".into(),
             hash: "abc".into(),
@@ -268,11 +273,14 @@ mod tests {
             timestamp: now_secs(),
             read_count: 3,
         };
+        std::env::set_var("LEAN_CTX_SAVINGS_FOOTER", "never");
         let output = format_hit(&entry, "F1", "test.rs");
-        assert!(output.contains("F1 cached"));
+        assert!(output.contains("cached test.rs"));
         assert!(output.contains("42L"));
-        assert!(output.contains("500t"));
-        assert!(output.contains("read #3"));
+        assert!(!output.contains("F1"));
+        assert!(!output.contains("500t"));
+        assert!(!output.contains("read #3"));
+        std::env::remove_var("LEAN_CTX_SAVINGS_FOOTER");
     }
 
     #[test]

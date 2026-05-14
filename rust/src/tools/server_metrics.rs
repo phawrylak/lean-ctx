@@ -167,6 +167,10 @@ impl LeanCtxServer {
 
         self.record_cep_snapshot().await;
 
+        if !crate::core::protocol::meta_visible() {
+            return None;
+        }
+
         Some(format!(
             "{checkpoint}\n\n--- SESSION STATE ---\n{session_summary}\n\n{}{multi_agent_block}",
             complexity.instruction_suffix()

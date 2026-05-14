@@ -38,7 +38,7 @@ async fn ctx_prefetch_warms_cache_for_full_read() {
         )
         .await
         .expect("read full");
-    assert!(full.contains(" cached "), "expected cache hit, got: {full}");
+    assert!(full.is_empty(), "expected cache hit (silent), got: {full}");
 
     std::env::remove_var("LEAN_CTX_DATA_DIR");
 }

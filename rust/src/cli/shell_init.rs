@@ -599,7 +599,7 @@ if [ -f /.dockerenv ] || grep -qsE '/docker/|/lxc/' /proc/1/cgroup 2>/dev/null; 
       fi
     fi
     _lean_ctx_lock_count=0
-    for _lf in "${HOME}/.lean-ctx/locks"/slot-*.lock 2>/dev/null; do
+    for _lf in "${HOME}/.lean-ctx/locks"/slot-*.lock; do
       [ -f "$_lf" ] && _lean_ctx_lock_count=$(( _lean_ctx_lock_count + 1 ))
     done
     if [ "$_lean_ctx_heal_needed" = "1" ] && [ "$_lean_ctx_lock_count" -lt 4 ]; then
@@ -918,6 +918,14 @@ export EDITOR=vim
         write_env_sh_for_containers("alias git='lean-ctx -c git'\n");
         let env_sh = data_dir.join("env.sh");
         let content = std::fs::read_to_string(&env_sh).expect("env.sh exists");
+        if let Ok(mut bash) = std::process::Command::new("bash")
+            .arg("-n")
+            .arg(&env_sh)
+            .spawn()
+        {
+            let ok = bash.wait().is_ok_and(|s| s.success());
+            assert!(ok, "generated env.sh must be valid bash");
+        }
         assert!(content.contains("lean-ctx docker self-heal"));
         assert!(content.contains("claude mcp list"));
         assert!(content.contains("lean-ctx init --agent claude"));

@@ -1016,8 +1016,7 @@ fn rg_large_output_compresses_through_pipeline() {
         input_len
     );
     assert!(
-        result.contains("[lean-ctx:"),
-        "must have savings footer: {}",
-        &result[result.len().saturating_sub(200)..]
+        !result.contains("[lean-ctx:"),
+        "savings footer must be silent by default"
     );
 }

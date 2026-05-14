@@ -73,7 +73,9 @@ pub(crate) fn daemon_fallback_hint() {
     use std::sync::Once;
     static HINT: Once = Once::new();
     HINT.call_once(|| {
-        eprintln!("\x1b[2;33mhint: daemon not running — stats tracked locally (lean-ctx serve -d for full tracking)\x1b[0m");
+        if crate::core::protocol::meta_visible() {
+            eprintln!("\x1b[2;33mhint: daemon not running — stats tracked locally (lean-ctx serve -d for full tracking)\x1b[0m");
+        }
     });
 }
 
