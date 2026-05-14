@@ -72,12 +72,10 @@ pub fn start_daemon(args: &[String]) -> Result<()> {
         .create(true)
         .write(true)
         .truncate(true)
-        .open(&stderr_log)
-        .ok();
-
+        .open(&stderr_log);
     let stderr_cfg = match stderr_file {
-        Some(f) => std::process::Stdio::from(f),
-        None => std::process::Stdio::null(),
+        Ok(f) => std::process::Stdio::from(f),
+        Err(_) => std::process::Stdio::inherit(),
     };
 
     let child = Command::new(&exe)
