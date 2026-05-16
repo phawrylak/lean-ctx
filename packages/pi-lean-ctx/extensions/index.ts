@@ -328,6 +328,16 @@ export default async function (pi: ExtensionAPI) {
       "Use ctx_shell only for commands with side effects: build, test, install, git, run scripts.",
     ],
     parameters: bashSchemaWithRaw,
+    renderCall(args, theme, context) {
+      return baseBashTool.renderCall
+        ? baseBashTool.renderCall(args, theme, context)
+        : (context.lastComponent ?? new Text("", 0, 0));
+    },
+    renderResult(result, options, theme, context) {
+      return baseBashTool.renderResult
+        ? baseBashTool.renderResult(result, options, theme, context)
+        : (context.lastComponent ?? new Text("", 0, 0));
+    },
     async execute(toolCallId, params, signal, onUpdate, ctx) {
       const isRaw = !!params.raw;
       const toolParams = { command: params.command, timeout: params.timeout };
