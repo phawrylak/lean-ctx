@@ -79,9 +79,9 @@ mod landlock_sys {
     const LANDLOCK_ACCESS_FS_MAKE_BLOCK: u64 = 1 << 11;
     const LANDLOCK_ACCESS_FS_MAKE_SYM: u64 = 1 << 12;
 
-    pub const FS_READ: u64 = LANDLOCK_ACCESS_FS_READ_FILE | LANDLOCK_ACCESS_FS_READ_DIR;
+    pub(super) const FS_READ: u64 = LANDLOCK_ACCESS_FS_READ_FILE | LANDLOCK_ACCESS_FS_READ_DIR;
 
-    pub const FS_ALL: u64 = LANDLOCK_ACCESS_FS_EXECUTE
+    pub(super) const FS_ALL: u64 = LANDLOCK_ACCESS_FS_EXECUTE
         | LANDLOCK_ACCESS_FS_WRITE_FILE
         | LANDLOCK_ACCESS_FS_READ_FILE
         | LANDLOCK_ACCESS_FS_READ_DIR
@@ -178,7 +178,7 @@ mod landlock_sys {
 
     /// Apply the Landlock ruleset to the current process.
     /// Returns `Ok(true)` if enforced, `Ok(false)` if Landlock is unsupported.
-    pub fn apply(ruleset: &super::LandlockRuleset) -> Result<bool, String> {
+    pub(super) fn apply(ruleset: &super::LandlockRuleset) -> Result<bool, String> {
         // no_new_privs is required for unprivileged Landlock
         let ret = unsafe { libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) };
         if ret < 0 {
