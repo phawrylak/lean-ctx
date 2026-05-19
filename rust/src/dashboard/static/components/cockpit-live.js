@@ -749,18 +749,25 @@ class CockpitLive extends HTMLElement {
       var isFileRead = flat.title === 'ctx_read' || flat.title === 'ctx_multi_read';
       if (flat.path && flat.saved > 0) {
         var btnLabel = isFileRead ? 'Compare original vs compressed' : 'Show compression details';
+        var btnStyle = 'background:var(--surface-3,var(--border));color:var(--fg);border:1px solid var(--border);' +
+          'padding:5px 12px;border-radius:6px;font-size:11px;cursor:pointer;font-family:inherit;display:inline-flex;align-items:center;gap:5px';
         compareBtn =
-          '<div style="margin-top:8px">' +
+          '<div style="margin-top:8px;display:flex;gap:6px;flex-wrap:wrap">' +
           '<button class="ckl-compare-btn" data-compare-path="' + esc(flat.path) + '"' +
           (flat.mode ? ' data-compare-mode="' + esc(flat.mode) + '"' : '') +
           ' data-compare-original="' + (flat.original || 0) + '"' +
           ' data-compare-saved="' + (flat.saved || 0) + '"' +
           ' data-compare-is-file="' + (isFileRead ? '1' : '0') + '"' +
-          ' style="background:var(--surface-3,var(--border));color:var(--fg);border:1px solid var(--border);' +
-          'padding:5px 12px;border-radius:6px;font-size:11px;cursor:pointer;font-family:inherit;display:inline-flex;align-items:center;gap:5px">' +
+          ' style="' + btnStyle + '">' +
           '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="12" height="12">' +
           '<rect x="3" y="3" width="18" height="18" rx="2"/><line x1="12" y1="3" x2="12" y2="21"/></svg>' +
           btnLabel + '</button>' +
+          '<button class="ckl-goto-compression" data-goto-path="' + esc(flat.path) + '"' +
+          (flat.mode ? ' data-goto-mode="' + esc(flat.mode) + '"' : '') +
+          ' style="' + btnStyle + '">' +
+          '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="12" height="12">' +
+          '<path d="M18 13v6a2 2 0 01-2 2H5a2 2 0 01-2-2V8a2 2 0 012-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>' +
+          'Open in Compression Lab</button>' +
           '<div class="ckl-compare-result" data-compare-target="' + esc(flat.path) + '"></div>' +
           '</div>';
       }
@@ -864,7 +871,7 @@ class CockpitLive extends HTMLElement {
     expandCards.forEach(function (card) {
       card.addEventListener('click', function (e) {
         if (e.target.closest('.event-help-icon')) return;
-        if (e.target.closest('.ckl-compare-btn') || e.target.closest('.ckl-compare-result')) return;
+        if (e.target.closest('.ckl-compare-btn') || e.target.closest('.ckl-compare-result') || e.target.closest('.ckl-goto-compression')) return;
         var panel = card.querySelector('.event-expanded');
         var chevron = card.querySelector('.event-chevron');
         if (!panel) return;
@@ -964,6 +971,21 @@ class CockpitLive extends HTMLElement {
           .catch(function () {
             renderSummaryBar(evOriginal, evSaved, m || 'compressed');
           });
+      });
+    });
+
+    this.querySelectorAll('.ckl-goto-compression').forEach(function (btn) {
+      btn.addEventListener('click', function (e) {
+        e.stopPropagation();
+        var path = btn.getAttribute('data-goto-path');
+        var mode = btn.getAttribute('data-goto-mode') || null;
+        if (!path) return;
+        document.dispatchEvent(new CustomEvent('lctx:compression-select', {
+          detail: { path: path, mode: mode }
+        }));
+        if (window.LctxRouter && window.LctxRouter.navigateTo) {
+          window.LctxRouter.navigateTo('compression');
+        }
       });
     });
 

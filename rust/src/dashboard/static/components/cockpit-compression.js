@@ -33,6 +33,8 @@ class CockpitCompression extends HTMLElement {
     this._graphFilesAll = [];
     this._searchQuery = '';
     this._activeTab = 'project';
+    this._recentMode = 'grouped';
+    this._ctxAllEvents = [];
     this._selectedFile = null;
     this._demoData = null;
     this._loading = true;
@@ -46,12 +48,27 @@ class CockpitCompression extends HTMLElement {
     this._ready = true;
     this.style.display = 'block';
     document.addEventListener('lctx:refresh', this._onRefresh);
+    this._onSelectFromLive = this._onSelectFromLive.bind(this);
+    document.addEventListener('lctx:compression-select', this._onSelectFromLive);
     this.render();
     this.loadData();
   }
 
   disconnectedCallback() {
     document.removeEventListener('lctx:refresh', this._onRefresh);
+    document.removeEventListener('lctx:compression-select', this._onSelectFromLive);
+  }
+
+  _onSelectFromLive(e) {
+    var detail = e && e.detail;
+    if (!detail || !detail.path) return;
+    this._selectedFile = detail.path;
+    this._activeTab = 'recent';
+    if (detail.mode && CKC_MODES.indexOf(detail.mode) > -1) {
+      this._mode = detail.mode;
+    }
+    this._demoData = null;
+    this._loadDemo();
   }
 
   _onRefresh() {
@@ -92,32 +109,52 @@ class CockpitCompression extends HTMLElement {
   _collectFiles(ledger, events, graphFiles) {
     var seen = Object.create(null);
     var ctx = [];
+    var allEvents = [];
 
     var evtList = Array.isArray(events) ? events : [];
     for (var j = evtList.length - 1; j >= 0; j--) {
       var ev = evtList[j];
       var kind = ev.kind || {};
-      if (kind.type === 'ToolCall' && kind.path && !seen[kind.path]) {
-        seen[kind.path] = true;
-        ctx.push({
+      if (kind.type === 'ToolCall' && kind.path) {
+        var sent = kind.tokens_compressed != null
+          ? kind.tokens_compressed
+          : (kind.tokens_original && kind.tokens_saved
+            ? kind.tokens_original - kind.tokens_saved
+            : 0);
+        var row = {
           path: kind.path,
           mode: kind.mode || 'full',
           original: kind.tokens_original || 0,
-          sent: kind.tokens_compressed || 0,
-        });
+          sent: sent,
+          timestamp: ev.timestamp || null,
+          tool: kind.tool || null,
+        };
+        allEvents.push(row);
+        if (!seen[kind.path]) {
+          seen[kind.path] = true;
+          ctx.push(row);
+        }
       }
     }
 
     if (ledger && Array.isArray(ledger.entries)) {
       for (var i = 0; i < ledger.entries.length; i++) {
         var e = ledger.entries[i];
-        if (e.path && !seen[e.path]) {
+        if (e.path && seen[e.path]) {
+          var existing = ctx.find(function (c) { return c.path === e.path; });
+          if (existing && existing.sent === 0 && e.sent_tokens > 0) {
+            existing.sent = e.sent_tokens;
+            existing.original = e.original_tokens || existing.original;
+          }
+        } else if (e.path && !seen[e.path]) {
           seen[e.path] = true;
           ctx.push({
             path: e.path,
             mode: e.active_view || e.mode || 'full',
             original: e.original_tokens || 0,
             sent: e.sent_tokens || 0,
+            timestamp: null,
+            tool: null,
           });
         }
       }
@@ -138,6 +175,7 @@ class CockpitCompression extends HTMLElement {
     }
 
     this._ctxFiles = ctx.slice(0, 100);
+    this._ctxAllEvents = allEvents.slice(0, 100);
     this._graphFilesAll = graph;
     this._applySearch();
 
@@ -220,7 +258,9 @@ class CockpitCompression extends HTMLElement {
   _renderMainLayout(esc, ff) {
     var html = '<div class="ckc-layout">';
     var isRecent = this._activeTab === 'recent';
-    var files = isRecent ? this._ctxFiles : this._graphFiles;
+    var files = isRecent
+      ? (this._recentMode === 'all' ? this._ctxAllEvents : this._ctxFiles)
+      : this._graphFiles;
 
     html += '<div class="ckc-sidebar"><div class="card">';
 
@@ -232,8 +272,17 @@ class CockpitCompression extends HTMLElement {
       '</div>';
 
     if (isRecent) {
-      html += '<p class="hs" style="padding:4px 16px 8px;margin:0;font-size:11px;opacity:.7">' +
-        'Files from recent tool calls &amp; context ledger</p>';
+      var isGrouped = this._recentMode === 'grouped';
+      html += '<div style="display:flex;align-items:center;gap:6px;padding:4px 16px 8px">' +
+        '<span class="hs" style="font-size:11px;opacity:.7;flex:1">Files from recent tool calls</span>' +
+        '<button class="ckc-recent-mode' + (isGrouped ? ' active' : '') + '" data-ckc-recent="grouped" ' +
+        'style="font-size:10px;padding:2px 8px;border-radius:4px;border:1px solid var(--border);' +
+        'background:' + (isGrouped ? 'var(--surface-3)' : 'transparent') + ';color:var(--fg);cursor:pointer">' +
+        'Grouped</button>' +
+        '<button class="ckc-recent-mode' + (!isGrouped ? ' active' : '') + '" data-ckc-recent="all" ' +
+        'style="font-size:10px;padding:2px 8px;border-radius:4px;border:1px solid var(--border);' +
+        'background:' + (!isGrouped ? 'var(--surface-3)' : 'transparent') + ';color:var(--fg);cursor:pointer">' +
+        'All Events</button></div>';
     } else {
       html += '<div class="ckc-search">' +
         '<input type="text" id="ckc-search-input" placeholder="Search files\u2026" ' +
@@ -241,7 +290,7 @@ class CockpitCompression extends HTMLElement {
         '</div>';
     }
 
-    if (files.length === 0) {
+      if (files.length === 0) {
       var emptyMsg = isRecent
         ? 'No files read yet. Files appear here as lean-ctx processes tool calls (reads, searches, etc.).'
         : this._searchQuery
@@ -250,14 +299,19 @@ class CockpitCompression extends HTMLElement {
       html += '<p class="hs" style="padding:12px 16px">' + emptyMsg + '</p>';
     } else {
       html += '<div class="file-list" id="ckc-file-list">';
+      var showAllEvents = isRecent && this._recentMode === 'all';
       for (var i = 0; i < files.length; i++) {
         var f = files[i];
         var short = f.path.length > 45 ? '\u2026' + f.path.slice(-43) : f.path;
-        var tagLabel, tagClass, tokLabel;
+        var tagLabel, tagClass, tokLabel, metaLabel;
+        metaLabel = '';
         if (isRecent) {
           tagLabel = f.mode || 'full';
           tagClass = f.sent > 0 ? 'tg' : 'ts';
           tokLabel = f.original > 0 ? ff(f.original) + ' tok' : '';
+          if (showAllEvents && f.tool) {
+            metaLabel = '<span style="font-size:9px;opacity:.6;margin-right:4px">' + esc(f.tool) + '</span>';
+          }
         } else {
           tagLabel = f.ext || extFromPath(f.path) || '?';
           tagClass = 'td';
@@ -266,6 +320,7 @@ class CockpitCompression extends HTMLElement {
         html +=
           '<div class="file-item' + (f.path === this._selectedFile ? ' selected' : '') +
           '" data-ckc-path="' + esc(f.path) + '" title="' + esc(f.path) + '">' +
+          metaLabel +
           '<span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + esc(short) + '</span>' +
           (tokLabel ? '<span class="file-tokens">' + esc(tokLabel) + '</span>' : '') +
           '<span class="tag ' + tagClass + '" style="flex-shrink:0">' + esc(tagLabel) + '</span>' +
@@ -398,6 +453,16 @@ class CockpitCompression extends HTMLElement {
 
   _bind() {
     var self = this;
+
+    this.querySelectorAll('[data-ckc-recent]').forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        var newMode = btn.getAttribute('data-ckc-recent');
+        if (newMode === self._recentMode) return;
+        self._recentMode = newMode;
+        self.render();
+      });
+    });
+
     this.querySelectorAll('[data-ckc-mode]').forEach(function (tab) {
       tab.addEventListener('click', function () {
         var newMode = tab.getAttribute('data-ckc-mode');
