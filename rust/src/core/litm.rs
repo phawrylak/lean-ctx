@@ -73,20 +73,17 @@ pub fn position_optimize(session: &SessionState) -> PositionedOutput {
     let mut begin_lines = Vec::new();
     let mut end_lines = Vec::new();
 
-    begin_lines.push(format!(
-        "ACTIVE SESSION v{} | {} calls | {} tok saved",
-        session.version, session.stats.total_tool_calls, session.stats.total_tokens_saved
-    ));
+    // Stable prefix for LLM prefix-cache compatibility:
+    // project root and file refs rarely change, keeping the prefix stable.
+    if let Some(ref root) = session.project_root {
+        begin_lines.push(format!("Root: {root}"));
+    }
 
     if let Some(ref task) = session.task {
         let pct = task
             .progress_pct
             .map_or(String::new(), |p| format!(" [{p}%]"));
         begin_lines.push(format!("Task: {}{pct}", task.description));
-    }
-
-    if let Some(ref root) = session.project_root {
-        begin_lines.push(format!("Root: {root}"));
     }
 
     if !session.decisions.is_empty() {
@@ -142,8 +139,11 @@ pub fn position_optimize(session: &SessionState) -> PositionedOutput {
         end_lines.push(format!("Next: {}", session.next_steps.join(" → ")));
     }
 
-    // Tool-preference line lives in the static LITM-END header (instructions.rs)
-    // — not duplicated here.
+    // Session stats at end — changes every call, placing here preserves prefix-cache stability
+    end_lines.push(format!(
+        "ACTIVE SESSION v{} | {} calls | {} tok saved",
+        session.version, session.stats.total_tool_calls, session.stats.total_tokens_saved
+    ));
 
     PositionedOutput {
         begin_block: begin_lines.join("\n"),

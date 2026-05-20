@@ -1,6 +1,5 @@
 use serde::Serialize;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::SystemTime;
 
 static SLO_EVALS: AtomicU64 = AtomicU64::new(0);
 
@@ -67,14 +66,6 @@ pub fn format_compact(v: &VerificationObservabilityV1) -> String {
         v.budgets.format_compact(),
         v.proof.written
     )
-}
-
-// Keep this module obviously "count-only": no secret content is stored.
-#[allow(dead_code)]
-fn _unix_ms_now() -> u128 {
-    SystemTime::now()
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .map_or(0, |d| d.as_millis())
 }
 
 #[cfg(test)]

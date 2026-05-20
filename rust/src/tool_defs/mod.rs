@@ -14,7 +14,7 @@ pub fn tool_def(name: &'static str, description: &'static str, schema_value: Val
     Tool::new(name, description, Arc::new(schema))
 }
 
-const CORE_TOOL_NAMES: &[&str] = &[
+pub const CORE_TOOL_NAMES: &[&str] = &[
     "ctx_read",
     "ctx_search",
     "ctx_shell",
@@ -26,6 +26,10 @@ const CORE_TOOL_NAMES: &[&str] = &[
     "ctx_graph",
     "ctx_call",
 ];
+
+pub fn core_tool_names() -> &'static [&'static str] {
+    CORE_TOOL_NAMES
+}
 
 pub fn lazy_tool_defs() -> Vec<Tool> {
     let all = granular_tool_defs();

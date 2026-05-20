@@ -1,4 +1,5 @@
 pub mod bypass_hint;
+pub mod compaction_sync;
 pub mod context_gate;
 mod dispatch;
 pub mod dynamic_tools;
@@ -215,9 +216,19 @@ impl ServerHandler for LeanCtxServer {
         _context: RequestContext<RoleServer>,
     ) -> Result<ListToolsResult, ErrorData> {
         let all_tools = if crate::tool_defs::is_full_mode() {
-            crate::tool_defs::granular_tool_defs()
+            if let Some(ref reg) = self.registry {
+                reg.tool_defs()
+            } else {
+                crate::tool_defs::granular_tool_defs()
+            }
         } else if std::env::var("LEAN_CTX_UNIFIED").is_ok() {
             crate::tool_defs::unified_tool_defs()
+        } else if let Some(ref reg) = self.registry {
+            let core_names = crate::tool_defs::core_tool_names();
+            reg.tool_defs()
+                .into_iter()
+                .filter(|t| core_names.contains(&t.name.as_ref()))
+                .collect()
         } else {
             crate::tool_defs::lazy_tool_defs()
         };
@@ -1470,6 +1481,16 @@ mod tests {
     fn test_granular_tool_count() {
         let tools = crate::tool_defs::granular_tool_defs();
         assert!(tools.len() >= 25, "Expected at least 25 granular tools");
+    }
+
+    #[test]
+    fn test_registry_tool_count_ssot() {
+        let registry = crate::server::registry::build_registry();
+        assert_eq!(
+            registry.len(),
+            61,
+            "Registry tool count drift! Update this test AND all docs when adding/removing tools."
+        );
     }
 
     #[test]

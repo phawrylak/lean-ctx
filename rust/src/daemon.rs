@@ -54,7 +54,8 @@ pub fn start_daemon(args: &[String]) -> Result<()> {
         crate::config_io::cleanup_legacy_backups(&data_dir);
     }
 
-    let exe = std::env::current_exe().context("cannot determine own executable path")?;
+    let exe_str = crate::core::portable_binary::resolve_portable_binary();
+    let exe = std::path::PathBuf::from(&exe_str);
 
     let mut cmd_args = vec!["serve".to_string()];
     for arg in args {

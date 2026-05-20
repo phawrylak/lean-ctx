@@ -245,17 +245,21 @@ fn estimate_read_tokens(path: &str, mode: &str) -> usize {
 
 fn pressure_downgrade(requested_mode: &str, action: &PressureAction) -> Option<String> {
     match action {
+        PressureAction::SuggestCompression => match requested_mode {
+            "auto" => Some("map".to_string()),
+            _ => None,
+        },
         PressureAction::ForceCompression => match requested_mode {
             "full" => Some("map".to_string()),
-            "map" => Some("signatures".to_string()),
+            "auto" | "map" => Some("signatures".to_string()),
             _ => None,
         },
         PressureAction::EvictLeastRelevant => match requested_mode {
             "full" => Some("map".to_string()),
-            "map" | "auto" => Some("signatures".to_string()),
+            "auto" | "map" => Some("signatures".to_string()),
             _ => None,
         },
-        PressureAction::NoAction | PressureAction::SuggestCompression => None,
+        PressureAction::NoAction => None,
     }
 }
 
@@ -478,6 +482,32 @@ mod tests {
     #[test]
     fn no_pressure_downgrade_when_low() {
         let result = pre_dispatch_read("c.rs", "full", None, None, Some(&PressureAction::NoAction));
+        assert!(result.overridden_mode.is_none());
+        assert!(!result.pressure_downgraded);
+    }
+
+    #[test]
+    fn suggest_compression_downgrades_auto_to_map() {
+        let result = pre_dispatch_read(
+            "c.rs",
+            "auto",
+            None,
+            None,
+            Some(&PressureAction::SuggestCompression),
+        );
+        assert_eq!(result.overridden_mode, Some("map".to_string()));
+        assert!(result.pressure_downgraded);
+    }
+
+    #[test]
+    fn suggest_compression_does_not_touch_explicit_full() {
+        let result = pre_dispatch_read(
+            "c.rs",
+            "full",
+            None,
+            None,
+            Some(&PressureAction::SuggestCompression),
+        );
         assert!(result.overridden_mode.is_none());
         assert!(!result.pressure_downgraded);
     }

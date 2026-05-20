@@ -37,7 +37,7 @@ impl std::fmt::Display for ScheduleInfo {
 }
 
 pub fn install_schedule(interval_hours: u64) -> Result<ScheduleInfo, String> {
-    let binary = std::env::current_exe().map_err(|e| format!("Cannot locate binary: {e}"))?;
+    let binary = std::path::PathBuf::from(super::portable_binary::resolve_portable_binary());
 
     #[cfg(target_os = "macos")]
     return install_macos_launchagent(&binary, interval_hours * 3600, interval_hours);

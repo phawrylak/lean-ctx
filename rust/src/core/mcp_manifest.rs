@@ -58,8 +58,8 @@ pub fn default_manifest_path() -> PathBuf {
 }
 
 pub fn manifest_value() -> Value {
-    let mut granular_tools: Vec<Tool> = crate::tool_defs::granular_tool_defs();
-    granular_tools.sort_by_key(|t| t.name.clone());
+    let registry = crate::server::registry::build_registry();
+    let granular_tools: Vec<Tool> = registry.tool_defs();
 
     let mut unified_tools: Vec<Tool> = crate::tool_defs::unified_tool_defs();
     unified_tools.sort_by_key(|t| t.name.clone());

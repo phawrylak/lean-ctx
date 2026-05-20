@@ -325,17 +325,5 @@ fn uninstall_systemd(quiet: bool) {
 }
 
 fn find_binary() -> String {
-    std::env::current_exe().map_or_else(
-        |_| which_lean_ctx().unwrap_or_default(),
-        |p| p.to_string_lossy().to_string(),
-    )
-}
-
-fn which_lean_ctx() -> Option<String> {
-    std::process::Command::new("which")
-        .arg("lean-ctx")
-        .output()
-        .ok()
-        .filter(|o| o.status.success())
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+    crate::core::portable_binary::resolve_portable_binary()
 }

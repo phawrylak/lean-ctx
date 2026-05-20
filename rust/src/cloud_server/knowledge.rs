@@ -19,10 +19,10 @@ pub(super) struct IncomingEntry {
     pub category: String,
     pub key: String,
     pub value: String,
-    #[allow(dead_code)]
-    pub updated_by: Option<String>,
-    #[allow(dead_code)]
-    pub updated_at: Option<String>,
+    #[serde(rename = "updated_by")]
+    pub _updated_by: Option<String>,
+    #[serde(rename = "updated_at")]
+    pub _updated_at: Option<String>,
 }
 
 #[derive(Serialize)]

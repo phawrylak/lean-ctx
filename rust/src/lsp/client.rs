@@ -58,16 +58,16 @@ struct JsonRpcRequest {
 
 #[derive(Deserialize)]
 struct JsonRpcResponse {
-    #[allow(dead_code)]
-    id: Option<i64>,
+    #[serde(rename = "id")]
+    _id: Option<i64>,
     result: Option<Value>,
     error: Option<JsonRpcError>,
 }
 
 #[derive(Deserialize)]
 struct JsonRpcError {
-    #[allow(dead_code)]
-    code: i64,
+    #[serde(rename = "code")]
+    _code: i64,
     message: String,
 }
 

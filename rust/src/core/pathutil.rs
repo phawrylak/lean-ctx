@@ -15,6 +15,39 @@ pub fn safe_canonicalize_or_self(path: &Path) -> PathBuf {
     safe_canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
 }
 
+/// Canonicalize with a timeout guard. On Windows, `std::fs::canonicalize` can hang
+/// indefinitely on cloud-synced paths, reparse points, or network drives.
+/// Falls back to the original path if canonicalize doesn't complete within the timeout.
+pub fn safe_canonicalize_bounded(path: &Path, timeout_ms: u64) -> PathBuf {
+    #[cfg(windows)]
+    {
+        let path_owned = path.to_path_buf();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let _ = std::thread::Builder::new()
+            .name("canonicalize-bounded".into())
+            .spawn(move || {
+                let result = safe_canonicalize(&path_owned).unwrap_or_else(|_| path_owned);
+                let _ = tx.send(result);
+            });
+        match rx.recv_timeout(std::time::Duration::from_millis(timeout_ms)) {
+            Ok(canonical) => canonical,
+            Err(_) => {
+                tracing::debug!(
+                    "canonicalize timed out ({}ms) for {}; using original path",
+                    timeout_ms,
+                    path.display()
+                );
+                path.to_path_buf()
+            }
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = timeout_ms;
+        safe_canonicalize_or_self(path)
+    }
+}
+
 /// Remove the `\\?\` / `//?/` verbatim prefix from a `PathBuf`.
 /// Handles both regular verbatim (`\\?\C:\...`) and UNC verbatim (`\\?\UNC\...`).
 pub fn strip_verbatim(path: PathBuf) -> PathBuf {

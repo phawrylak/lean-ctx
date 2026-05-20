@@ -2,7 +2,8 @@ use std::path::PathBuf;
 
 #[test]
 fn docs_tool_counts_match_manifest() {
-    let expected_granular = lean_ctx::tool_defs::granular_tool_defs().len();
+    let registry = lean_ctx::server::registry::build_registry();
+    let expected_granular = registry.len();
     let expected_unified = lean_ctx::tool_defs::unified_tool_defs().len();
 
     let rust_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -21,7 +22,7 @@ fn docs_tool_counts_match_manifest() {
         (
             "rust/README.md",
             vec![
-                format!("{}+ MCP tools", expected_granular),
+                format!("{} MCP tools", expected_granular),
                 format!("## {}+ MCP Tools", expected_granular),
             ],
         ),
@@ -29,7 +30,7 @@ fn docs_tool_counts_match_manifest() {
 
     // Approximate-count files use "N+" format (marketing docs)
     let approx_checks: Vec<(&str, &str)> = vec![
-        ("README.md", "tools"),
+        ("README.md", "MCP tools"),
         ("ARCHITECTURE.md", "tools"),
         ("VISION.md", "MCP tools"),
         ("skills/lean-ctx/SKILL.md", "MCP tools"),

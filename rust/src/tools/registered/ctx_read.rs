@@ -97,7 +97,19 @@ impl CtxReadTool {
             .ok_or_else(|| ErrorData::internal_error("cache not available", None))?;
 
         let current_task = {
-            let session = session_lock.blocking_read();
+            let Ok(session) = tokio::task::block_in_place(|| {
+                let rt = tokio::runtime::Handle::current();
+                rt.block_on(tokio::time::timeout(
+                    std::time::Duration::from_secs(5),
+                    session_lock.read(),
+                ))
+            }) else {
+                tracing::warn!("session read-lock timeout (5s) in ctx_read for {path}");
+                return Err(ErrorData::internal_error(
+                    "session lock timeout — another tool may be holding it. Retry in a moment.",
+                    None,
+                ));
+            };
             session.task.as_ref().map(|t| t.description.clone())
         };
         let task_ref = current_task.as_deref();
@@ -122,6 +134,10 @@ impl CtxReadTool {
         };
 
         let mut fresh = get_bool(args, "fresh").unwrap_or(false);
+        let cache_policy = crate::server::compaction_sync::effective_cache_policy();
+        if cache_policy == "off" {
+            fresh = true;
+        }
         let start_line = get_int(args, "start_line");
         if let Some(sl) = start_line {
             let sl = sl.max(1_i64);
@@ -135,10 +151,10 @@ impl CtxReadTool {
         }
 
         let pressure_action = ctx.pressure_snapshot.as_ref().map(|p| &p.recommendation);
-        let resolved_agent_id = ctx
-            .agent_id
-            .as_ref()
-            .and_then(|a| a.blocking_read().clone());
+        let resolved_agent_id = ctx.agent_id.as_ref().and_then(|a| match a.try_read() {
+            Ok(guard) => guard.clone(),
+            Err(_) => None,
+        });
         let gate_result = crate::server::context_gate::pre_dispatch_read_for_agent(
             path,
             &mode,
@@ -183,6 +199,16 @@ impl CtxReadTool {
                         cap
                     );
                     return Err(ErrorData::invalid_params(msg, None));
+                }
+            }
+        }
+
+        // Compaction-aware: if host compacted since last check, reset delivery flags
+        // so post-compaction reads deliver full content instead of stubs.
+        if !fresh {
+            if let Ok(data_dir) = crate::core::data_dir::lean_ctx_data_dir() {
+                if let Ok(mut cache) = cache_lock.try_write() {
+                    crate::server::compaction_sync::sync_if_compacted(&mut cache, &data_dir);
                 }
             }
         }
@@ -337,41 +363,54 @@ impl CtxReadTool {
         let output_tokens = crate::core::tokens::count_tokens(&output);
         let saved = original.saturating_sub(output_tokens);
 
-        // Session updates (short lock)
+        // Session updates (bounded lock — 5s timeout prevents deadlock on Windows)
         let mut ensured_root: Option<String> = None;
         let project_root_snapshot;
         {
-            let mut session = session_lock.blocking_write();
-            session.touch_file(path, file_ref.as_deref(), &resolved_mode, original);
-            if is_cache_hit {
-                session.record_cache_hit();
-            }
-            if session.active_structured_intent.is_none() && session.files_touched.len() >= 2 {
-                let touched: Vec<String> = session
-                    .files_touched
-                    .iter()
-                    .map(|f| f.path.clone())
-                    .collect();
-                let inferred =
-                    crate::core::intent_engine::StructuredIntent::from_file_patterns(&touched);
-                if inferred.confidence >= 0.4 {
-                    session.active_structured_intent = Some(inferred);
+            let session_guard = tokio::task::block_in_place(|| {
+                let rt = tokio::runtime::Handle::current();
+                rt.block_on(tokio::time::timeout(
+                    std::time::Duration::from_secs(5),
+                    session_lock.write(),
+                ))
+            });
+            if let Ok(mut session) = session_guard {
+                session.touch_file(path, file_ref.as_deref(), &resolved_mode, original);
+                if is_cache_hit {
+                    session.record_cache_hit();
                 }
-            }
-            let root_missing = session
-                .project_root
-                .as_deref()
-                .is_none_or(|r| r.trim().is_empty());
-            if root_missing {
-                if let Some(root) = crate::core::protocol::detect_project_root(path) {
-                    session.project_root = Some(root.clone());
-                    ensured_root = Some(root);
+                if session.active_structured_intent.is_none() && session.files_touched.len() >= 2 {
+                    let touched: Vec<String> = session
+                        .files_touched
+                        .iter()
+                        .map(|f| f.path.clone())
+                        .collect();
+                    let inferred =
+                        crate::core::intent_engine::StructuredIntent::from_file_patterns(&touched);
+                    if inferred.confidence >= 0.4 {
+                        session.active_structured_intent = Some(inferred);
+                    }
                 }
+                let root_missing = session
+                    .project_root
+                    .as_deref()
+                    .is_none_or(|r| r.trim().is_empty());
+                if root_missing {
+                    if let Some(root) = crate::core::protocol::detect_project_root(path) {
+                        session.project_root = Some(root.clone());
+                        ensured_root = Some(root);
+                    }
+                }
+                project_root_snapshot = session
+                    .project_root
+                    .clone()
+                    .unwrap_or_else(|| ".".to_string());
+            } else {
+                tracing::warn!(
+                    "session write-lock timeout (5s) in ctx_read post-update for {path}"
+                );
+                project_root_snapshot = ctx.project_root.clone();
             }
-            project_root_snapshot = session
-                .project_root
-                .clone()
-                .unwrap_or_else(|| ".".to_string());
         }
 
         if let Some(root) = ensured_root.as_deref() {

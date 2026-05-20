@@ -284,15 +284,14 @@ async fn v1_shutdown() -> impl IntoResponse {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-#[allow(dead_code)]
 struct ToolCallBody {
     name: String,
     #[serde(default)]
     arguments: Option<Value>,
     #[serde(default)]
-    workspace_id: Option<String>,
+    _workspace_id: Option<String>,
     #[serde(default)]
-    channel_id: Option<String>,
+    _channel_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]

@@ -945,10 +945,7 @@ fn spawn_index_build_background(root: &std::path::Path) {
         return;
     }
 
-    let binary = std::env::current_exe().map_or_else(
-        |_| resolve_portable_binary(),
-        |p| p.to_string_lossy().to_string(),
-    );
+    let binary = resolve_portable_binary();
 
     #[cfg(unix)]
     {

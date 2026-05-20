@@ -32,7 +32,7 @@ pub struct CommunityResult {
 
 struct AdjGraph {
     node_ids: Vec<String>,
-    #[allow(dead_code)]
+    #[cfg_attr(not(test), allow(dead_code))]
     node_to_idx: HashMap<String, usize>,
     adj: Vec<Vec<(usize, f64)>>,
     total_weight: f64,

@@ -540,6 +540,27 @@ impl SessionCache {
         }
     }
 
+    /// Resets `full_content_delivered` for all entries without removing them.
+    /// Used after host context compaction — forces re-delivery on next read
+    /// while preserving compressed content and file refs.
+    pub fn reset_delivery_flags(&mut self) -> usize {
+        let mut count = 0;
+        for entry in self.entries.values_mut() {
+            if entry.full_content_delivered {
+                entry.full_content_delivered = false;
+                count += 1;
+            }
+        }
+        count
+    }
+
+    /// Returns whether full content was previously delivered for this path.
+    pub fn is_full_delivered(&self, path: &str) -> bool {
+        self.entries
+            .get(&normalize_key(path))
+            .is_some_and(|e| e.full_content_delivered)
+    }
+
     /// Clears all cached entries, file refs, and resets stats. Returns the number of entries removed.
     pub fn clear(&mut self) -> usize {
         let count = self.entries.len();

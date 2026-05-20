@@ -6,11 +6,9 @@ const BOUNCE_RATE_THRESHOLD: f64 = 0.30;
 
 #[derive(Debug, Clone)]
 struct ReadEvent {
-    #[allow(dead_code)]
-    mode: String,
+    _mode: String,
     tokens_sent: usize,
-    #[allow(dead_code)]
-    original_tokens: usize,
+    _original_tokens: usize,
     seq: u64,
     was_compressed: bool,
 }
@@ -74,9 +72,9 @@ impl BounceTracker {
 
         let events = self.recent_reads.entry(norm).or_default();
         events.push(ReadEvent {
-            mode: mode.to_string(),
+            _mode: mode.to_string(),
             tokens_sent,
-            original_tokens,
+            _original_tokens: original_tokens,
             seq,
             was_compressed: compressed,
         });

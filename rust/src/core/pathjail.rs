@@ -56,7 +56,7 @@ fn is_under_prefix(path: &Path, prefix: &Path) -> bool {
 }
 
 pub fn canonicalize_or_self(path: &Path) -> PathBuf {
-    super::pathutil::safe_canonicalize_or_self(path)
+    super::pathutil::safe_canonicalize_bounded(path, 2000)
 }
 
 fn canonicalize_existing_ancestor(path: &Path) -> Option<(PathBuf, Vec<std::ffi::OsString>)> {

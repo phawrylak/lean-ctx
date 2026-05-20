@@ -5,7 +5,15 @@ use crate::{
 use anyhow::Result;
 
 pub fn run() {
-    let args: Vec<String> = std::env::args().collect();
+    let mut args: Vec<String> = std::env::args().collect();
+
+    // On Linux, if the binary was replaced while running, systemd may write
+    // the path with " (deleted)" suffix into ExecStart, causing "(deleted)"
+    // to appear as an argument. Strip it defensively.
+    if args.get(1).is_some_and(|a| a == "(deleted)") {
+        args.remove(1);
+    }
+
     let enters_mcp = args.len() == 1 || args.get(1).is_some_and(|a| a == "mcp");
     if !enters_mcp {
         crate::core::logging::init_logging();
@@ -1519,7 +1527,7 @@ fn print_help() {
     println!(
         "lean-ctx {version} — Context Runtime for AI Agents
 
-60+ compression patterns | 51 MCP tools | 10 read modes | Context Continuity Protocol
+60+ compression patterns | 61 MCP tools | 10 read modes | Context Continuity Protocol
 
 USAGE:
     lean-ctx                       Start MCP server (stdio)
@@ -1962,10 +1970,7 @@ fn spawn_proxy_if_needed() {
         return;
     }
 
-    let binary = std::env::current_exe().map_or_else(
-        |_| "lean-ctx".to_string(),
-        |p| p.to_string_lossy().to_string(),
-    );
+    let binary = core::portable_binary::resolve_portable_binary();
 
     match std::process::Command::new(&binary)
         .args(["proxy", "start", &format!("--port={port}")])

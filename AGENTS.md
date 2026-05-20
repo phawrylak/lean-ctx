@@ -5,7 +5,7 @@ lean-ctx optimizes LLM context by compressing file reads, shell output, and sear
 ## Integration Mode: Hybrid
 
 - **Reads/Search** → MCP tools (`ctx_read`, `ctx_search`) for caching + compression
-- **Shell commands** → CLI hooks rewrite to `lean-ctx -c "…"` for pattern compression
+- **Shell commands** → `lean-ctx -c "…"` via CLI (preferred) or `ctx_shell` via MCP (both work)
 - **File editing** → native Edit/StrReplace (lean-ctx only handles READ operations)
 
 ## MCP tools (use for reads)
@@ -14,8 +14,9 @@ lean-ctx optimizes LLM context by compressing file reads, shell output, and sear
 |------|---------|
 | `ctx_read(path, mode)` | Cached, compressed file reads (10 modes) |
 | `ctx_search(pattern, path)` | Token-efficient code search |
+| `ctx_shell(command)` | Compressed shell output (alternative to CLI) |
 
-## CLI commands (use for shell)
+## CLI commands (optimized shell, lower overhead)
 
 ```bash
 lean-ctx -c "git status"     # compressed shell output

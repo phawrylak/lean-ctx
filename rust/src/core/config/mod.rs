@@ -419,6 +419,12 @@ pub struct Config {
     /// Override via LEAN_CTX_BYPASS_HINTS env var.
     #[serde(default)]
     pub bypass_hints: Option<String>,
+    /// Cache policy for ctx_read. Controls behavior on cache hits.
+    /// Values: "aggressive" (default, 13-tok stubs + compaction-aware reset),
+    /// "safe" (delivers map instead of stub), "off" (no caching, always disk read).
+    /// Override via LEAN_CTX_CACHE_POLICY env var.
+    #[serde(default)]
+    pub cache_policy: Option<String>,
     /// Cross-project boundary policy.
     /// Controls whether cross-project search/import is allowed and whether access is audited.
     #[serde(default)]
@@ -765,6 +771,7 @@ impl Default for Config {
             model_context_windows: HashMap::new(),
             response_verbosity: ResponseVerbosity::default(),
             bypass_hints: None,
+            cache_policy: None,
             boundary_policy: crate::core::memory_boundary::BoundaryPolicy::default(),
             secret_detection: SecretDetectionConfig::default(),
             allow_auto_reroot: false,
@@ -1081,6 +1088,13 @@ impl Config {
     }
 
     fn find_project_root() -> Option<String> {
+        static ROOT_CACHE: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+        ROOT_CACHE
+            .get_or_init(Self::find_project_root_inner)
+            .clone()
+    }
+
+    fn find_project_root_inner() -> Option<String> {
         if let Ok(env_root) = std::env::var("LEAN_CTX_PROJECT_ROOT") {
             if !env_root.is_empty() {
                 return Some(env_root);

@@ -73,9 +73,11 @@ pub fn read_file_lossy(path: &str) -> Result<String, std::io::Error> {
         return Err(std::io::Error::other(msg));
     }
 
-    if let Ok(canonical) = std::path::Path::new(path).canonicalize() {
+    {
+        let canonical =
+            crate::core::pathutil::safe_canonicalize_bounded(std::path::Path::new(path), 2000);
         if let Ok(cwd) = std::env::current_dir() {
-            let root = crate::core::pathjail::canonicalize_or_self(&cwd);
+            let root = crate::core::pathutil::safe_canonicalize_bounded(&cwd, 2000);
             if !canonical.starts_with(&root) {
                 let allow = crate::core::pathjail::allow_paths_from_env_and_config();
                 let data_dir_ok = crate::core::data_dir::lean_ctx_data_dir()
@@ -142,7 +144,7 @@ fn open_nofollow(path: &str) -> Result<std::fs::File, std::io::Error> {
     // directory symlinks (e.g., /tmp → /private/tmp on macOS).
     if let (Some(parent), Some(filename)) = (p.parent(), p.file_name()) {
         if parent.exists() {
-            let canonical_parent = parent.canonicalize()?;
+            let canonical_parent = crate::core::pathutil::safe_canonicalize_bounded(parent, 2000);
             let canonical_path = canonical_parent.join(filename);
             return std::fs::OpenOptions::new()
                 .read(true)
@@ -349,8 +351,16 @@ fn handle_with_options_inner(
         cache_snapshot
     {
         if mode == "full" {
-            // Fast mtime check: if file unchanged on disk, skip re-reading entirely.
-            if !crate::core::cache::is_cache_entry_stale(path, cached_mtime) {
+            // Fast mtime check: if file unchanged on disk AND full content was previously
+            // delivered, return a minimal stub. After host compaction, delivery flags are
+            // reset so the agent gets full content again automatically.
+            // "safe" policy never returns stubs — always delivers content.
+            let policy_allows_stub =
+                crate::server::compaction_sync::effective_cache_policy() != "safe";
+            if policy_allows_stub
+                && !crate::core::cache::is_cache_entry_stale(path, cached_mtime)
+                && cache.is_full_delivered(path)
+            {
                 cache.record_cache_hit(path);
                 let out = if crate::core::protocol::meta_visible() {
                     format!(
@@ -730,7 +740,8 @@ fn handle_full_with_auto_delta(
     let store_result = cache.store(path, &disk_content);
 
     if store_result.was_hit {
-        if store_result.full_content_delivered {
+        let policy_allows_stub = crate::server::compaction_sync::effective_cache_policy() != "safe";
+        if policy_allows_stub && store_result.full_content_delivered {
             let out = if crate::core::protocol::meta_visible() {
                 format!(
                     "{file_ref}={short} [unchanged, {}L, use cached context]\nFile unchanged on disk (same hash). If you haven't seen this content, use fresh=true to force re-read.",
