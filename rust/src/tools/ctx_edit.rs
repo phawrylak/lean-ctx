@@ -427,7 +427,7 @@ pub fn handle(cache: &mut SessionCache, params: &EditParams) -> String {
     }
 
     let preview = if old_str.len() > 80 {
-        format!("{}...", &old_str[..77])
+        format!("{}...", &old_str[..old_str.floor_char_boundary(77)])
     } else {
         old_str.clone()
     };

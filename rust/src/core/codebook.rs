@@ -124,7 +124,10 @@ impl Codebook {
         for entry in &self.entries {
             if refs_used.contains(&entry.id) {
                 let short = if entry.pattern.len() > 60 {
-                    format!("{}...", &entry.pattern[..57])
+                    format!(
+                        "{}...",
+                        &entry.pattern[..entry.pattern.floor_char_boundary(57)]
+                    )
                 } else {
                     entry.pattern.clone()
                 };

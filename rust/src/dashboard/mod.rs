@@ -68,7 +68,11 @@ pub async fn start(port: Option<u16>, host: Option<String>) {
 
     if let Some(t) = token.as_ref() {
         let masked = if t.len() > 12 {
-            format!("{}…{}", &t[..8], &t[t.len() - 4..])
+            format!(
+                "{}…{}",
+                &t[..t.floor_char_boundary(8)],
+                &t[t.ceil_char_boundary(t.len().saturating_sub(4))..]
+            )
         } else {
             t.to_string()
         };

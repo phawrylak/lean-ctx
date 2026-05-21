@@ -331,7 +331,7 @@ fn get_routes(path: &str, _query_str: &str) -> Option<(&'static str, &'static st
                                 }
                                 let tokens = text.len() / 4;
                                 let capped = if text.len() > 50000 {
-                                    format!("{}…", &text[..50000])
+                                    format!("{}…", &text[..text.floor_char_boundary(50000)])
                                 } else {
                                     text
                                 };

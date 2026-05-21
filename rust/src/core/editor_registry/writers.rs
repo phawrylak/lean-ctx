@@ -1752,8 +1752,7 @@ fn remove_lean_ctx_augment_vscode_server(
     let before = arr.len();
     arr.retain(|entry| {
         let name_match = entry.get("name").and_then(|n| n.as_str()) == Some("lean-ctx");
-        let id_match =
-            entry.get("id").and_then(|i| i.as_str()) == Some(LEAN_CTX_AUGMENT_VSCODE_ID);
+        let id_match = entry.get("id").and_then(|i| i.as_str()) == Some(LEAN_CTX_AUGMENT_VSCODE_ID);
         !(name_match || id_match)
     });
     if arr.len() == before {

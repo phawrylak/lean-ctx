@@ -183,8 +183,7 @@ pub fn augment_cli_settings_path(home: &Path) -> PathBuf {
 /// user's home, so we honour that when the env var is set; we fall back to
 /// the home-relative path for tests and unusual setups.
 pub fn augment_vscode_mcp_path(home: &Path) -> PathBuf {
-    const TAIL: &str =
-        "globalStorage/augment.vscode-augment/augment-global-state/mcpServers.json";
+    const TAIL: &str = "globalStorage/augment.vscode-augment/augment-global-state/mcpServers.json";
 
     #[cfg(target_os = "macos")]
     {

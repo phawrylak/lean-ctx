@@ -2,7 +2,7 @@ use crate::core::knowledge::ProjectKnowledge;
 use crate::core::memory_policy::MemoryPolicy;
 use crate::core::property_graph::{CodeGraph, Edge, EdgeKind, Node, NodeKind};
 
-use super::content::{GraphLayer, KnowledgeLayer, PackageContent};
+use super::content::{GraphLayer, KnowledgeLayer, PackageContent, SessionLayer};
 use super::manifest::PackageManifest;
 
 #[derive(Debug, Clone, Default)]
@@ -12,9 +12,12 @@ pub struct LoadReport {
     pub knowledge_facts_merged: u32,
     pub knowledge_facts_skipped: u32,
     pub knowledge_patterns_merged: u32,
+    pub knowledge_insights_merged: u32,
     pub graph_nodes_imported: u32,
     pub graph_edges_imported: u32,
     pub gotchas_imported: u32,
+    pub session_findings_merged: u32,
+    pub session_decisions_merged: u32,
     pub warnings: Vec<String>,
 }
 
@@ -39,6 +42,13 @@ impl std::fmt::Display for LoadReport {
                 self.knowledge_patterns_merged
             )?;
         }
+        if self.knowledge_insights_merged > 0 {
+            writeln!(
+                f,
+                "  Insights:  {} imported",
+                self.knowledge_insights_merged
+            )?;
+        }
         if self.graph_nodes_imported > 0 || self.graph_edges_imported > 0 {
             writeln!(
                 f,
@@ -48,6 +58,13 @@ impl std::fmt::Display for LoadReport {
         }
         if self.gotchas_imported > 0 {
             writeln!(f, "  Gotchas:   {} imported", self.gotchas_imported)?;
+        }
+        if self.session_findings_merged > 0 || self.session_decisions_merged > 0 {
+            writeln!(
+                f,
+                "  Session:   {} findings, {} decisions imported",
+                self.session_findings_merged, self.session_decisions_merged
+            )?;
         }
         for w in &self.warnings {
             writeln!(f, "  WARNING: {w}")?;
@@ -68,15 +85,25 @@ pub fn load_package(
     };
 
     if let Some(ref kl) = content.knowledge {
-        merge_knowledge(kl, project_root, manifest, &mut report)?;
+        if let Err(e) = merge_knowledge(kl, project_root, manifest, &mut report) {
+            report
+                .warnings
+                .push(format!("knowledge import failed: {e}"));
+        }
     }
 
     if let Some(ref gl) = content.graph {
-        import_graph(gl, project_root, &mut report)?;
+        if let Err(e) = import_graph(gl, project_root, &mut report) {
+            report.warnings.push(format!("graph import failed: {e}"));
+        }
     }
 
     if let Some(ref gotchas) = content.gotchas {
         import_gotchas(gotchas, project_root, &mut report);
+    }
+
+    if let Some(ref session) = content.session {
+        import_session(session, project_root, manifest, &mut report);
     }
 
     Ok(report)
@@ -128,6 +155,18 @@ fn merge_knowledge(
         }
     }
 
+    for insight in &layer.insights {
+        let exists = knowledge
+            .history
+            .iter()
+            .any(|h| h.summary == insight.summary);
+
+        if !exists {
+            knowledge.history.push(insight.clone());
+            report.knowledge_insights_merged += 1;
+        }
+    }
+
     knowledge.save()?;
     Ok(())
 }
@@ -161,35 +200,65 @@ fn import_graph(
     }
 
     for edge_export in &layer.edges {
-        let source = graph
-            .get_node_by_path(&edge_export.source_path)
-            .map_err(|e| e.to_string())?;
-        let target = graph
-            .get_node_by_path(&edge_export.target_path)
-            .map_err(|e| e.to_string())?;
+        let source = find_node_for_edge(&graph, &edge_export.source_path, &edge_export.source_name);
+        let target = find_node_for_edge(&graph, &edge_export.target_path, &edge_export.target_name);
 
-        if let (Some(src), Some(tgt)) = (source, target) {
-            let edge = Edge {
-                id: None,
-                source_id: src.id.unwrap_or(0),
-                target_id: tgt.id.unwrap_or(0),
-                kind: EdgeKind::parse(&edge_export.kind),
-                metadata: edge_export.metadata.clone(),
-            };
-
-            match graph.upsert_edge(&edge) {
-                Ok(()) => report.graph_edges_imported += 1,
-                Err(e) => {
+        match (source, target) {
+            (Some(src), Some(tgt)) => {
+                let Some(src_id) = src.id else {
                     report.warnings.push(format!(
-                        "edge import failed ({} -> {}): {e}",
-                        edge_export.source_name, edge_export.target_name
+                        "edge skipped: source node has no id ({}:{})",
+                        edge_export.source_path, edge_export.source_name
                     ));
+                    continue;
+                };
+                let Some(tgt_id) = tgt.id else {
+                    report.warnings.push(format!(
+                        "edge skipped: target node has no id ({}:{})",
+                        edge_export.target_path, edge_export.target_name
+                    ));
+                    continue;
+                };
+
+                let edge = Edge {
+                    id: None,
+                    source_id: src_id,
+                    target_id: tgt_id,
+                    kind: EdgeKind::parse(&edge_export.kind),
+                    metadata: edge_export.metadata.clone(),
+                };
+
+                match graph.upsert_edge(&edge) {
+                    Ok(()) => report.graph_edges_imported += 1,
+                    Err(e) => {
+                        report.warnings.push(format!(
+                            "edge import failed ({} -> {}): {e}",
+                            edge_export.source_name, edge_export.target_name
+                        ));
+                    }
                 }
+            }
+            _ => {
+                report.warnings.push(format!(
+                    "edge skipped: node not found ({} -> {})",
+                    edge_export.source_name, edge_export.target_name
+                ));
             }
         }
     }
 
     Ok(())
+}
+
+/// Find a node by symbol name+path first, then fall back to path-only lookup.
+fn find_node_for_edge(graph: &CodeGraph, file_path: &str, name: &str) -> Option<Node> {
+    if let Ok(Some(node)) = graph.get_node_by_symbol(name, file_path) {
+        return Some(node);
+    }
+    if let Ok(Some(node)) = graph.get_node_by_path(file_path) {
+        return Some(node);
+    }
+    None
 }
 
 fn import_gotchas(
@@ -235,5 +304,68 @@ fn import_gotchas(
     }
 
     report.gotchas_imported = (store.gotchas.len() - before) as u32;
-    let _ = store.save(project_root);
+    if let Err(e) = store.save(project_root) {
+        report.warnings.push(format!("gotcha save failed: {e}"));
+    }
+}
+
+fn import_session(
+    layer: &SessionLayer,
+    project_root: &str,
+    manifest: &PackageManifest,
+    report: &mut LoadReport,
+) {
+    let mut knowledge = ProjectKnowledge::load_or_create(project_root);
+    let policy = MemoryPolicy::default();
+    let source_tag = format!("{}@{} (session)", manifest.name, manifest.version);
+
+    for finding in &layer.findings {
+        let key = finding.file.as_deref().unwrap_or("general");
+        let exists = knowledge
+            .facts
+            .iter()
+            .any(|f| f.category == "session_finding" && f.value == finding.summary);
+        if !exists {
+            knowledge.remember(
+                "session_finding",
+                key,
+                &finding.summary,
+                &source_tag,
+                0.6,
+                &policy,
+            );
+            report.session_findings_merged += 1;
+        }
+    }
+
+    for decision in &layer.decisions {
+        let value = if let Some(ref rationale) = decision.rationale {
+            format!("{} (rationale: {})", decision.summary, rationale)
+        } else {
+            decision.summary.clone()
+        };
+        let exists = knowledge
+            .facts
+            .iter()
+            .any(|f| f.category == "session_decision" && f.value == decision.summary);
+        if !exists {
+            knowledge.remember(
+                "session_decision",
+                "decision",
+                &value,
+                &source_tag,
+                0.7,
+                &policy,
+            );
+            report.session_decisions_merged += 1;
+        }
+    }
+
+    if report.session_findings_merged > 0 || report.session_decisions_merged > 0 {
+        if let Err(e) = knowledge.save() {
+            report
+                .warnings
+                .push(format!("session knowledge save failed: {e}"));
+        }
+    }
 }

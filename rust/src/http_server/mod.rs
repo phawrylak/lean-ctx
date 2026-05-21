@@ -585,8 +585,9 @@ async fn v1_a2a_handoff(
             let _ = std::fs::create_dir_all(&dir);
             evict_oldest_files(&dir, MAX_HANDOFF_FILES);
             let out = dir.join(format!(
-                "ctx-{}.lctxpkg",
-                chrono::Utc::now().format("%Y%m%d_%H%M%S")
+                "ctx-{}.{}",
+                chrono::Utc::now().format("%Y%m%d_%H%M%S"),
+                crate::core::contracts::PACKAGE_EXTENSION
             ));
             if let Err(e) = std::fs::write(&out, &envelope.payload_json) {
                 tracing::error!("a2a handoff write failed: {e}");

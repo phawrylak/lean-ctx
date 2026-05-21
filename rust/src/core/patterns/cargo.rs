@@ -123,7 +123,11 @@ fn compress_test(output: &str) -> String {
                 .strip_prefix("test ")
                 .and_then(|s| s.strip_suffix(" ... ok"))
             {
-                let short_name = if name.len() > 50 { &name[..50] } else { name };
+                let short_name = if name.len() > 50 {
+                    &name[..name.floor_char_boundary(50)]
+                } else {
+                    name
+                };
                 passed_tests.push(short_name.to_string());
             }
         }

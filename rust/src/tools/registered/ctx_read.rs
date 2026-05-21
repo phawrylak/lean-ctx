@@ -188,8 +188,8 @@ impl CtxReadTool {
             mode = overridden;
         }
 
-        let mode = if crate::tools::ctx_read::is_instruction_file(path) {
-            "full".to_string()
+        let (mode, degrade_warning) = if crate::tools::ctx_read::is_instruction_file(path) {
+            ("full".to_string(), None)
         } else {
             auto_degrade_read_mode(&mode)
         };
@@ -504,8 +504,15 @@ impl CtxReadTool {
             }
         };
 
-        let final_output = if let Some(ref warning) = budget_warning {
-            format!("{output}{hints_suffix}\n\n{warning}")
+        let mut warnings = Vec::new();
+        if let Some(ref w) = budget_warning {
+            warnings.push(w.as_str());
+        }
+        if let Some(ref w) = degrade_warning {
+            warnings.push(w.as_str());
+        }
+        let final_output = if !warnings.is_empty() {
+            format!("{output}{hints_suffix}\n\n{}", warnings.join("\n"))
         } else if hints_suffix.is_empty() {
             output
         } else {
@@ -523,25 +530,41 @@ impl CtxReadTool {
     }
 }
 
-fn auto_degrade_read_mode(mode: &str) -> String {
+fn auto_degrade_read_mode(mode: &str) -> (String, Option<String>) {
     use crate::core::degradation_policy::DegradationVerdictV1;
     let profile = crate::core::profiles::active_profile();
     if !profile.degradation.enforce_effective() {
-        return mode.to_string();
+        return (mode.to_string(), None);
     }
     let policy = crate::core::degradation_policy::evaluate_v1_for_tool("ctx_read", None);
-    match policy.decision.verdict {
-        DegradationVerdictV1::Ok => mode.to_string(),
+    let (new_mode, degraded) = match policy.decision.verdict {
+        DegradationVerdictV1::Ok => (mode.to_string(), false),
         DegradationVerdictV1::Warn => match mode {
-            "full" => "map".to_string(),
-            other => other.to_string(),
+            "full" => ("map".to_string(), true),
+            other => (other.to_string(), false),
         },
         DegradationVerdictV1::Throttle => match mode {
-            "full" | "map" => "signatures".to_string(),
-            other => other.to_string(),
+            "full" | "map" => ("signatures".to_string(), true),
+            other => (other.to_string(), false),
         },
-        DegradationVerdictV1::Block => "signatures".to_string(),
-    }
+        DegradationVerdictV1::Block => {
+            if mode == "signatures" {
+                ("signatures".to_string(), false)
+            } else {
+                ("signatures".to_string(), true)
+            }
+        }
+    };
+    let warning = if degraded {
+        Some(format!(
+            "⚠ Context pressure: mode={mode} was downgraded to mode={new_mode} \
+             (verdict: {:?}). Use start_line=1 to bypass, or run ctx_compress to free budget.",
+            policy.decision.verdict
+        ))
+    } else {
+        None
+    };
+    (new_mode, warning)
 }
 
 #[cfg(test)]

@@ -1,9 +1,104 @@
-use std::io::{self, IsTerminal, Write};
-use std::process::{Command, Stdio};
+use std::io::{self, IsTerminal, Read, Write};
+use std::process::{Child, Command, Output, Stdio};
 
 use crate::core::config;
 use crate::core::slow_log;
 use crate::core::tokens::count_tokens;
+
+/// Wait for a child process with output-size and time limits.
+/// Kills the process if either limit is exceeded, returning what was
+/// captured so far. Prevents unbounded memory growth on commands that
+/// produce massive output (e.g. `rg -i "pattern"` over a large tree).
+fn wait_with_limits(mut child: Child, max_bytes: usize, timeout: std::time::Duration) -> Output {
+    let stdout_pipe = child.stdout.take();
+    let stderr_pipe = child.stderr.take();
+    let start = std::time::Instant::now();
+
+    let stdout_handle = std::thread::spawn(move || {
+        let Some(mut pipe) = stdout_pipe else {
+            return (Vec::new(), false);
+        };
+        let mut buf = Vec::with_capacity(max_bytes.min(64 * 1024));
+        let mut chunk = [0u8; 8192];
+        loop {
+            match pipe.read(&mut chunk) {
+                Ok(0) => break,
+                Ok(n) => {
+                    if buf.len() + n > max_bytes {
+                        let remaining = max_bytes.saturating_sub(buf.len());
+                        buf.extend_from_slice(&chunk[..remaining]);
+                        return (buf, true);
+                    }
+                    buf.extend_from_slice(&chunk[..n]);
+                }
+                Err(ref e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+                Err(_) => break,
+            }
+        }
+        (buf, false)
+    });
+
+    let stderr_handle = std::thread::spawn(move || {
+        let Some(mut pipe) = stderr_pipe else {
+            return Vec::new();
+        };
+        let mut buf = Vec::new();
+        let mut chunk = [0u8; 4096];
+        const STDERR_LIMIT: usize = 512 * 1024;
+        loop {
+            match pipe.read(&mut chunk) {
+                Ok(0) => break,
+                Ok(n) => {
+                    if buf.len() + n > STDERR_LIMIT {
+                        break;
+                    }
+                    buf.extend_from_slice(&chunk[..n]);
+                }
+                Err(ref e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+                Err(_) => break,
+            }
+        }
+        buf
+    });
+
+    let mut timed_out = false;
+    loop {
+        if start.elapsed() > timeout {
+            let _ = child.kill();
+            let _ = child.wait();
+            timed_out = true;
+            break;
+        }
+        match child.try_wait() {
+            Ok(Some(_)) | Err(_) => break,
+            Ok(None) => std::thread::sleep(std::time::Duration::from_millis(50)),
+        }
+    }
+
+    let (mut stdout_buf, stdout_truncated) = stdout_handle.join().unwrap_or_default();
+    let stderr_buf = stderr_handle.join().unwrap_or_default();
+
+    if timed_out || stdout_truncated {
+        let notice = format!(
+            "\n[lean-ctx: output truncated at {} MB / {}s limit]\n",
+            max_bytes / (1024 * 1024),
+            timeout.as_secs()
+        );
+        stdout_buf.extend_from_slice(notice.as_bytes());
+    }
+
+    let status = child.wait().unwrap_or_else(|_| {
+        std::process::Command::new("false")
+            .status()
+            .expect("cannot run `false`")
+    });
+
+    Output {
+        status,
+        stdout: stdout_buf,
+        stderr: stderr_buf,
+    }
+}
 
 /// Execute a command from pre-split argv without going through `sh -c`.
 /// Used by `-t` mode when the shell hook passes `"$@"` — arguments are
@@ -194,17 +289,10 @@ fn exec_buffered(command: &str, shell: &str, shell_flag: &str, cfg: &config::Con
         }
     };
 
-    let output = match child.wait_with_output() {
-        Ok(o) => o,
-        Err(e) => {
-            tracing::error!("lean-ctx: failed to wait: {e}");
-            #[cfg(windows)]
-            if let Some(ref tmp) = ps_tmp_path {
-                let _ = std::fs::remove_file(tmp);
-            }
-            return 127;
-        }
-    };
+    const MAX_BUFFERED_BYTES: usize = 8 * 1024 * 1024; // 8 MB
+    const EXEC_TIMEOUT: std::time::Duration = std::time::Duration::from_mins(2);
+
+    let output = wait_with_limits(child, MAX_BUFFERED_BYTES, EXEC_TIMEOUT);
 
     let duration_ms = start.elapsed().as_millis();
     let exit_code = output.status.code().unwrap_or(1);
@@ -310,5 +398,64 @@ mod exec_tests {
         let code = super::exec_argv(&["true".to_string()]);
         std::env::remove_var("LEAN_CTX_DISABLED");
         assert_eq!(code, 0);
+    }
+
+    #[test]
+    fn wait_with_limits_captures_output() {
+        let child = std::process::Command::new("echo")
+            .arg("hello")
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+
+        let output = super::wait_with_limits(child, 1024, std::time::Duration::from_secs(5));
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            stdout.contains("hello"),
+            "expected 'hello' in output: {stdout}"
+        );
+        assert!(output.status.success());
+    }
+
+    #[test]
+    fn wait_with_limits_truncates_large_output() {
+        // Generate ~100 KB of output, limit to 1 KB
+        let child = std::process::Command::new("sh")
+            .args(["-c", "yes 'aaaa' | head -25000"])
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+
+        let output = super::wait_with_limits(child, 1024, std::time::Duration::from_secs(10));
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            stdout.contains("[lean-ctx: output truncated"),
+            "expected truncation notice, got len={}: ...{}",
+            stdout.len(),
+            &stdout[stdout.len().saturating_sub(80)..]
+        );
+    }
+
+    #[test]
+    fn wait_with_limits_timeout_kills_process() {
+        let child = std::process::Command::new("sleep")
+            .arg("60")
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+
+        let start = std::time::Instant::now();
+        let output = super::wait_with_limits(child, 1024, std::time::Duration::from_millis(200));
+        let elapsed = start.elapsed();
+
+        assert!(
+            elapsed < std::time::Duration::from_secs(3),
+            "timeout should kill quickly, took {elapsed:?}"
+        );
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(stdout.contains("[lean-ctx: output truncated"));
     }
 }

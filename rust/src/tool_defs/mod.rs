@@ -56,7 +56,11 @@ pub fn discover_tools(query: &str) -> String {
 
     let mut out = format!("{} tools matching '{query}':\n", matches.len());
     for (name, desc) in &matches {
-        let short = if desc.len() > 80 { &desc[..80] } else { desc };
+        let short = if desc.len() > 80 {
+            &desc[..desc.floor_char_boundary(80)]
+        } else {
+            desc
+        };
         out.push_str(&format!("  {name} — {short}\n"));
     }
     out.push_str(

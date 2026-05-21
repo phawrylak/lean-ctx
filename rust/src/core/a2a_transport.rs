@@ -64,23 +64,9 @@ impl TransportEnvelopeV1 {
     }
 
     pub fn sign(&mut self, secret: &[u8]) {
-        use hmac::{Hmac, Mac};
-        use sha2::Sha256;
-
-        let header = format!(
-            "{}:{}:{}:{}",
-            self.format_version,
-            self.sender.agent_id,
-            self.content_type_str(),
-            self.payload_json.len()
-        );
-        let mut mac = Hmac::<Sha256>::new_from_slice(secret).expect("HMAC accepts any key length");
-        mac.update(header.as_bytes());
-        mac.update(b"\0");
-        mac.update(self.payload_json.as_bytes());
-        let result = mac.finalize().into_bytes();
-        let mut sig = String::with_capacity(result.len() * 2);
-        for b in &result {
+        let mac_bytes = self.compute_hmac(secret);
+        let mut sig = String::with_capacity(mac_bytes.len() * 2);
+        for b in &mac_bytes {
             use std::fmt::Write;
             let _ = write!(sig, "{b:02x}");
         }
@@ -91,29 +77,54 @@ impl TransportEnvelopeV1 {
         let Some(ref sig) = self.signature else {
             return false;
         };
+
+        let expected: Vec<u8> = (0..sig.len())
+            .step_by(2)
+            .filter_map(|i| {
+                sig.get(i..i + 2)
+                    .and_then(|h| u8::from_str_radix(h, 16).ok())
+            })
+            .collect();
+        if expected.len() != sig.len() / 2 {
+            return false;
+        }
+
+        let computed = self.compute_hmac(secret);
+        constant_time_eq(&computed, &expected)
+    }
+
+    fn compute_hmac(&self, secret: &[u8]) -> Vec<u8> {
         use hmac::{Hmac, Mac};
         use sha2::Sha256;
 
+        let recipient_str = self.recipient.as_deref().unwrap_or("");
+        let mut sorted_meta: Vec<(&str, &str)> = self
+            .metadata
+            .iter()
+            .map(|(k, v)| (k.as_str(), v.as_str()))
+            .collect();
+        sorted_meta.sort_by_key(|(k, _)| *k);
+        let meta_str: String = sorted_meta
+            .iter()
+            .map(|(k, v)| format!("{k}={v}"))
+            .collect::<Vec<_>>()
+            .join(",");
+
         let header = format!(
-            "{}:{}:{}:{}",
+            "v2:{}:{}:{}:{}:{}:{}:{}",
             self.format_version,
             self.sender.agent_id,
+            recipient_str,
             self.content_type_str(),
+            self.sent_at.to_rfc3339(),
+            meta_str,
             self.payload_json.len()
         );
         let mut mac = Hmac::<Sha256>::new_from_slice(secret).expect("HMAC accepts any key length");
         mac.update(header.as_bytes());
         mac.update(b"\0");
         mac.update(self.payload_json.as_bytes());
-
-        let expected: Vec<u8> = (0..sig.len())
-            .step_by(2)
-            .filter_map(|i| u8::from_str_radix(&sig[i..i + 2], 16).ok())
-            .collect();
-        if expected.len() != sig.len() / 2 {
-            return false;
-        }
-        mac.verify_slice(&expected).is_ok()
+        mac.finalize().into_bytes().to_vec()
     }
 
     fn content_type_str(&self) -> &str {
@@ -154,6 +165,17 @@ pub fn parse_envelope(json: &str) -> Result<TransportEnvelopeV1, String> {
         ));
     }
     Ok(env)
+}
+
+fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut diff = 0u8;
+    for (x, y) in a.iter().zip(b.iter()) {
+        diff |= x ^ y;
+    }
+    diff == 0
 }
 
 fn compute_daemon_fingerprint() -> String {

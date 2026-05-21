@@ -31,7 +31,6 @@ pub enum PackageLayer {
     Knowledge,
     Graph,
     Session,
-    Artifacts,
     Patterns,
     Gotchas,
 }
@@ -42,7 +41,6 @@ impl PackageLayer {
             Self::Knowledge => "knowledge",
             Self::Graph => "graph",
             Self::Session => "session",
-            Self::Artifacts => "artifacts",
             Self::Patterns => "patterns",
             Self::Gotchas => "gotchas",
         }
@@ -53,7 +51,6 @@ impl PackageLayer {
             Self::Knowledge => "knowledge.json",
             Self::Graph => "graph.json",
             Self::Session => "session.json",
-            Self::Artifacts => "artifacts.json",
             Self::Patterns => "patterns.json",
             Self::Gotchas => "gotchas.json",
         }
@@ -147,8 +144,28 @@ impl PackageManifest {
         if self.layers.is_empty() {
             errors.push("at least one layer is required".into());
         }
-        if self.integrity.sha256.len() != 64 {
+        let mut seen_layers = std::collections::HashSet::new();
+        for layer in &self.layers {
+            if !seen_layers.insert(layer.as_str()) {
+                errors.push(format!("duplicate layer: {}", layer.as_str()));
+            }
+        }
+        if self.integrity.sha256.len() != 64
+            || !self.integrity.sha256.chars().all(|c| c.is_ascii_hexdigit())
+        {
             errors.push("integrity.sha256 must be a 64-char hex string".into());
+        }
+        if self.integrity.content_hash.len() != 64
+            || !self
+                .integrity
+                .content_hash
+                .chars()
+                .all(|c| c.is_ascii_hexdigit())
+        {
+            errors.push("integrity.content_hash must be a 64-char hex string".into());
+        }
+        if self.integrity.byte_size == 0 {
+            errors.push("integrity.byte_size must be > 0".into());
         }
 
         if errors.is_empty() {
@@ -203,8 +220,22 @@ mod tests {
     #[test]
     fn empty_name_fails() {
         let mut m = minimal_manifest();
+        assert!(m.validate().is_ok());
         m.name = String::new();
-        assert!(minimal_manifest().validate().is_ok());
+        assert!(m.validate().is_err());
+    }
+
+    #[test]
+    fn duplicate_layers_fails() {
+        let mut m = minimal_manifest();
+        m.layers = vec![PackageLayer::Knowledge, PackageLayer::Knowledge];
+        assert!(m.validate().is_err());
+    }
+
+    #[test]
+    fn non_hex_sha256_fails() {
+        let mut m = minimal_manifest();
+        m.integrity.sha256 = "z".repeat(64);
         assert!(m.validate().is_err());
     }
 

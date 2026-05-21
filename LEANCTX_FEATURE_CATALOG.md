@@ -321,7 +321,7 @@ Previously deprecated aliases have been removed. Use the canonical tools:
 
 #### Context Package System (3.4.7)
 
-Context packages bundle Knowledge, Graph, Session, Patterns, and Gotchas into portable `.lctxpkg` files that can be shared, versioned, and auto-loaded across projects.
+Context packages bundle Knowledge, Graph, Session, Patterns, and Gotchas into portable `.ctxpkg` files that can be shared, versioned, and auto-loaded across projects.
 
 ##### Package Layers
 - **Knowledge**: facts, patterns, consolidated insights from ProjectKnowledge
@@ -335,8 +335,8 @@ Context packages bundle Knowledge, Graph, Session, Patterns, and Gotchas into po
 - `list` — list all installed packages with layers, size, auto-load status
 - `info` — detailed package view (stats, integrity, provenance, estimated tokens)
 - `remove` — remove package from local registry
-- `export` — export to portable `.lctxpkg` file (JSON bundle with SHA-256 integrity)
-- `import` — import from `.lctxpkg` file into local registry
+- `export` — export to portable `.ctxpkg` file (JSON bundle with SHA-256 integrity)
+- `import` — import from `.ctxpkg` file into local registry
 - `install` — apply package to current project (merge knowledge, import graph, import gotchas)
 - `auto-load` — enable/disable automatic loading on `ctx_overview` session start
 - `pr` — existing PR context pack (unchanged)

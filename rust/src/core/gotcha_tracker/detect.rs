@@ -227,7 +227,7 @@ fn extract_first_error_line(output: &str) -> String {
         if ll.contains("error") || ll.contains("failed") || ll.contains("traceback") {
             let trimmed = line.trim();
             if trimmed.len() > 200 {
-                return trimmed[..200].to_string();
+                return trimmed[..trimmed.floor_char_boundary(200)].to_string();
             }
             return trimmed.to_string();
         }

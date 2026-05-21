@@ -181,8 +181,8 @@ lean-ctx deps .                          # Project dependencies summary
 lean-ctx pack create --name my-pkg          # Bundle Knowledge + Graph + Session + Gotchas
 lean-ctx pack list                          # List installed packages
 lean-ctx pack info my-pkg                   # Detailed view (stats, integrity, provenance)
-lean-ctx pack export my-pkg -o my.lctxpkg   # Export to portable .lctxpkg file
-lean-ctx pack import my.lctxpkg --apply     # Import and apply to current project
+lean-ctx pack export my-pkg -o my.ctxpkg   # Export to portable .ctxpkg file
+lean-ctx pack import my.ctxpkg --apply     # Import and apply to current project
 lean-ctx pack install my-pkg                # Apply package (merge knowledge, import graph)
 lean-ctx pack auto-load my-pkg              # Auto-load on ctx_overview session start
 lean-ctx pack remove my-pkg                 # Remove from local registry

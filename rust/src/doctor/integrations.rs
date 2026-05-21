@@ -455,11 +455,7 @@ fn check_vscode_mcp(path: &std::path::Path, binary: &str, data_dir: &str) -> Nam
     }
 }
 
-fn check_augment_vscode_mcp(
-    path: &std::path::Path,
-    binary: &str,
-    data_dir: &str,
-) -> NamedCheck {
+fn check_augment_vscode_mcp(path: &std::path::Path, binary: &str, data_dir: &str) -> NamedCheck {
     if !path.exists() {
         return NamedCheck {
             name: "Augment VS Code MCP".to_string(),

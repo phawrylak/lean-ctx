@@ -84,7 +84,7 @@ fn try_pytest(output: &str) -> Option<String> {
             if name.len() <= 50 {
                 passed_names.push(name.to_string());
             } else {
-                passed_names.push(format!("{}...", &name[..47]));
+                passed_names.push(format!("{}...", &name[..name.floor_char_boundary(47)]));
             }
         }
     }

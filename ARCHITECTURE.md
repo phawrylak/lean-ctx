@@ -71,7 +71,7 @@ flowchart TB
         PkgLoader["Loader — merge facts (dedup), import graph, import gotchas"]
         PkgRegistry["Registry — ~/.lean-ctx/packages/, index, versioning"]
         PkgAutoLoad["Auto-Load — marked packages loaded on ctx_overview"]
-        PkgExport["Export/Import — .lctxpkg portable format"]
+        PkgExport["Export/Import — .ctxpkg portable format"]
     end
 
     subgraph routing [Intent and Routing]
@@ -703,7 +703,7 @@ flowchart LR
 | `core/context_package/content.rs` | PackageContent — 5 layers: Knowledge, Graph, Session, Patterns, Gotchas |
 | `core/context_package/builder.rs` | PackageBuilder — collects from Knowledge DB, Property Graph, Session, GotchaStore |
 | `core/context_package/loader.rs` | PackageLoader — merges knowledge (dedup), imports graph nodes/edges, imports gotchas |
-| `core/context_package/registry.rs` | LocalRegistry — `~/.lean-ctx/packages/`, index, versioning, export/import (.lctxpkg) |
+| `core/context_package/registry.rs` | LocalRegistry — `~/.lean-ctx/packages/`, index, versioning, export/import (.ctxpkg) |
 | `core/context_package/auto_load.rs` | Auto-load — marked packages loaded on `ctx_overview` session start |
 | `cli/pack_cmd.rs` | CLI — `lean-ctx pack create/list/info/remove/export/import/install/auto-load` (9 subcommands) |
 
@@ -740,7 +740,7 @@ flowchart LR
 |:---|:---|
 | `core/agents.rs` | Agent registry (register, list, status) |
 | `core/a2a/` | Agent-to-agent: cost attribution, rate limiting, messaging, agent cards, task protocol, A2A JSON-RPC compat |
-| `core/a2a_transport.rs` | TransportEnvelopeV1 + AgentIdentityV1 — HMAC-signed cross-machine transport for .lctxpkg and handoff bundles |
+| `core/a2a_transport.rs` | TransportEnvelopeV1 + AgentIdentityV1 — HMAC-signed cross-machine transport for .ctxpkg and handoff bundles |
 | `core/handoff_ledger.rs` | Handoff creation and listing |
 | `core/handoff_transfer_bundle.rs` | Privacy-aware portable export/import |
 | `core/ccp_session_bundle.rs` | CCP session bundle format |

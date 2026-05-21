@@ -353,7 +353,7 @@ fn extract_key_signatures(content: &str, max: usize) -> Vec<String> {
         .map(|line| {
             let trimmed = line.trim();
             if trimmed.len() > 120 {
-                format!("{}...", &trimmed[..117])
+                format!("{}...", &trimmed[..trimmed.floor_char_boundary(117)])
             } else {
                 trimmed.to_string()
             }

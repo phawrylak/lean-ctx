@@ -69,6 +69,8 @@ impl LocalRegistry {
         manifest: &PackageManifest,
         content: &PackageContent,
     ) -> Result<PathBuf, String> {
+        manifest.validate().map_err(|errs| errs.join("; "))?;
+
         let pkg_dir = self.package_dir(&manifest.name, &manifest.version);
         std::fs::create_dir_all(&pkg_dir).map_err(|e| format!("create package dir: {e}"))?;
 
@@ -207,6 +209,27 @@ impl LocalRegistry {
     }
 
     pub fn import_from_file(&self, path: &Path) -> Result<PackageManifest, String> {
+        if !crate::core::contracts::is_package_file(path) {
+            let ext = path
+                .extension()
+                .and_then(|e| e.to_str())
+                .unwrap_or("(none)");
+            return Err(format!(
+                "unsupported file extension '.{ext}' — expected .{} or .{}",
+                crate::core::contracts::PACKAGE_EXTENSION,
+                crate::core::contracts::LEGACY_PACKAGE_EXTENSION,
+            ));
+        }
+
+        let meta = std::fs::metadata(path).map_err(|e| format!("stat package file: {e}"))?;
+        if meta.len() > crate::core::contracts::MAX_PACKAGE_FILE_BYTES {
+            return Err(format!(
+                "package file too large ({} bytes, max {} bytes)",
+                meta.len(),
+                crate::core::contracts::MAX_PACKAGE_FILE_BYTES,
+            ));
+        }
+
         let json = std::fs::read_to_string(path).map_err(|e| format!("read package file: {e}"))?;
         let bundle: ExportBundle =
             serde_json::from_str(&json).map_err(|e| format!("parse package: {e}"))?;
@@ -416,7 +439,7 @@ mod tests {
 
         reg.install(&manifest, &content).unwrap();
 
-        let export_path = dir.path().join("test.lctxpkg");
+        let export_path = dir.path().join("test.ctxpkg");
         let bytes = reg
             .export_to_file("export-test", "2.0.0", &export_path)
             .unwrap();
@@ -426,5 +449,65 @@ mod tests {
         let imported = reg2.import_from_file(&export_path).unwrap();
         assert_eq!(imported.name, "export-test");
         assert_eq!(reg2.list().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn legacy_lctxpkg_extension_accepted() {
+        let dir = tempfile::tempdir().unwrap();
+        let reg = LocalRegistry::open_at(dir.path()).unwrap();
+
+        let content = PackageContent::default();
+        let content_json = serde_json::to_string(&content).unwrap();
+        let mut h = Sha256::new();
+        h.update(content_json.as_bytes());
+        let content_hash = format!("{:x}", h.finalize());
+        let composite = format!("legacy-test:1.0.0:{content_hash}");
+        let mut h2 = Sha256::new();
+        h2.update(composite.as_bytes());
+
+        let manifest = PackageManifest {
+            schema_version: crate::core::contracts::CONTEXT_PACKAGE_V1_SCHEMA_VERSION,
+            name: "legacy-test".into(),
+            version: "1.0.0".into(),
+            description: "legacy extension test".into(),
+            author: None,
+            created_at: Utc::now(),
+            updated_at: None,
+            layers: vec![super::super::manifest::PackageLayer::Knowledge],
+            dependencies: vec![],
+            tags: vec![],
+            integrity: super::super::manifest::PackageIntegrity {
+                sha256: format!("{:x}", h2.finalize()),
+                content_hash,
+                byte_size: content_json.len() as u64,
+            },
+            provenance: super::super::manifest::PackageProvenance {
+                tool: "lean-ctx".into(),
+                tool_version: "0.0.0".into(),
+                project_hash: None,
+                source_session_id: None,
+            },
+            compatibility: CompatibilitySpec::default(),
+            stats: PackageStats::default(),
+        };
+
+        reg.install(&manifest, &content).unwrap();
+
+        let legacy_path = dir.path().join("test.lctxpkg");
+        reg.export_to_file("legacy-test", "1.0.0", &legacy_path)
+            .unwrap();
+
+        let reg2 = LocalRegistry::open_at(&dir.path().join("other")).unwrap();
+        let imported = reg2.import_from_file(&legacy_path).unwrap();
+        assert_eq!(imported.name, "legacy-test");
+    }
+
+    #[test]
+    fn unsupported_extension_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        let reg = LocalRegistry::open_at(dir.path()).unwrap();
+        let bad_path = dir.path().join("test.json");
+        std::fs::write(&bad_path, "{}").unwrap();
+        assert!(reg.import_from_file(&bad_path).is_err());
     }
 }

@@ -87,7 +87,7 @@ fn compress_run(output: &str) -> String {
         }
 
         let echo_key = if trimmed.len() > 80 {
-            trimmed[..80].to_string()
+            trimmed[..trimmed.floor_char_boundary(80)].to_string()
         } else {
             trimmed.to_string()
         };

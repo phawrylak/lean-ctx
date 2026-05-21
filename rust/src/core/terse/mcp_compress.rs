@@ -58,7 +58,7 @@ fn terse_description(desc: &str) -> String {
 fn lazy_description(name: &str, desc: &str) -> String {
     let first_line = desc.lines().next().unwrap_or(name);
     let summary = if first_line.len() > 80 {
-        format!("{}…", &first_line[..77])
+        format!("{}…", &first_line[..first_line.floor_char_boundary(77)])
     } else {
         first_line.to_string()
     };

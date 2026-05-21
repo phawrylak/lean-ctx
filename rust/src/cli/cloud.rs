@@ -3,7 +3,7 @@ use crate::{cloud_client, core};
 fn mask_email(email: &str) -> String {
     match email.split_once('@') {
         Some((local, domain)) if local.len() > 2 => {
-            format!("{}...@{domain}", &local[..2])
+            format!("{}...@{domain}", &local[..local.floor_char_boundary(2)])
         }
         _ => "***".to_string(),
     }

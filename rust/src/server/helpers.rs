@@ -50,8 +50,8 @@ pub fn hash_fast(s: &str) -> String {
     if s.len() <= THRESHOLD {
         crate::core::hasher::hash_str(s)
     } else {
-        let prefix = &s[..4096];
-        let suffix = &s[s.len().saturating_sub(4096)..];
+        let prefix = &s[..s.floor_char_boundary(4096)];
+        let suffix = &s[s.ceil_char_boundary(s.len().saturating_sub(4096))..];
         let key = format!("{}{}{}", prefix, s.len(), suffix);
         crate::core::hasher::hash_str(&key)
     }

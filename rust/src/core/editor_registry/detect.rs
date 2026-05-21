@@ -562,12 +562,9 @@ mod augment_tests {
             config_type: ConfigType::McpJson,
         };
 
-        let install = write_config_with_options(
-            &target,
-            "/usr/local/bin/lean-ctx",
-            WriteOptions::default(),
-        )
-        .expect("install");
+        let install =
+            write_config_with_options(&target, "/usr/local/bin/lean-ctx", WriteOptions::default())
+                .expect("install");
         assert!(matches!(
             install.action,
             WriteAction::Created | WriteAction::Updated

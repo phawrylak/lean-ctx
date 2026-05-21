@@ -3,7 +3,7 @@ use sha2::{Digest, Sha256};
 
 use super::content::{
     GotchaExport, GotchasLayer, GraphEdgeExport, GraphLayer, GraphNodeExport, KnowledgeLayer,
-    PackageContent, PatternsLayer, SessionDecision, SessionFinding, SessionLayer,
+    PackageContent, SessionDecision, SessionFinding, SessionLayer,
 };
 use super::manifest::{
     CompatibilitySpec, PackageIntegrity, PackageLayer, PackageManifest, PackageProvenance,
@@ -18,7 +18,6 @@ pub struct PackageBuilder {
     tags: Vec<String>,
     compatibility: CompatibilitySpec,
     content: PackageContent,
-    layers: Vec<PackageLayer>,
     project_hash: Option<String>,
     session_id: Option<String>,
 }
@@ -33,7 +32,6 @@ impl PackageBuilder {
             tags: Vec::new(),
             compatibility: CompatibilitySpec::default(),
             content: PackageContent::default(),
-            layers: Vec::new(),
             project_hash: None,
             session_id: None,
         }
@@ -81,24 +79,11 @@ impl PackageBuilder {
 
         self.content.knowledge = Some(KnowledgeLayer {
             facts: knowledge.facts,
-            patterns: knowledge.patterns.clone(),
+            patterns: knowledge.patterns,
             insights: knowledge.history,
             exported_at: Utc::now(),
         });
 
-        if !knowledge.patterns.is_empty() {
-            self.content.patterns = Some(PatternsLayer {
-                patterns: knowledge.patterns,
-                exported_at: Utc::now(),
-            });
-            if !self.layers.contains(&PackageLayer::Patterns) {
-                self.layers.push(PackageLayer::Patterns);
-            }
-        }
-
-        if !self.layers.contains(&PackageLayer::Knowledge) {
-            self.layers.push(PackageLayer::Knowledge);
-        }
         self
     }
 
@@ -120,13 +105,20 @@ impl PackageBuilder {
             exported_at: Utc::now(),
         });
 
-        if !self.layers.contains(&PackageLayer::Graph) {
-            self.layers.push(PackageLayer::Graph);
-        }
         self
     }
 
     pub fn add_session(mut self, session: &crate::core::session::SessionState) -> Self {
+        let has_content = session.task.is_some()
+            || !session.findings.is_empty()
+            || !session.decisions.is_empty()
+            || !session.next_steps.is_empty()
+            || !session.files_touched.is_empty();
+
+        if !has_content {
+            return self;
+        }
+
         let layer = SessionLayer {
             task_description: session.task.as_ref().map(|t| t.description.clone()),
             findings: session
@@ -156,9 +148,6 @@ impl PackageBuilder {
         };
 
         self.content.session = Some(layer);
-        if !self.layers.contains(&PackageLayer::Session) {
-            self.layers.push(PackageLayer::Session);
-        }
         self
     }
 
@@ -189,9 +178,6 @@ impl PackageBuilder {
             exported_at: Utc::now(),
         });
 
-        if !self.layers.contains(&PackageLayer::Gotchas) {
-            self.layers.push(PackageLayer::Gotchas);
-        }
         self
     }
 
@@ -204,6 +190,23 @@ impl PackageBuilder {
         }
         if self.content.is_empty() {
             return Err("package has no content — add at least one layer".into());
+        }
+
+        let mut layers = Vec::new();
+        if self.content.knowledge.is_some() {
+            layers.push(PackageLayer::Knowledge);
+        }
+        if self.content.graph.is_some() {
+            layers.push(PackageLayer::Graph);
+        }
+        if self.content.session.is_some() {
+            layers.push(PackageLayer::Session);
+        }
+        if self.content.patterns.is_some() {
+            layers.push(PackageLayer::Patterns);
+        }
+        if self.content.gotchas.is_some() {
+            layers.push(PackageLayer::Gotchas);
         }
 
         let content_json = serde_json::to_string(&self.content).map_err(|e| e.to_string())?;
@@ -223,7 +226,7 @@ impl PackageBuilder {
             author: self.author,
             created_at: Utc::now(),
             updated_at: None,
-            layers: self.layers,
+            layers,
             dependencies: Vec::new(),
             tags: self.tags,
             integrity: PackageIntegrity {
@@ -252,6 +255,7 @@ fn export_graph_nodes(graph: &crate::core::property_graph::CodeGraph) -> Vec<Gra
     let Ok(mut stmt) =
         conn.prepare("SELECT kind, name, file_path, line_start, line_end, metadata FROM nodes")
     else {
+        tracing::warn!("ctxpkg: failed to prepare graph nodes query");
         return Vec::new();
     };
 
@@ -267,10 +271,18 @@ fn export_graph_nodes(graph: &crate::core::property_graph::CodeGraph) -> Vec<Gra
             metadata: row.get(5)?,
         })
     }) else {
+        tracing::warn!("ctxpkg: failed to query graph nodes");
         return Vec::new();
     };
 
-    rows.filter_map(Result::ok).collect()
+    let mut nodes = Vec::new();
+    for row in rows {
+        match row {
+            Ok(n) => nodes.push(n),
+            Err(e) => tracing::warn!("ctxpkg: skipping graph node: {e}"),
+        }
+    }
+    nodes
 }
 
 fn export_graph_edges(graph: &crate::core::property_graph::CodeGraph) -> Vec<GraphEdgeExport> {
@@ -282,6 +294,7 @@ fn export_graph_edges(graph: &crate::core::property_graph::CodeGraph) -> Vec<Gra
         JOIN nodes n2 ON e.target_id = n2.id
     ";
     let Ok(mut stmt) = conn.prepare(sql) else {
+        tracing::warn!("ctxpkg: failed to prepare graph edges query");
         return Vec::new();
     };
 
@@ -295,10 +308,18 @@ fn export_graph_edges(graph: &crate::core::property_graph::CodeGraph) -> Vec<Gra
             metadata: row.get(5)?,
         })
     }) else {
+        tracing::warn!("ctxpkg: failed to query graph edges");
         return Vec::new();
     };
 
-    rows.filter_map(Result::ok).collect()
+    let mut edges = Vec::new();
+    for row in rows {
+        match row {
+            Ok(e) => edges.push(e),
+            Err(e) => tracing::warn!("ctxpkg: skipping graph edge: {e}"),
+        }
+    }
+    edges
 }
 
 fn compute_stats(content: &PackageContent) -> PackageStats {

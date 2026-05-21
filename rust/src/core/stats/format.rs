@@ -808,7 +808,7 @@ pub fn format_gain_themed_at(t: &Theme, tick: Option<u64>) -> String {
                 .as_ref()
                 .map_or("—", |tk| tk.description.as_str());
             let task_disp = if task_str.len() > 35 {
-                format!("{}…", &task_str[..32])
+                format!("{}…", &task_str[..task_str.floor_char_boundary(32)])
             } else {
                 task_str.to_string()
             };

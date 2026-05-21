@@ -1,3 +1,7 @@
+fn truncate_at_char_boundary(s: &str, max: usize) -> &str {
+    &s[..s.floor_char_boundary(max)]
+}
+
 pub fn compress_with_cmd(command: &str, output: &str) -> Option<String> {
     let cfg = crate::core::config::Config::load();
     if !cfg.passthrough_urls.is_empty() {
@@ -52,7 +56,7 @@ fn compress_large_text(output: &str) -> String {
     ));
     for line in lines.iter().take(head_count) {
         if line.len() > 200 {
-            result.push_str(&line[..200]);
+            result.push_str(truncate_at_char_boundary(line, 200));
             result.push_str("…\n");
         } else {
             result.push_str(line);
@@ -66,7 +70,7 @@ fn compress_large_text(output: &str) -> String {
         ));
         for line in lines.iter().skip(total_lines - tail_count) {
             if line.len() > 200 {
-                result.push_str(&line[..200]);
+                result.push_str(truncate_at_char_boundary(line, 200));
                 result.push_str("…\n");
             } else {
                 result.push_str(line);
