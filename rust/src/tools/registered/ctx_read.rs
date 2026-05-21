@@ -530,14 +530,12 @@ impl CtxReadTool {
     }
 }
 
-fn auto_degrade_read_mode(mode: &str) -> (String, Option<String>) {
+fn apply_verdict(
+    mode: &str,
+    verdict: crate::core::degradation_policy::DegradationVerdictV1,
+) -> (String, bool) {
     use crate::core::degradation_policy::DegradationVerdictV1;
-    let profile = crate::core::profiles::active_profile();
-    if !profile.degradation.enforce_effective() {
-        return (mode.to_string(), None);
-    }
-    let policy = crate::core::degradation_policy::evaluate_v1_for_tool("ctx_read", None);
-    let (new_mode, degraded) = match policy.decision.verdict {
+    match verdict {
         DegradationVerdictV1::Ok => (mode.to_string(), false),
         DegradationVerdictV1::Warn => match mode {
             "full" => ("map".to_string(), true),
@@ -554,7 +552,16 @@ fn auto_degrade_read_mode(mode: &str) -> (String, Option<String>) {
                 ("signatures".to_string(), true)
             }
         }
-    };
+    }
+}
+
+fn auto_degrade_read_mode(mode: &str) -> (String, Option<String>) {
+    let profile = crate::core::profiles::active_profile();
+    if !profile.degradation.enforce_effective() {
+        return (mode.to_string(), None);
+    }
+    let policy = crate::core::degradation_policy::evaluate_v1_for_tool("ctx_read", None);
+    let (new_mode, degraded) = apply_verdict(mode, policy.decision.verdict);
     let warning = if degraded {
         Some(format!(
             "⚠ Context pressure: mode={mode} was downgraded to mode={new_mode} \
@@ -780,5 +787,86 @@ mod tests {
         apply_start_line(&mut mode, &mut fresh, true, Some(1));
         assert_eq!(mode, "map");
         assert!(!fresh);
+    }
+
+    // -- Regression: GitHub Issue #262 --
+    // auto_degrade_read_mode must produce a warning when mode is downgraded.
+
+    use crate::core::degradation_policy::DegradationVerdictV1;
+
+    #[test]
+    fn verdict_ok_does_not_degrade() {
+        let (mode, degraded) = super::apply_verdict("full", DegradationVerdictV1::Ok);
+        assert_eq!(mode, "full");
+        assert!(!degraded);
+    }
+
+    #[test]
+    fn verdict_warn_degrades_full_to_map() {
+        let (mode, degraded) = super::apply_verdict("full", DegradationVerdictV1::Warn);
+        assert_eq!(mode, "map");
+        assert!(degraded, "full→map must be flagged as degraded");
+    }
+
+    #[test]
+    fn verdict_warn_keeps_map() {
+        let (mode, degraded) = super::apply_verdict("map", DegradationVerdictV1::Warn);
+        assert_eq!(mode, "map");
+        assert!(!degraded, "map is not degraded under Warn");
+    }
+
+    #[test]
+    fn verdict_warn_keeps_signatures() {
+        let (mode, degraded) = super::apply_verdict("signatures", DegradationVerdictV1::Warn);
+        assert_eq!(mode, "signatures");
+        assert!(!degraded);
+    }
+
+    #[test]
+    fn verdict_throttle_degrades_full_to_signatures() {
+        let (mode, degraded) = super::apply_verdict("full", DegradationVerdictV1::Throttle);
+        assert_eq!(mode, "signatures");
+        assert!(degraded);
+    }
+
+    #[test]
+    fn verdict_throttle_degrades_map_to_signatures() {
+        let (mode, degraded) = super::apply_verdict("map", DegradationVerdictV1::Throttle);
+        assert_eq!(mode, "signatures");
+        assert!(degraded);
+    }
+
+    #[test]
+    fn verdict_throttle_keeps_lines() {
+        let (mode, degraded) = super::apply_verdict("lines:1-50", DegradationVerdictV1::Throttle);
+        assert_eq!(mode, "lines:1-50");
+        assert!(!degraded, "lines mode bypasses degradation");
+    }
+
+    #[test]
+    fn verdict_block_degrades_full_to_signatures() {
+        let (mode, degraded) = super::apply_verdict("full", DegradationVerdictV1::Block);
+        assert_eq!(mode, "signatures");
+        assert!(degraded);
+    }
+
+    #[test]
+    fn verdict_block_does_not_degrade_signatures() {
+        let (mode, degraded) = super::apply_verdict("signatures", DegradationVerdictV1::Block);
+        assert_eq!(mode, "signatures");
+        assert!(!degraded, "already at signatures — no degradation needed");
+    }
+
+    #[test]
+    fn degrade_warning_message_contains_mode_info() {
+        let (new_mode, degraded) = super::apply_verdict("full", DegradationVerdictV1::Warn);
+        assert!(degraded);
+        let warning = format!(
+            "⚠ Context pressure: mode=full was downgraded to mode={new_mode} (verdict: {:?}).",
+            DegradationVerdictV1::Warn
+        );
+        assert!(warning.contains("mode=full"));
+        assert!(warning.contains("mode=map"));
+        assert!(warning.contains("Warn"));
     }
 }
