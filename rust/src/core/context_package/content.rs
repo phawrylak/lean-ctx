@@ -3,6 +3,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::core::knowledge::{ConsolidatedInsight, KnowledgeFact, ProjectPattern};
 
+use super::graph_model::ContextGraph;
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct PackageContent {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -15,6 +17,8 @@ pub struct PackageContent {
     pub patterns: Option<PatternsLayer>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gotchas: Option<GotchasLayer>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_graph: Option<ContextGraph>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -122,6 +126,9 @@ impl PackageContent {
             n += 1;
         }
         if self.gotchas.is_some() {
+            n += 1;
+        }
+        if self.context_graph.is_some() {
             n += 1;
         }
         n

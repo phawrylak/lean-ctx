@@ -345,10 +345,12 @@ mod tests {
 
         let manifest = PackageManifest {
             schema_version: crate::core::contracts::CONTEXT_PACKAGE_V1_SCHEMA_VERSION,
+            conformance_level: None,
             name: "test-pkg".into(),
             version: "1.0.0".into(),
             description: "test".into(),
             author: None,
+            scope: None,
             created_at: Utc::now(),
             updated_at: None,
             layers: vec![super::super::manifest::PackageLayer::Knowledge],
@@ -378,6 +380,9 @@ mod tests {
             },
             compatibility: CompatibilitySpec::default(),
             stats: PackageStats::default(),
+            signature: None,
+            graph_summary: None,
+            marketplace: None,
         };
 
         let content = PackageContent::default();
@@ -408,10 +413,12 @@ mod tests {
 
         let manifest = PackageManifest {
             schema_version: crate::core::contracts::CONTEXT_PACKAGE_V1_SCHEMA_VERSION,
+            conformance_level: None,
             name: "export-test".into(),
             version: "2.0.0".into(),
             description: "round trip test".into(),
             author: Some("test".into()),
+            scope: None,
             created_at: Utc::now(),
             updated_at: None,
             layers: vec![super::super::manifest::PackageLayer::Knowledge],
@@ -435,6 +442,9 @@ mod tests {
             },
             compatibility: CompatibilitySpec::default(),
             stats: PackageStats::default(),
+            signature: None,
+            graph_summary: None,
+            marketplace: None,
         };
 
         reg.install(&manifest, &content).unwrap();
@@ -467,10 +477,12 @@ mod tests {
 
         let manifest = PackageManifest {
             schema_version: crate::core::contracts::CONTEXT_PACKAGE_V1_SCHEMA_VERSION,
+            conformance_level: None,
             name: "legacy-test".into(),
             version: "1.0.0".into(),
             description: "legacy extension test".into(),
             author: None,
+            scope: None,
             created_at: Utc::now(),
             updated_at: None,
             layers: vec![super::super::manifest::PackageLayer::Knowledge],
@@ -489,6 +501,9 @@ mod tests {
             },
             compatibility: CompatibilitySpec::default(),
             stats: PackageStats::default(),
+            signature: None,
+            graph_summary: None,
+            marketplace: None,
         };
 
         reg.install(&manifest, &content).unwrap();

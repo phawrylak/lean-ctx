@@ -21,6 +21,7 @@ pub const MEMORY_BOUNDARY_V1_SCHEMA_VERSION: u32 = 1;
 pub const GOTCHAS_REMINDERS_V1_SCHEMA_VERSION: u32 = 1;
 pub const PROVIDER_FRAMEWORK_V1_SCHEMA_VERSION: u32 = 1;
 pub const CONTEXT_PACKAGE_V1_SCHEMA_VERSION: u32 = 1;
+pub const CONTEXT_PACKAGE_V2_SCHEMA_VERSION: u32 = 2;
 
 pub const PACKAGE_EXTENSION: &str = "ctxpkg";
 pub const LEGACY_PACKAGE_EXTENSION: &str = "lctxpkg";
@@ -121,6 +122,10 @@ pub fn versions_kv() -> BTreeMap<&'static str, u32> {
         (
             "leanctx.contract.context_package_v1.schema_version",
             CONTEXT_PACKAGE_V1_SCHEMA_VERSION,
+        ),
+        (
+            "leanctx.contract.context_package_v2.schema_version",
+            CONTEXT_PACKAGE_V2_SCHEMA_VERSION,
         ),
         (
             "leanctx.contract.http_mcp.contract_version",

@@ -3,7 +3,7 @@ use sha2::{Digest, Sha256};
 
 use super::content::{
     GotchaExport, GotchasLayer, GraphEdgeExport, GraphLayer, GraphNodeExport, KnowledgeLayer,
-    PackageContent, SessionDecision, SessionFinding, SessionLayer,
+    PackageContent, PatternsLayer, SessionDecision, SessionFinding, SessionLayer,
 };
 use super::manifest::{
     CompatibilitySpec, PackageIntegrity, PackageLayer, PackageManifest, PackageProvenance,
@@ -15,11 +15,13 @@ pub struct PackageBuilder {
     version: String,
     description: String,
     author: Option<String>,
+    scope: Option<String>,
     tags: Vec<String>,
     compatibility: CompatibilitySpec,
     content: PackageContent,
     project_hash: Option<String>,
     session_id: Option<String>,
+    level: u32,
 }
 
 impl PackageBuilder {
@@ -29,11 +31,13 @@ impl PackageBuilder {
             version: version.to_string(),
             description: String::new(),
             author: None,
+            scope: None,
             tags: Vec::new(),
             compatibility: CompatibilitySpec::default(),
             content: PackageContent::default(),
             project_hash: None,
             session_id: None,
+            level: 1,
         }
     }
 
@@ -64,6 +68,16 @@ impl PackageBuilder {
 
     pub fn session_id(mut self, id: &str) -> Self {
         self.session_id = Some(id.to_string());
+        self
+    }
+
+    pub fn scope(mut self, scope: &str) -> Self {
+        self.scope = Some(scope.to_string());
+        self
+    }
+
+    pub fn level(mut self, level: u32) -> Self {
+        self.level = level.clamp(1, 3);
         self
     }
 
@@ -151,6 +165,154 @@ impl PackageBuilder {
         self
     }
 
+    pub fn add_patterns_from_project(mut self, project_root: &str) -> Self {
+        let knowledge = crate::core::knowledge::ProjectKnowledge::load_or_create(project_root);
+
+        if knowledge.patterns.is_empty() {
+            return self;
+        }
+
+        self.content.patterns = Some(PatternsLayer {
+            patterns: knowledge.patterns,
+            exported_at: Utc::now(),
+        });
+
+        self
+    }
+
+    pub fn build_context_graph(&mut self, project_root: &str) {
+        use super::graph_model::{ContextEdge, ContextGraph, ContextNode};
+
+        let mut graph = ContextGraph::new();
+        let mut node_count: u32 = 0;
+
+        let mut next_id = || -> String {
+            node_count += 1;
+            format!("N{node_count}")
+        };
+
+        let knowledge = crate::core::knowledge::ProjectKnowledge::load_or_create(project_root);
+        let mut fact_id_map: std::collections::HashMap<String, String> =
+            std::collections::HashMap::new();
+
+        for fact in &knowledge.facts {
+            let id = next_id();
+            let mut node = ContextNode::fact(&id, &fact.value, &fact.category);
+            node.confidence = Some(fact.confidence);
+            node.source = Some(fact.source_session.clone());
+            node.created_at = Some(fact.created_at);
+            if let Some(ref s) = fact.supersedes {
+                node.supersedes = fact_id_map.get(s).cloned();
+            }
+            let map_key = format!("{}/{}", fact.category, fact.key);
+            fact_id_map.insert(map_key, id.clone());
+            graph.add_node(node);
+        }
+
+        for pattern in &knowledge.patterns {
+            let id = next_id();
+            let mut node = ContextNode::fact(&id, &pattern.description, "pattern");
+            node.node_type = "pattern".into();
+            node.created_at = Some(pattern.created_at);
+            graph.add_node(node);
+        }
+
+        for insight in &knowledge.history {
+            let id = next_id();
+            let mut node = ContextNode::fact(&id, &insight.summary, "insight");
+            node.node_type = "insight".into();
+            node.created_at = Some(insight.timestamp);
+            graph.add_node(node);
+        }
+
+        let gotcha_store = crate::core::gotcha_tracker::GotchaStore::load(project_root);
+        for g in &gotcha_store.gotchas {
+            let id = next_id();
+            let mut node = ContextNode::gotcha(&id, &g.trigger, &g.resolution);
+            node.category = Some(g.category.short_label().to_string());
+            node.confidence = Some(g.confidence);
+            node.created_at = Some(g.first_seen);
+            graph.add_node(node);
+        }
+
+        if self.level >= 2 {
+            if let Ok(code_graph) = crate::core::property_graph::CodeGraph::open(project_root) {
+                let v1_nodes = export_graph_nodes(&code_graph);
+                let v1_edges = export_graph_edges(&code_graph);
+
+                let mut code_node_map: std::collections::HashMap<(String, String), String> =
+                    std::collections::HashMap::new();
+
+                for n in &v1_nodes {
+                    let id = next_id();
+                    let node = ContextNode::code_symbol(&id, &n.kind, &n.name, &n.file_path);
+                    code_node_map.insert((n.file_path.clone(), n.name.clone()), id.clone());
+                    graph.add_node(node);
+                }
+
+                for e in &v1_edges {
+                    let src_key = (e.source_path.clone(), e.source_name.clone());
+                    let tgt_key = (e.target_path.clone(), e.target_name.clone());
+                    if let (Some(from), Some(to)) =
+                        (code_node_map.get(&src_key), code_node_map.get(&tgt_key))
+                    {
+                        graph.add_edge(ContextEdge {
+                            from: from.clone(),
+                            to: to.clone(),
+                            edge_type: e.kind.clone(),
+                            weight: 1.0,
+                            coactivations: 0,
+                            metadata: e.metadata.clone(),
+                        });
+                    }
+                }
+            }
+
+            let phash = crate::core::project_hash::hash_project_root(project_root);
+            if let Some(rel_graph) =
+                crate::core::knowledge_relations::KnowledgeRelationGraph::load(&phash)
+            {
+                for edge in &rel_graph.edges {
+                    let from_key = edge.from.id();
+                    let to_key = edge.to.id();
+                    if let (Some(from_id), Some(to_id)) =
+                        (fact_id_map.get(&from_key), fact_id_map.get(&to_key))
+                    {
+                        let edge_type = match edge.kind {
+                            crate::core::knowledge_relations::KnowledgeEdgeKind::DependsOn => {
+                                "depends_on"
+                            }
+                            crate::core::knowledge_relations::KnowledgeEdgeKind::RelatedTo => {
+                                "related_to"
+                            }
+                            crate::core::knowledge_relations::KnowledgeEdgeKind::Supports => {
+                                "supports"
+                            }
+                            crate::core::knowledge_relations::KnowledgeEdgeKind::Contradicts => {
+                                "contradicts"
+                            }
+                            crate::core::knowledge_relations::KnowledgeEdgeKind::Supersedes => {
+                                "supersedes"
+                            }
+                        };
+                        graph.add_edge(ContextEdge {
+                            from: from_id.clone(),
+                            to: to_id.clone(),
+                            edge_type: edge_type.into(),
+                            weight: edge.strength,
+                            coactivations: edge.count,
+                            metadata: None,
+                        });
+                    }
+                }
+            }
+        }
+
+        if !graph.nodes.is_empty() {
+            self.content.context_graph = Some(graph);
+        }
+    }
+
     pub fn add_gotchas_from_project(mut self, project_root: &str) -> Self {
         let store = crate::core::gotcha_tracker::GotchaStore::load(project_root);
         if store.gotchas.is_empty() {
@@ -192,6 +354,8 @@ impl PackageBuilder {
             return Err("package has no content — add at least one layer".into());
         }
 
+        let is_v2 = self.content.context_graph.is_some();
+
         let mut layers = Vec::new();
         if self.content.knowledge.is_some() {
             layers.push(PackageLayer::Knowledge);
@@ -218,12 +382,26 @@ impl PackageBuilder {
 
         let stats = compute_stats(&self.content);
 
+        let schema_version = if is_v2 {
+            crate::core::contracts::CONTEXT_PACKAGE_V2_SCHEMA_VERSION
+        } else {
+            crate::core::contracts::CONTEXT_PACKAGE_V1_SCHEMA_VERSION
+        };
+
+        let graph_summary = self
+            .content
+            .context_graph
+            .as_ref()
+            .map(super::graph_model::ContextGraph::summary);
+
         let manifest = PackageManifest {
-            schema_version: crate::core::contracts::CONTEXT_PACKAGE_V1_SCHEMA_VERSION,
+            schema_version,
+            conformance_level: if is_v2 { Some(self.level) } else { None },
             name: self.name,
             version: self.version,
             description: self.description,
             author: self.author,
+            scope: self.scope,
             created_at: Utc::now(),
             updated_at: None,
             layers,
@@ -242,6 +420,9 @@ impl PackageBuilder {
             },
             compatibility: self.compatibility,
             stats,
+            signature: None,
+            graph_summary,
+            marketplace: None,
         };
 
         manifest.validate().map_err(|errs| errs.join("; "))?;
@@ -372,6 +553,7 @@ fn sha256_hex(data: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::context_package::graph_model::{ContextEdge, ContextGraph, ContextNode};
 
     #[test]
     fn empty_builder_fails() {
@@ -386,5 +568,123 @@ mod tests {
         let b = sha256_hex(b"hello world");
         assert_eq!(a, b);
         assert_eq!(a.len(), 64);
+    }
+
+    #[test]
+    fn v2_build_with_context_graph() {
+        let mut graph = ContextGraph::new();
+        graph.add_node(ContextNode::fact("n1", "test fact", "architecture"));
+        graph.add_node(ContextNode::gotcha("n2", "trigger", "resolution"));
+        graph.add_edge(ContextEdge {
+            from: "n1".into(),
+            to: "n2".into(),
+            edge_type: "has_gotcha".into(),
+            weight: 0.9,
+            coactivations: 3,
+            metadata: None,
+        });
+
+        let mut builder = PackageBuilder::new("v2-test", "1.0.0")
+            .description("v2 test package")
+            .level(2)
+            .scope("@test");
+
+        builder.content.context_graph = Some(graph);
+
+        let (manifest, content) = builder.build().unwrap();
+
+        assert_eq!(
+            manifest.schema_version,
+            crate::core::contracts::CONTEXT_PACKAGE_V2_SCHEMA_VERSION
+        );
+        assert_eq!(manifest.conformance_level, Some(2));
+        assert_eq!(manifest.scope.as_deref(), Some("@test"));
+        assert!(content.context_graph.is_some());
+
+        let gs = manifest.graph_summary.unwrap();
+        assert_eq!(gs.node_count, 2);
+        assert_eq!(gs.edge_count, 1);
+        assert!(gs.activation_mean.is_some());
+        assert_eq!(gs.node_types, vec!["fact", "gotcha"]);
+    }
+
+    #[test]
+    fn v1_build_without_context_graph() {
+        let mut builder = PackageBuilder::new("v1-test", "1.0.0").description("v1 test");
+
+        builder.content.knowledge = Some(KnowledgeLayer {
+            facts: vec![],
+            patterns: vec![],
+            insights: vec![],
+            exported_at: chrono::Utc::now(),
+        });
+
+        let (manifest, _content) = builder.build().unwrap();
+        assert_eq!(
+            manifest.schema_version,
+            crate::core::contracts::CONTEXT_PACKAGE_V1_SCHEMA_VERSION
+        );
+        assert!(manifest.conformance_level.is_none());
+        assert!(manifest.graph_summary.is_none());
+    }
+
+    #[test]
+    fn level_clamped_to_valid_range() {
+        let b = PackageBuilder::new("t", "1.0.0").level(99);
+        assert_eq!(b.level, 3);
+        let b = PackageBuilder::new("t", "1.0.0").level(0);
+        assert_eq!(b.level, 1);
+    }
+
+    #[test]
+    fn scoped_name_in_v2_build() {
+        let mut builder = PackageBuilder::new("@company/auth", "2.0.0")
+            .level(2)
+            .scope("@company");
+
+        let mut graph = ContextGraph::new();
+        graph.add_node(ContextNode::fact("n1", "jwt auth", "security"));
+        builder.content.context_graph = Some(graph);
+
+        let (manifest, _) = builder.build().unwrap();
+        assert_eq!(manifest.name, "@company/auth");
+        assert_eq!(manifest.scope.as_deref(), Some("@company"));
+    }
+
+    #[test]
+    fn v2_manifest_roundtrip_json() {
+        let mut graph = ContextGraph::new();
+        graph.add_node(ContextNode::fact("n1", "fact", "cat"));
+        graph.add_edge(ContextEdge {
+            from: "n1".into(),
+            to: "n1".into(),
+            edge_type: "self".into(),
+            weight: 1.0,
+            coactivations: 0,
+            metadata: None,
+        });
+
+        let mut builder = PackageBuilder::new("roundtrip-test", "1.0.0")
+            .description("round trip")
+            .level(3)
+            .scope("@local");
+
+        builder.content.context_graph = Some(graph);
+
+        let (manifest, content) = builder.build().unwrap();
+
+        let manifest_json = serde_json::to_string(&manifest).unwrap();
+        let content_json = serde_json::to_string(&content).unwrap();
+
+        let decoded_manifest: crate::core::context_package::manifest::PackageManifest =
+            serde_json::from_str(&manifest_json).unwrap();
+        let decoded_content: PackageContent = serde_json::from_str(&content_json).unwrap();
+
+        assert_eq!(decoded_manifest.schema_version, 2);
+        assert_eq!(decoded_manifest.conformance_level, Some(3));
+        assert!(decoded_content.context_graph.is_some());
+        let dg = decoded_content.context_graph.unwrap();
+        assert_eq!(dg.nodes.len(), 1);
+        assert_eq!(dg.edges.len(), 1);
     }
 }
