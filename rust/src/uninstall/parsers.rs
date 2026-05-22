@@ -819,7 +819,25 @@ command = \"other\"
     }
 
     #[test]
-    fn hooks_json_returns_none_when_only_lean_ctx() {
+    fn hooks_json_returns_none_when_only_lean_ctx_no_other_keys() {
+        let input = r#"{
+  "hooks": {
+    "preToolUse": [
+      {
+        "matcher": "Shell",
+        "command": "lean-ctx hook rewrite"
+      }
+    ]
+  }
+}"#;
+        assert!(
+            remove_lean_ctx_from_hooks_json(input).is_none(),
+            "should return None when all hooks are lean-ctx and no other keys"
+        );
+    }
+
+    #[test]
+    fn hooks_json_preserves_version_key_when_hooks_cleaned() {
         let input = r#"{
   "version": 1,
   "hooks": {
@@ -827,17 +845,53 @@ command = \"other\"
       {
         "matcher": "Shell",
         "command": "lean-ctx hook rewrite"
-      },
-      {
-        "matcher": "Read|Grep",
-        "command": "lean-ctx hook redirect"
       }
     ]
   }
 }"#;
+        let result = remove_lean_ctx_from_hooks_json(input)
+            .expect("should return cleaned JSON with version key");
         assert!(
-            remove_lean_ctx_from_hooks_json(input).is_none(),
-            "should return None when all hooks are lean-ctx"
+            result.contains("version"),
+            "version key should be preserved"
+        );
+        assert!(!result.contains("lean-ctx"), "lean-ctx should be removed");
+    }
+
+    #[test]
+    fn hooks_json_handles_nested_claude_format() {
+        let input = r#"{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "lean-ctx hook rewrite"
+          }
+        ]
+      },
+      {
+        "matcher": "Other",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "my-other-tool check"
+          }
+        ]
+      }
+    ]
+  }
+}"#;
+        let result = remove_lean_ctx_from_hooks_json(input).expect("should return cleaned JSON");
+        assert!(
+            !result.contains("lean-ctx"),
+            "lean-ctx nested entry removed"
+        );
+        assert!(
+            result.contains("my-other-tool"),
+            "non-lean-ctx entries preserved"
         );
     }
 

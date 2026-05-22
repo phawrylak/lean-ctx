@@ -124,6 +124,7 @@ pub fn run(dry_run: bool, keep_config: bool) {
     }
 
     removed_any |= remove_hook_files(&home, dry_run);
+    removed_any |= remove_skill_dirs(&home, dry_run);
     removed_any |= remove_project_agent_files(dry_run);
 
     if dry_run {
@@ -189,6 +190,42 @@ pub(super) fn remove_marked_block(content: &str, start: &str, end: &str) -> Stri
 }
 
 // ---------------------------------------------------------------------------
+// Skill directories: lean-ctx SKILL.md + scripts
+// ---------------------------------------------------------------------------
+
+fn remove_skill_dirs(home: &Path, dry_run: bool) -> bool {
+    let skill_dirs: Vec<(&str, PathBuf)> = vec![
+        ("Claude Code", home.join(".claude/skills/lean-ctx")),
+        ("Cursor", home.join(".cursor/skills/lean-ctx")),
+        (
+            "Codex CLI",
+            crate::core::home::resolve_codex_dir()
+                .unwrap_or_else(|| home.join(".codex"))
+                .join("skills/lean-ctx"),
+        ),
+        ("Copilot", home.join(".copilot/skills/lean-ctx")),
+        ("OpenClaw", home.join(".openclaw/skills/lean-ctx")),
+    ];
+
+    let mut removed = false;
+    for (name, dir) in &skill_dirs {
+        if !dir.exists() {
+            continue;
+        }
+        if dry_run {
+            println!("  Would remove {name} skill directory");
+            removed = true;
+        } else if let Err(e) = fs::remove_dir_all(dir) {
+            tracing::warn!("Failed to remove {name} skill dir: {e}");
+        } else {
+            println!("  ✓ {name} skill directory removed");
+            removed = true;
+        }
+    }
+    removed
+}
+
+// ---------------------------------------------------------------------------
 // Data directory
 // ---------------------------------------------------------------------------
 
@@ -248,6 +285,17 @@ fn cleanup_bak_files(home: &Path) {
         home.join(".roo"),
         home.join(".continue"),
         home.join(".jb-rules"),
+        home.join(".openclaw"),
+        home.join(".augment"),
+        home.join(".qoder"),
+        home.join(".qoderwork"),
+        home.join(".aider"),
+        home.join(".emacs.d"),
+        home.join(".copilot"),
+        home.join(".github"),
+        home.join(".github/hooks"),
+        home.join(".config/mcphub"),
+        home.join(".config/sublime-text"),
     ];
 
     let mut cleaned = 0;

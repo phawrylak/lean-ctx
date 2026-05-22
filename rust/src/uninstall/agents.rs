@@ -311,6 +311,16 @@ pub(super) fn remove_mcp_configs(home: &Path, dry_run: bool) -> bool {
         ("Cline", crate::core::editor_registry::cline_mcp_path()),
         ("Roo Code", crate::core::editor_registry::roo_mcp_path()),
         ("Hermes Agent", home.join(".hermes/config.yaml")),
+        ("OpenClaw", home.join(".openclaw/openclaw.json")),
+        ("Augment", home.join(".augment/settings.json")),
+        ("Qoder", home.join(".qoder/mcp.json")),
+        ("QoderWork", home.join(".qoderwork/mcp.json")),
+        ("Aider", home.join(".aider/mcp.json")),
+        ("Continue", home.join(".continue/mcp.json")),
+        ("Neovim (mcphub)", home.join(".config/mcphub/servers.json")),
+        ("Emacs", home.join(".emacs.d/mcp.json")),
+        ("Sublime Text", home.join(".config/sublime-text/mcp.json")),
+        ("Copilot CLI", home.join(".copilot/mcp-config.json")),
     ];
 
     let mut removed = false;
@@ -430,6 +440,10 @@ pub(super) fn remove_rules_files(home: &Path, dry_run: bool) -> bool {
         ("AWS Kiro", home.join(".kiro/steering/lean-ctx.md")),
         ("Verdent", home.join(".verdent/rules/lean-ctx.md")),
         ("Crush", home.join(".config/crush/rules/lean-ctx.md")),
+        ("OpenClaw", home.join(".openclaw/rules/lean-ctx.md")),
+        ("Augment", home.join(".augment/rules/lean-ctx.md")),
+        ("Qoder", home.join(".qoder/rules/lean-ctx.md")),
+        ("Hermes Agent", home.join(".hermes/rules/lean-ctx.md")),
     ];
 
     // Shared files: contain user content + lean-ctx block with markers.
@@ -450,6 +464,13 @@ pub(super) fn remove_rules_files(home: &Path, dry_run: bool) -> bool {
         ("VS Code", copilot_instructions_path(home)),
         ("Copilot CLI", home.join(".copilot/instructions.md")),
         ("OpenCode", home.join(".config/opencode/AGENTS.md")),
+        (
+            "Codex CLI",
+            crate::core::home::resolve_codex_dir()
+                .unwrap_or_else(|| home.join(".codex"))
+                .join("AGENTS.md"),
+        ),
+        ("Hermes Agent", home.join(".hermes/HERMES.md")),
     ];
 
     let mut removed = false;
@@ -603,6 +624,12 @@ pub(super) fn remove_hook_files(home: &Path, dry_run: bool) -> bool {
         crate::core::home::resolve_codex_dir()
             .unwrap_or_else(|| home.join(".codex"))
             .join("hooks/lean-ctx-rewrite-codex.sh"),
+        home.join(".codeium/windsurf/hooks/lean-ctx-rewrite.sh"),
+        home.join(".codeium/windsurf/hooks/lean-ctx-redirect.sh"),
+        home.join(".github/hooks/lean-ctx-rewrite.sh"),
+        home.join(".github/hooks/lean-ctx-redirect.sh"),
+        home.join(".qoder/hooks/lean-ctx-rewrite.sh"),
+        home.join(".qoder/hooks/lean-ctx-redirect.sh"),
     ];
 
     let mut removed = false;
@@ -669,6 +696,10 @@ pub(super) fn remove_hook_files(home: &Path, dry_run: bool) -> bool {
                 .unwrap_or_else(|| home.join(".codex"))
                 .join("hooks.json"),
         ),
+        ("Windsurf", home.join(".codeium/windsurf/hooks.json")),
+        ("Qoder", home.join(".qoder/settings.json")),
+        ("Copilot (global)", home.join(".github/hooks/hooks.json")),
+        ("Gemini CLI", home.join(".gemini/settings.json")),
     ] {
         if !hj_path.exists() {
             continue;
@@ -707,8 +738,23 @@ pub(super) fn remove_hook_files(home: &Path, dry_run: bool) -> bool {
     removed
 }
 
-/// Remove lean-ctx hook entries from hooks.json, preserving other hooks.
-/// Returns `Some(cleaned_json)` if non-lean-ctx hooks remain, `None` if empty.
+/// Check if a JSON value contains any lean-ctx reference (recursive).
+fn json_contains_lean_ctx(val: &serde_json::Value) -> bool {
+    match val {
+        serde_json::Value::String(s) => s.contains("lean-ctx"),
+        serde_json::Value::Array(arr) => arr.iter().any(json_contains_lean_ctx),
+        serde_json::Value::Object(map) => map.values().any(json_contains_lean_ctx),
+        _ => false,
+    }
+}
+
+/// Remove lean-ctx hook entries from hooks/settings JSON, preserving other entries.
+/// Handles multiple formats:
+/// - Flat: `{command: "lean-ctx ..."}` (Cursor hooks.json)
+/// - Nested: `{matcher: "...", hooks: [{type: "command", command: "lean-ctx ..."}]}` (Claude/Codex)
+/// - Copilot: `{bash: "lean-ctx ..."}` (Copilot hooks)
+///
+/// Returns `Some(cleaned_json)` if non-lean-ctx content remains, `None` if empty.
 pub(super) fn remove_lean_ctx_from_hooks_json(content: &str) -> Option<String> {
     let mut parsed: serde_json::Value = crate::core::jsonc::parse_jsonc(content).ok()?;
     let mut modified = false;
@@ -717,12 +763,7 @@ pub(super) fn remove_lean_ctx_from_hooks_json(content: &str) -> Option<String> {
         for entries in hooks.values_mut() {
             if let Some(arr) = entries.as_array_mut() {
                 let before = arr.len();
-                arr.retain(|entry| {
-                    !entry
-                        .get("command")
-                        .and_then(|c| c.as_str())
-                        .is_some_and(|cmd| cmd.contains("lean-ctx"))
-                });
+                arr.retain(|entry| !json_contains_lean_ctx(entry));
                 if arr.len() < before {
                     modified = true;
                 }
@@ -734,17 +775,23 @@ pub(super) fn remove_lean_ctx_from_hooks_json(content: &str) -> Option<String> {
         return None;
     }
 
-    let has_remaining_hooks =
-        parsed
-            .get("hooks")
-            .and_then(|h| h.as_object())
-            .is_some_and(|hooks| {
-                hooks
-                    .values()
-                    .any(|entries| entries.as_array().is_some_and(|a| !a.is_empty()))
-            });
+    // Remove empty event arrays after cleanup
+    if let Some(hooks) = parsed.get_mut("hooks").and_then(|h| h.as_object_mut()) {
+        hooks.retain(|_, v| v.as_array().is_none_or(|a| !a.is_empty()));
+    }
 
-    if has_remaining_hooks {
+    // Check if any non-hook settings remain in the file
+    let has_remaining = parsed.as_object().is_some_and(|obj| {
+        obj.iter().any(|(key, val)| {
+            if key == "hooks" {
+                val.as_object().is_some_and(|h| !h.is_empty())
+            } else {
+                !val.is_null()
+            }
+        })
+    });
+
+    if has_remaining {
         Some(serde_json::to_string_pretty(&parsed).ok()? + "\n")
     } else {
         None
