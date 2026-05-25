@@ -2,9 +2,11 @@ use std::io::Write as _;
 use std::path::PathBuf;
 use std::time::Duration;
 
-const CRASH_LOOP_WINDOW_SECS: u64 = 30;
-const CRASH_LOOP_THRESHOLD: usize = 5;
-const CRASH_LOOP_MAX_BACKOFF_SECS: u64 = 60;
+pub const CRASH_LOOP_WINDOW_SECS: u64 = 60;
+pub const CRASH_LOOP_THRESHOLD: usize = 8;
+pub const CRASH_LOOP_MAX_BACKOFF_SECS: u64 = 30;
+
+pub const MCP_PROCESS_NAME: &str = "mcp-server";
 
 pub struct StartupLockGuard {
     path: PathBuf,
@@ -130,12 +132,25 @@ pub fn crash_loop_backoff(process_name: &str) {
         let restarts_over = recent.len() - CRASH_LOOP_THRESHOLD;
         let backoff_secs =
             (2u64.saturating_pow(restarts_over as u32)).min(CRASH_LOOP_MAX_BACKOFF_SECS);
-        tracing::warn!(
-            "crash-loop detected ({} starts in {CRASH_LOOP_WINDOW_SECS}s), backing off {backoff_secs}s",
+        let msg = format!(
+            "lean-ctx: crash-loop protection — {process_name} started {} times in {CRASH_LOOP_WINDOW_SECS}s, \
+             waiting {backoff_secs}s before accepting connections. \
+             If your IDE is slow to initialize, this is normal.",
             recent.len()
         );
+        tracing::warn!("{msg}");
+        eprintln!("{msg}");
         std::thread::sleep(Duration::from_secs(backoff_secs));
     }
+}
+
+/// Clears the crash-loop history file, resetting any active backoff.
+pub fn reset_crash_loop(process_name: &str) {
+    let Some(dir) = crate::core::data_dir::lean_ctx_data_dir().ok() else {
+        return;
+    };
+    let ts_path = dir.join(format!(".{}-starts.log", sanitize_lock_name(process_name)));
+    let _ = std::fs::remove_file(&ts_path);
 }
 
 #[cfg(test)]
@@ -210,5 +225,133 @@ mod tests {
             Duration::from_secs(30),
         );
         assert!(g3.is_some());
+    }
+
+    #[test]
+    fn crash_loop_thresholds_are_resilient() {
+        let threshold = CRASH_LOOP_THRESHOLD;
+        let window = CRASH_LOOP_WINDOW_SECS;
+        let backoff = CRASH_LOOP_MAX_BACKOFF_SECS;
+        assert!(
+            threshold >= 8,
+            "threshold must tolerate IDE restart patterns (was {threshold})"
+        );
+        assert!(
+            window >= 60,
+            "window must cover slow IDE startup (was {window}s)"
+        );
+        assert!(
+            backoff <= 30,
+            "max backoff must not be too aggressive (was {backoff}s)"
+        );
+    }
+
+    #[test]
+    fn crash_loop_backoff_under_threshold_no_sleep() {
+        let _env = crate::core::data_dir::test_env_lock();
+        let dir = tempfile::tempdir().unwrap();
+        let _guard = EnvVarGuard::set("LEAN_CTX_DATA_DIR", dir.path());
+
+        let start = std::time::Instant::now();
+        for _ in 0..CRASH_LOOP_THRESHOLD {
+            crash_loop_backoff("test-no-sleep");
+        }
+        assert!(
+            start.elapsed() < Duration::from_secs(1),
+            "under threshold should not sleep"
+        );
+    }
+
+    #[test]
+    fn reset_crash_loop_clears_history() {
+        let _env = crate::core::data_dir::test_env_lock();
+        let dir = tempfile::tempdir().unwrap();
+        let _guard = EnvVarGuard::set("LEAN_CTX_DATA_DIR", dir.path());
+
+        for _ in 0..5 {
+            crash_loop_backoff("test-reset");
+        }
+        let log_path = dir.path().join(".test-reset-starts.log");
+        assert!(log_path.exists(), "crash loop log should exist after calls");
+
+        reset_crash_loop("test-reset");
+        assert!(
+            !log_path.exists(),
+            "crash loop log should be removed after reset"
+        );
+    }
+
+    #[test]
+    fn reset_crash_loop_nonexistent_is_noop() {
+        let _env = crate::core::data_dir::test_env_lock();
+        let dir = tempfile::tempdir().unwrap();
+        let _guard = EnvVarGuard::set("LEAN_CTX_DATA_DIR", dir.path());
+
+        reset_crash_loop("never-existed");
+    }
+
+    #[test]
+    fn crash_loop_log_only_keeps_recent_entries() {
+        let _env = crate::core::data_dir::test_env_lock();
+        let dir = tempfile::tempdir().unwrap();
+        let _guard = EnvVarGuard::set("LEAN_CTX_DATA_DIR", dir.path());
+
+        let log_path = dir.path().join(".test-prune-starts.log");
+        let old_ts = 1000u64;
+        std::fs::write(&log_path, format!("{old_ts}\n")).unwrap();
+
+        crash_loop_backoff("test-prune");
+
+        let content = std::fs::read_to_string(&log_path).unwrap();
+        let lines: Vec<&str> = content.lines().collect();
+        assert_eq!(
+            lines.len(),
+            1,
+            "old entry should be pruned, only current remains"
+        );
+        let ts: u64 = lines[0].parse().unwrap();
+        assert!(ts > old_ts, "remaining entry should be recent");
+    }
+
+    #[test]
+    fn sanitize_lock_name_strips_special_chars() {
+        assert_eq!(sanitize_lock_name("mcp-stdio"), "mcp-stdio");
+        assert_eq!(sanitize_lock_name("mcp_http"), "mcp_http");
+        assert_eq!(sanitize_lock_name("a/b\\c:d"), "a_b_c_d");
+        assert_eq!(sanitize_lock_name("name with spaces"), "name_with_spaces");
+    }
+
+    #[test]
+    fn crash_loop_backoff_formula_correctness() {
+        assert_eq!(
+            2u64.saturating_pow(1).min(CRASH_LOOP_MAX_BACKOFF_SECS),
+            2,
+            "1 over threshold = 2s backoff"
+        );
+        assert_eq!(
+            2u64.saturating_pow(2).min(CRASH_LOOP_MAX_BACKOFF_SECS),
+            4,
+            "2 over threshold = 4s backoff"
+        );
+        assert_eq!(
+            2u64.saturating_pow(3).min(CRASH_LOOP_MAX_BACKOFF_SECS),
+            8,
+            "3 over threshold = 8s backoff"
+        );
+        assert_eq!(
+            2u64.saturating_pow(4).min(CRASH_LOOP_MAX_BACKOFF_SECS),
+            16,
+            "4 over threshold = 16s backoff"
+        );
+        assert_eq!(
+            2u64.saturating_pow(5).min(CRASH_LOOP_MAX_BACKOFF_SECS),
+            30,
+            "5 over threshold = capped at 30s"
+        );
+        assert_eq!(
+            2u64.saturating_pow(10).min(CRASH_LOOP_MAX_BACKOFF_SECS),
+            30,
+            "10 over threshold = still capped at 30s"
+        );
     }
 }

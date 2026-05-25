@@ -289,11 +289,17 @@ class CockpitGraph extends HTMLElement {
 
     var edges = this._graphData.edges || [];
 
+    var rootFull = this._graphData.project_root_full || '';
+    var rootHint = rootFull
+      ? '<div class="graph-root-hint" style="font-size:11px;color:var(--muted);margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + esc(rootFull) + '">Scope: ' + esc(rootFull) + '</div>'
+      : '';
+
     container.innerHTML =
       '<div class="d3-container" id="ckg-deps-container">' +
       '<div class="graph-stats">' +
       '<span>' + esc(ff(files.length)) + '</span> files ' +
-      '<span>' + esc(ff(edges.length)) + '</span> edges</div>' +
+      '<span>' + esc(ff(edges.length)) + '</span> edges' +
+      rootHint + '</div>' +
       this._toolbarHtml('ckg-deps') +
       this._legendHtml(files) +
       '</div>' +

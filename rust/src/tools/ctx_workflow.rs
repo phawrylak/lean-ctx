@@ -7,21 +7,29 @@ pub fn handle_with_session(
     args: Option<&serde_json::Map<String, Value>>,
     session: &mut SessionState,
 ) -> String {
+    handle_with_session_agent(args, session, None)
+}
+
+pub fn handle_with_session_agent(
+    args: Option<&serde_json::Map<String, Value>>,
+    session: &mut SessionState,
+    agent_id: Option<&str>,
+) -> String {
     let action = get_str(args, "action").unwrap_or_else(|| "status".to_string());
 
     match action.as_str() {
-        "start" => handle_start(args),
-        "status" => handle_status(session),
-        "stop" => handle_stop(),
-        "transition" => handle_transition(args, session),
-        "complete" => handle_complete(args, session),
-        "evidence_add" => handle_evidence_add(args, session),
-        "evidence_list" => handle_evidence_list(session),
+        "start" => handle_start(args, agent_id),
+        "status" => handle_status(session, agent_id),
+        "stop" => handle_stop(agent_id),
+        "transition" => handle_transition(args, session, agent_id),
+        "complete" => handle_complete(args, session, agent_id),
+        "evidence_add" => handle_evidence_add(args, session, agent_id),
+        "evidence_list" => handle_evidence_list(session, agent_id),
         _ => "Unknown action. Use: start, status, transition, complete, evidence_add, evidence_list, stop".to_string(),
     }
 }
 
-fn handle_start(args: Option<&serde_json::Map<String, Value>>) -> String {
+fn handle_start(args: Option<&serde_json::Map<String, Value>>, agent_id: Option<&str>) -> String {
     let spec_json = get_str(args, "spec");
     let name_override = get_str(args, "name");
 
@@ -44,7 +52,7 @@ fn handle_start(args: Option<&serde_json::Map<String, Value>>) -> String {
     }
 
     let run = WorkflowRun::new(spec);
-    if let Err(e) = workflow::save_active(&run) {
+    if let Err(e) = workflow::save_active_for_agent(&run, agent_id) {
         return format!("Failed to save workflow: {e}");
     }
 
@@ -54,8 +62,8 @@ fn handle_start(args: Option<&serde_json::Map<String, Value>>) -> String {
     )
 }
 
-fn handle_status(session: &SessionState) -> String {
-    let Ok(active) = workflow::load_active() else {
+fn handle_status(session: &SessionState, agent_id: Option<&str>) -> String {
+    let Ok(active) = workflow::load_active_for_agent(agent_id) else {
         return "Error: failed to load active workflow.".to_string();
     };
     let Some(run) = active else {
@@ -111,8 +119,8 @@ fn handle_status(session: &SessionState) -> String {
     lines.join("\n")
 }
 
-fn handle_stop() -> String {
-    match workflow::clear_active() {
+fn handle_stop(agent_id: Option<&str>) -> String {
+    match workflow::clear_active_for_agent(agent_id) {
         Ok(()) => "Workflow stopped (active cleared).".to_string(),
         Err(e) => format!("Error clearing workflow: {e}"),
     }
@@ -121,13 +129,14 @@ fn handle_stop() -> String {
 fn handle_transition(
     args: Option<&serde_json::Map<String, Value>>,
     session: &SessionState,
+    agent_id: Option<&str>,
 ) -> String {
     let Some(to) = get_str(args, "to") else {
         return "Error: 'to' is required for transition".to_string();
     };
     let note = get_str(args, "value");
 
-    let Ok(active) = workflow::load_active() else {
+    let Ok(active) = workflow::load_active_for_agent(agent_id) else {
         return "Error: failed to load active workflow.".to_string();
     };
     let Some(mut run) = active else {
@@ -152,7 +161,7 @@ fn handle_transition(
             timestamp: Utc::now(),
         });
 
-    if let Err(e) = workflow::save_active(&run) {
+    if let Err(e) = workflow::save_active_for_agent(&run, agent_id) {
         return format!("Failed to save workflow: {e}");
     }
 
@@ -162,8 +171,9 @@ fn handle_transition(
 fn handle_complete(
     args: Option<&serde_json::Map<String, Value>>,
     session: &SessionState,
+    agent_id: Option<&str>,
 ) -> String {
-    let Ok(active) = workflow::load_active() else {
+    let Ok(active) = workflow::load_active_for_agent(agent_id) else {
         return "Error: failed to load active workflow.".to_string();
     };
     let Some(mut run) = active else {
@@ -194,9 +204,7 @@ fn handle_complete(
             timestamp: Utc::now(),
         });
 
-    // "done" is a terminal state — clear the active workflow file so the gate
-    // does not block subsequent tool calls in this or future sessions.
-    if let Err(e) = workflow::clear_active() {
+    if let Err(e) = workflow::clear_active_for_agent(agent_id) {
         return format!("Workflow completed but failed to clear: {e}");
     }
 
@@ -206,13 +214,14 @@ fn handle_complete(
 fn handle_evidence_add(
     args: Option<&serde_json::Map<String, Value>>,
     session: &mut SessionState,
+    agent_id: Option<&str>,
 ) -> String {
     let Some(key) = get_str(args, "key") else {
         return "Error: key is required".to_string();
     };
     let value = get_str(args, "value");
 
-    let Ok(active) = workflow::load_active() else {
+    let Ok(active) = workflow::load_active_for_agent(agent_id) else {
         return "Error: failed to load active workflow.".to_string();
     };
     let Some(mut run) = active else {
@@ -227,15 +236,15 @@ fn handle_evidence_add(
         let _ = ledger.save();
     }
 
-    if let Err(e) = workflow::save_active(&run) {
+    if let Err(e) = workflow::save_active_for_agent(&run, agent_id) {
         return format!("Failed to save workflow: {e}");
     }
 
     format!("Evidence added: {key}")
 }
 
-fn handle_evidence_list(session: &SessionState) -> String {
-    let Ok(active) = workflow::load_active() else {
+fn handle_evidence_list(session: &SessionState, agent_id: Option<&str>) -> String {
+    let Ok(active) = workflow::load_active_for_agent(agent_id) else {
         return "Error: failed to load active workflow.".to_string();
     };
     let Some(run) = active else {

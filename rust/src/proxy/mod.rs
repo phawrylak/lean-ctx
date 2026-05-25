@@ -302,7 +302,6 @@ async fn host_guard(
             return Ok(next.run(req).await);
         }
     }
-    // Missing or non-loopback host header → reject (DNS rebinding protection)
     Err(StatusCode::FORBIDDEN)
 }
 
@@ -326,5 +325,93 @@ async fn fallback_router(State(state): State<ProxyState>, req: Request<Body>) ->
                 "lean-ctx proxy: no handler for {method} {path}"
             )))
             .expect("BUG: building 404 response should never fail")
+    }
+}
+
+#[cfg(test)]
+mod auth_tests {
+    use super::*;
+
+    #[test]
+    fn is_provider_route_v1() {
+        assert!(is_provider_route("/v1/chat/completions"));
+        assert!(is_provider_route("/v1/messages"));
+        assert!(is_provider_route("/v1/completions"));
+    }
+
+    #[test]
+    fn is_provider_route_v1beta() {
+        assert!(is_provider_route("/v1beta/models"));
+    }
+
+    #[test]
+    fn is_provider_route_chat() {
+        assert!(is_provider_route("/chat/completions"));
+    }
+
+    #[test]
+    fn is_provider_route_rejects_non_provider() {
+        assert!(!is_provider_route("/health"));
+        assert!(!is_provider_route("/api/v2/test"));
+        assert!(!is_provider_route("/"));
+    }
+
+    fn build_request(headers: &[(&str, &str)], path: &str) -> axum::extract::Request {
+        let mut builder = axum::http::Request::builder().uri(path);
+        for (k, v) in headers {
+            builder = builder.header(*k, *v);
+        }
+        builder.body(axum::body::Body::empty()).unwrap()
+    }
+
+    #[test]
+    fn has_provider_api_key_x_api_key() {
+        let req = build_request(&[("x-api-key", "sk-ant-abc123")], "/v1/messages");
+        assert!(has_provider_api_key(&req));
+    }
+
+    #[test]
+    fn has_provider_api_key_x_goog() {
+        let req = build_request(&[("x-goog-api-key", "AIzaSyAbc")], "/v1beta/models");
+        assert!(has_provider_api_key(&req));
+    }
+
+    #[test]
+    fn has_provider_api_key_azure() {
+        let req = build_request(&[("api-key", "deadbeef")], "/v1/completions");
+        assert!(has_provider_api_key(&req));
+    }
+
+    #[test]
+    fn has_provider_api_key_bearer_sk() {
+        let req = build_request(
+            &[("authorization", "Bearer sk-proj-abc123")],
+            "/v1/chat/completions",
+        );
+        assert!(has_provider_api_key(&req));
+    }
+
+    #[test]
+    fn has_provider_api_key_empty_rejected() {
+        let req = build_request(&[("x-api-key", "  ")], "/v1/messages");
+        assert!(!has_provider_api_key(&req));
+    }
+
+    #[test]
+    fn has_provider_api_key_no_headers() {
+        let req = build_request(&[], "/v1/messages");
+        assert!(!has_provider_api_key(&req));
+    }
+
+    #[test]
+    fn has_provider_api_key_regular_bearer_rejected() {
+        let req = build_request(
+            &[("authorization", "Bearer some-session-token")],
+            "/v1/chat",
+        );
+        assert!(
+            !has_provider_api_key(&req),
+            "non-sk/gsk Bearer should not count as provider key"
+        );
     }
 }

@@ -92,30 +92,34 @@ pub fn detect_project_root_for_dashboard() -> String {
     }
 
     if let Some(session) = crate::core::session::SessionState::load_latest() {
-        // Try project_root first, but only if it resolves to a real project (has .git or markers).
-        // MCP sessions often set project_root to a temp sandbox directory that contains no code.
         if let Some(root) = session.project_root.as_deref() {
-            if !root.trim().is_empty() {
+            if !root.trim().is_empty() && Path::new(root).is_dir() {
                 if let Some(git_root) = git_root_for(root) {
                     return git_root;
                 }
                 if is_real_project(root) {
                     return root.to_string();
                 }
+                tracing::debug!(
+                    "[dashboard] session root '{root}' is not a recognized project, skipping"
+                );
             }
         }
         if let Some(cwd) = session.shell_cwd.as_deref() {
-            if !cwd.trim().is_empty() {
+            if !cwd.trim().is_empty() && Path::new(cwd).is_dir() {
                 let r = crate::core::protocol::detect_project_root_or_cwd(cwd);
                 return promote_to_git_root(&r);
             }
         }
         if let Some(last) = session.files_touched.last() {
             if !last.path.trim().is_empty() {
-                if let Some(parent) = Path::new(&last.path).parent() {
-                    let p = parent.to_string_lossy().to_string();
-                    let r = crate::core::protocol::detect_project_root_or_cwd(&p);
-                    return promote_to_git_root(&r);
+                let p_path = Path::new(&last.path);
+                if let Some(parent) = p_path.parent() {
+                    if parent.is_dir() {
+                        let p = parent.to_string_lossy().to_string();
+                        let r = crate::core::protocol::detect_project_root_or_cwd(&p);
+                        return promote_to_git_root(&r);
+                    }
                 }
             }
         }

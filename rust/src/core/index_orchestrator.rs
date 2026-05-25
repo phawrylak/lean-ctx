@@ -218,6 +218,101 @@ struct StatusResponse<'a> {
     project_root: &'a str,
     graph_index: ComponentStatus<'a>,
     bm25_index: ComponentStatus<'a>,
+    disk: DiskStatusAll,
+}
+
+#[derive(Debug, Serialize, Default)]
+pub struct DiskStatus {
+    pub exists: bool,
+    pub size_bytes: Option<u64>,
+    pub file_count: Option<u64>,
+    pub modified_at: Option<String>,
+}
+
+#[derive(Debug, Serialize, Default)]
+pub struct DiskStatusAll {
+    pub graph_index: DiskStatus,
+    pub bm25_index: DiskStatus,
+    pub code_graph: DiskStatus,
+}
+
+fn disk_status_for_graph(project_root: &str) -> DiskStatus {
+    let Some(dir) = graph_index::ProjectIndex::index_dir(project_root) else {
+        return DiskStatus::default();
+    };
+    let zst = dir.join("index.json.zst");
+    let json = dir.join("index.json");
+    let path = if zst.exists() {
+        zst
+    } else if json.exists() {
+        json
+    } else {
+        return DiskStatus::default();
+    };
+    let meta = std::fs::metadata(&path).ok();
+    let file_count =
+        graph_index::ProjectIndex::load(project_root).map(|idx| idx.files.len() as u64);
+    DiskStatus {
+        exists: true,
+        size_bytes: meta.as_ref().map(std::fs::Metadata::len),
+        file_count,
+        modified_at: meta.and_then(|m| m.modified().ok()).map(format_time),
+    }
+}
+
+fn disk_status_for_bm25(project_root: &str) -> DiskStatus {
+    let root = Path::new(project_root);
+    let path = BM25Index::index_file_path(root);
+    if !path.exists() {
+        return DiskStatus::default();
+    }
+    let meta = std::fs::metadata(&path).ok();
+    DiskStatus {
+        exists: true,
+        size_bytes: meta.as_ref().map(std::fs::Metadata::len),
+        file_count: None,
+        modified_at: meta.and_then(|m| m.modified().ok()).map(format_time),
+    }
+}
+
+fn disk_status_for_code_graph(project_root: &str) -> DiskStatus {
+    let dir = crate::core::property_graph::graph_dir(project_root);
+    let db_path = dir.join("graph.db");
+    if !db_path.exists() {
+        return DiskStatus::default();
+    }
+    let meta = std::fs::metadata(&db_path).ok();
+    let node_count = crate::core::property_graph::CodeGraph::open(project_root)
+        .ok()
+        .and_then(|g| {
+            g.connection()
+                .query_row("SELECT count(*) FROM nodes", [], |r| r.get::<_, i64>(0))
+                .ok()
+                .map(|c| c as u64)
+        });
+    DiskStatus {
+        exists: true,
+        size_bytes: meta.as_ref().map(std::fs::Metadata::len),
+        file_count: node_count,
+        modified_at: meta.and_then(|m| m.modified().ok()).map(format_time),
+    }
+}
+
+fn format_time(t: SystemTime) -> String {
+    let secs = t.duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
+    let dt = chrono::DateTime::from_timestamp(secs as i64, 0);
+    dt.map_or_else(
+        || format!("{secs}"),
+        |d| d.format("%Y-%m-%d %H:%M:%S UTC").to_string(),
+    )
+}
+
+pub fn disk_status(project_root: &str) -> DiskStatusAll {
+    DiskStatusAll {
+        graph_index: disk_status_for_graph(project_root),
+        bm25_index: disk_status_for_bm25(project_root),
+        code_graph: disk_status_for_code_graph(project_root),
+    }
 }
 
 pub fn status_json(project_root: &str) -> String {
@@ -229,6 +324,7 @@ pub fn status_json(project_root: &str) -> String {
         project_root,
         graph_index: component_status(&s.graph),
         bm25_index: component_status(&s.bm25),
+        disk: disk_status(project_root),
     };
     serde_json::to_string(&res).unwrap_or_else(|_| "{}".to_string())
 }

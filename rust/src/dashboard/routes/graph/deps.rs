@@ -44,6 +44,10 @@ fn graph() -> (&'static str, &'static str, String) {
             serde_json::Value::String(super::project_basename(&root)),
         );
         obj.insert(
+            "project_root_full".to_string(),
+            serde_json::Value::String(root.clone()),
+        );
+        obj.insert(
             "edge_stats".to_string(),
             serde_json::to_value(&edge_stats).unwrap_or_default(),
         );
@@ -149,7 +153,7 @@ fn graph_files() -> (&'static str, &'static str, String) {
             .cmp(&a["token_count"].as_u64().unwrap_or(0))
     });
     files.truncate(500);
-    let json = serde_json::json!({ "files": files });
+    let json = serde_json::json!({ "files": files, "project_root_full": root });
     let out = serde_json::to_string(&json).unwrap_or_else(|_| "{\"files\":[]}".to_string());
     ("200 OK", "application/json", out)
 }

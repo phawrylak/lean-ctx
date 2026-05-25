@@ -41,15 +41,30 @@ impl McpTool for CtxWorkflowTool {
     ) -> Result<ToolOutput, ErrorData> {
         let action = get_str(args, "action").unwrap_or_else(|| "status".to_string());
 
+        let agent_id_str = ctx
+            .agent_id
+            .as_ref()
+            .and_then(|h| h.blocking_read().clone());
+
         let result = {
-            let session_handle = ctx.session.as_ref().unwrap();
+            let session_handle = ctx
+                .session
+                .as_ref()
+                .ok_or_else(|| ErrorData::internal_error("session not available", None))?;
             let mut session = session_handle.blocking_write();
-            crate::tools::ctx_workflow::handle_with_session(Some(args), &mut session)
+            crate::tools::ctx_workflow::handle_with_session_agent(
+                Some(args),
+                &mut session,
+                agent_id_str.as_deref(),
+            )
         };
 
-        let workflow_handle = ctx.workflow.as_ref().unwrap();
-        let mut wf = workflow_handle.blocking_write();
-        *wf = crate::core::workflow::load_active().ok().flatten();
+        if let Some(workflow_handle) = ctx.workflow.as_ref() {
+            let mut wf = workflow_handle.blocking_write();
+            *wf = crate::core::workflow::load_active_for_agent(agent_id_str.as_deref())
+                .ok()
+                .flatten();
+        }
 
         Ok(ToolOutput {
             text: result,

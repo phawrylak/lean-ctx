@@ -518,11 +518,16 @@ pub fn cmd_cache(args: &[String]) {
             println!("Invalidated cache for {}", args[1]);
         }
         Some("prune") => {
-            let result = prune_bm25_caches();
+            let bm25 = prune_bm25_caches();
+            let graph = prune_graph_caches();
+            let removed = bm25.removed + graph.removed;
+            let freed = bm25.bytes_freed + graph.bytes_freed;
             println!(
-                "Pruned {} entries, freed {:.1} MB",
-                result.removed,
-                result.bytes_freed as f64 / 1_048_576.0
+                "Pruned {} entries, freed {:.1} MB (BM25: {}, graphs: {})",
+                removed,
+                freed as f64 / 1_048_576.0,
+                bm25.removed,
+                graph.removed,
             );
         }
         _ => {
@@ -540,7 +545,7 @@ pub fn cmd_cache(args: &[String]) {
             println!("  cache reset       Reset all cache (or --project for current project only)");
             println!("  cache invalidate  Remove specific file from cache");
             println!(
-                "  cache prune       Remove oversized, quarantined, and orphaned BM25 indexes"
+                "  cache prune       Remove oversized, quarantined, and orphaned indexes (BM25 + graphs)"
             );
         }
     }
@@ -631,6 +636,88 @@ pub fn prune_bm25_caches() -> PruneResult {
     }
 
     result
+}
+
+pub fn prune_graph_caches() -> PruneResult {
+    let mut result = PruneResult {
+        scanned: 0,
+        removed: 0,
+        bytes_freed: 0,
+    };
+
+    let Ok(data_dir) = crate::core::data_dir::lean_ctx_data_dir() else {
+        return result;
+    };
+    let graphs_dir = data_dir.join("graphs");
+    let Ok(entries) = std::fs::read_dir(&graphs_dir) else {
+        return result;
+    };
+
+    for entry in entries.flatten() {
+        let dir = entry.path();
+        if !dir.is_dir() {
+            continue;
+        }
+        result.scanned += 1;
+
+        let index_path = dir.join("index.json.zst");
+        let index_json = dir.join("index.json");
+
+        let has_index = index_path.exists() || index_json.exists();
+        if !has_index {
+            continue;
+        }
+
+        let idx_file = if index_path.exists() {
+            &index_path
+        } else {
+            &index_json
+        };
+
+        let root_from_index = try_read_project_root_from_graph(idx_file);
+        if let Some(root) = root_from_index {
+            if !root.is_empty() && !std::path::Path::new(&root).exists() {
+                let freed = dir_size(&dir);
+                result.bytes_freed += freed;
+                let _ = std::fs::remove_dir_all(&dir);
+                result.removed += 1;
+                println!(
+                    "  Removed orphaned graph ({:.1} MB, project gone: {}): {}",
+                    freed as f64 / 1_048_576.0,
+                    root,
+                    dir.display()
+                );
+                continue;
+            }
+        }
+
+        if let Ok(meta) = std::fs::metadata(idx_file) {
+            if meta.len() > 100 * 1024 * 1024 {
+                result.bytes_freed += meta.len();
+                let _ = std::fs::remove_file(idx_file);
+                result.removed += 1;
+                println!(
+                    "  Removed oversized graph ({:.1} MB): {}",
+                    meta.len() as f64 / 1_048_576.0,
+                    idx_file.display()
+                );
+            }
+        }
+    }
+
+    result
+}
+
+fn try_read_project_root_from_graph(path: &std::path::Path) -> Option<String> {
+    let data = if path.extension().and_then(|e| e.to_str()) == Some("zst") {
+        let compressed = std::fs::read(path).ok()?;
+        zstd::decode_all(compressed.as_slice()).ok()?
+    } else {
+        std::fs::read(path).ok()?
+    };
+    let content = String::from_utf8(data).ok()?;
+    let val: serde_json::Value = serde_json::from_str(&content).ok()?;
+    val.get("project_root")?.as_str().map(String::from)
 }
 
 fn dir_size(path: &std::path::Path) -> u64 {

@@ -12,10 +12,15 @@ pub(crate) fn cmd_index(args: &[String]) {
         .map(String::as_str);
     match sub {
         Some("status") => {
-            println!(
-                "{}",
-                crate::core::index_orchestrator::status_json(&project_root)
-            );
+            let json_flag = args.iter().any(|a| a == "--json");
+            if json_flag {
+                println!(
+                    "{}",
+                    crate::core::index_orchestrator::status_json(&project_root)
+                );
+            } else {
+                print_human_status(&project_root);
+            }
         }
         Some("build") => {
             crate::core::index_orchestrator::ensure_all_background(&project_root);
@@ -169,4 +174,51 @@ fn snapshot_code_files(project_root: &Path) -> HashMap<String, FileState> {
 
 fn is_code_file(path: &Path) -> bool {
     crate::core::bm25_index::is_code_file(path)
+}
+
+fn print_human_status(project_root: &str) {
+    let disk = crate::core::index_orchestrator::disk_status(project_root);
+
+    println!("  Project:     {project_root}");
+    println!(
+        "  Graph Index: {}",
+        format_disk_line(&disk.graph_index, "files")
+    );
+    println!(
+        "  BM25 Index:  {}",
+        format_disk_line(&disk.bm25_index, "chunks")
+    );
+    println!(
+        "  Code Graph:  {}",
+        format_disk_line(&disk.code_graph, "nodes")
+    );
+}
+
+fn format_disk_line(ds: &crate::core::index_orchestrator::DiskStatus, count_label: &str) -> String {
+    if !ds.exists {
+        return "not built".to_string();
+    }
+    let mut parts = vec!["ready".to_string()];
+    if let Some(count) = ds.file_count {
+        parts.push(format!("{count} {count_label}"));
+    }
+    if let Some(bytes) = ds.size_bytes {
+        parts.push(format_bytes(bytes));
+    }
+    if let Some(ref t) = ds.modified_at {
+        parts.push(format!("built {t}"));
+    }
+    format!("({})", parts.join(", "))
+}
+
+fn format_bytes(bytes: u64) -> String {
+    if bytes >= 1_073_741_824 {
+        format!("{:.1} GB", bytes as f64 / 1_073_741_824.0)
+    } else if bytes >= 1_048_576 {
+        format!("{:.1} MB", bytes as f64 / 1_048_576.0)
+    } else if bytes >= 1024 {
+        format!("{:.1} KB", bytes as f64 / 1024.0)
+    } else {
+        format!("{bytes} B")
+    }
 }

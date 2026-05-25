@@ -395,33 +395,13 @@ pub fn load_or_build(project_root: &str) -> ProjectIndex {
         }
     }
 
-    // Legacy: older builds may have cached the index under ".". Only accept it if it
-    // actually refers to the current cwd project, then migrate it to `root_abs`.
-    if let Some(idx) = ProjectIndex::load(".") {
-        if !idx.files.is_empty() {
-            let mut migrated = idx;
-            migrated.project_root.clone_from(&root_abs);
-            let _ = migrated.save();
-            if index_looks_stale(&migrated, &root_abs) {
-                tracing::warn!(
-                    "[graph_index: stale legacy index detected for {root_abs}; rebuilding]"
-                );
-                return scan(&root_abs);
-            }
-            return migrated;
-        }
-    }
-
-    // Try absolute cwd
+    // CWD fallback: only use if CWD is a subdirectory of root_abs (same project)
     if let Ok(cwd) = std::env::current_dir() {
         let cwd_str = normalize_project_root(&cwd.to_string_lossy());
-        if cwd_str != root_abs {
+        if cwd_str != root_abs && cwd_str.starts_with(&root_abs) {
             if let Some(idx) = ProjectIndex::load(&cwd_str) {
                 if !idx.files.is_empty() {
                     if index_looks_stale(&idx, &cwd_str) {
-                        tracing::warn!(
-                            "[graph_index: stale index detected for {cwd_str}; rebuilding]"
-                        );
                         return scan(&cwd_str);
                     }
                     return idx;
@@ -430,7 +410,6 @@ pub fn load_or_build(project_root: &str) -> ProjectIndex {
         }
     }
 
-    // No existing index found anywhere — auto-build
     scan(&root_abs)
 }
 
