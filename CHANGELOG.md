@@ -5,6 +5,34 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [3.6.17] — 2026-05-25
+
+### Added
+
+- **Antigravity CLI 2.0 as separate init target** — `lean-ctx init --agent antigravity-cli` writes MCP config to `~/.gemini/antigravity-cli/mcp_config.json`, distinct from the IDE target (`antigravity`). `lean-ctx init --agent gemini` now auto-configures both Antigravity IDE and CLI paths (#284)
+- **Doctor: daemon diagnostics** — `lean-ctx doctor` shows `systemctl --user is-active` state on Linux, warns when `loginctl enable-linger` is not set (required for boot-time start without login), and displays crash-loop log restart count with file path (#288, #289)
+- **Crash-loop log path API** — New `crash_loop_log_path()` public function for programmatic access to the MCP server restart history
+
+### Fixed
+
+- **Uninstall completeness (#274)** — `.bak` files containing lean-ctx content, `.lean-ctx.invalid.*.bak` temporaries, `~/.config/lean-ctx` XDG data directory, and project-local `.lean-ctx/` + `.lean-ctx-id` files are now cleaned up. Claude CLI MCP registry entries removed via `claude mcp remove`. `--keep-config` flag preserves MCP configs and rules for reinstall
+- **Linux daemon autostart (#288, #289)** — `systemctl --user enable` failures now print actionable error messages with manual fix commands. `is_installed()` checks `systemctl is-enabled` in addition to service file existence. Linger hint displayed when linger is not active
+- **Windows paths with spaces** — Shell hook rewrites use `shell_tokenize()` (respects single/double quotes, backslash escapes) instead of `split_whitespace()`. `shell_quote()` properly quotes arguments containing special characters
+- **Windows drive-letter grep parsing** — `parse_grep_line()` and `extract_file_from_match()` correctly skip `C:` drive prefix, preventing misinterpretation as file path separator
+- **Panic loop-undo (#277, #271)** — `catch_unwind` handler in `call_tool` now calls `record_error_outcome()` on the loop detector, so panicking tools are correctly counted as failures and subject to throttling instead of infinite retry
+- **PowerShell detection DRY (#286)** — Replaced inline `shell.to_lowercase().contains("powershell")` check in `shell/exec.rs` with `platform::is_powershell()`, single source of truth
+- **Windows CI (#286)** — Fixed `unused variable: quiet` in `daemon_autostart.rs` on non-Unix platforms. Shell wrapping tests now use platform-aware assertions (`expect_wrapped()` helper) that work on both Unix (single-quotes) and Windows (double-quotes with escaping)
+- **Index scoping** — Project index scans restricted to project root via `is_safe_scan_root()` guard. `index status` CLI output shows real values instead of nulls
+- **Workflow singleton** — Workflow state is now agent-scoped (`workflow-{agent_id}.json`) instead of global `active.json`. Stale workflows auto-cleaned after TTL expiry
+- **JSONC UTF-8 safety** — `strip_json_comments` uses `floor_char_boundary`/`ceil_char_boundary` for all string slicing, preventing panics on multi-byte characters in comments
+- **`ls -lah` size passthrough** — Human-readable sizes (e.g. `4.0K`, `1.2M`) from `ls -lh`/`ls -lah` are preserved instead of being converted to `0B`
+- **MCP server crash hardening** — `Mutex::lock().unwrap()` in hot paths replaced with graceful fallbacks. `memory_guard` uses eviction loop instead of `process::exit`. CSPRNG fallback for dashboard nonce generation
+- **Proxy: accept provider API keys on loopback** — Provider routes now accept API keys from local clients (#276)
+
+### Changed
+
+- **Antigravity IDE renamed** — The existing Antigravity target is now labeled "Antigravity IDE" in display names and doctor output, distinguishing it from the new "Antigravity CLI" target
+
 ## [3.6.16] — 2026-05-22
 
 ### Added
