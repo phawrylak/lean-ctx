@@ -110,9 +110,16 @@ fn pre_dispatch_inner(
         }
     }
 
+    // Explicit mode=full must not be downgraded by pressure or other heuristics.
+    // Only overlays (user-explicit) above can override it.
+    if requested_mode == "full" {
+        return no_change;
+    }
+
     if let Some(action) = pressure {
         let no_degrade = crate::core::config::Config::load().no_degrade_effective();
-        if !no_degrade {
+        let profile = crate::core::profiles::active_profile();
+        if !no_degrade && profile.degradation.enforce_effective() {
             if let Some(downgraded) = pressure_downgrade(requested_mode, action) {
                 return PreDispatchResult {
                     overridden_mode: Some(downgraded),
@@ -123,10 +130,6 @@ fn pre_dispatch_inner(
                 };
             }
         }
-    }
-
-    if requested_mode == "full" {
-        return no_change;
     }
 
     if let Ok(bt) = crate::core::bounce_tracker::global().lock() {
@@ -456,7 +459,7 @@ mod tests {
     }
 
     #[test]
-    fn pressure_downgrade_full_to_map() {
+    fn pressure_does_not_downgrade_explicit_full() {
         let result = pre_dispatch_read(
             "c.rs",
             "full",
@@ -464,13 +467,17 @@ mod tests {
             None,
             Some(&PressureAction::ForceCompression),
         );
-        assert_eq!(result.overridden_mode, Some("map".to_string()));
-        assert_eq!(result.reason, Some("pressure-auto-downgrade"));
-        assert!(result.pressure_downgraded);
+        assert!(
+            result.overridden_mode.is_none(),
+            "explicit mode=full must never be downgraded by pressure"
+        );
+        assert!(!result.pressure_downgraded);
     }
 
     #[test]
-    fn pressure_downgrade_map_to_signatures_on_evict() {
+    fn pressure_does_not_downgrade_when_enforce_off() {
+        // Default profile has degradation.enforce = false, so pressure
+        // should NOT downgrade any mode.
         let result = pre_dispatch_read(
             "c.rs",
             "map",
@@ -478,8 +485,11 @@ mod tests {
             None,
             Some(&PressureAction::EvictLeastRelevant),
         );
-        assert_eq!(result.overridden_mode, Some("signatures".to_string()));
-        assert!(result.pressure_downgraded);
+        assert!(
+            result.overridden_mode.is_none(),
+            "pressure must not downgrade when degradation.enforce is off"
+        );
+        assert!(!result.pressure_downgraded);
     }
 
     #[test]
@@ -490,7 +500,8 @@ mod tests {
     }
 
     #[test]
-    fn suggest_compression_downgrades_auto_to_map() {
+    fn suggest_compression_does_not_downgrade_when_enforce_off() {
+        // Default profile has degradation.enforce = false
         let result = pre_dispatch_read(
             "c.rs",
             "auto",
@@ -498,8 +509,11 @@ mod tests {
             None,
             Some(&PressureAction::SuggestCompression),
         );
-        assert_eq!(result.overridden_mode, Some("map".to_string()));
-        assert!(result.pressure_downgraded);
+        assert!(
+            result.overridden_mode.is_none(),
+            "suggest_compression must not downgrade when enforce is off"
+        );
+        assert!(!result.pressure_downgraded);
     }
 
     #[test]
@@ -671,10 +685,11 @@ mod tests {
     // When LCTX_NO_DEGRADE is NOT set (test default), pressure downgrade is active.
 
     #[test]
-    fn pre_dispatch_downgrades_under_force_when_degrade_enabled() {
+    fn pre_dispatch_does_not_downgrade_full_under_force() {
         if std::env::var("LCTX_NO_DEGRADE").is_ok() {
             return;
         }
+        // Explicit mode=full is protected: pressure cannot downgrade it
         let result = pre_dispatch_read(
             "nd_test.rs",
             "full",
@@ -682,15 +697,17 @@ mod tests {
             None,
             Some(&PressureAction::ForceCompression),
         );
-        assert_eq!(result.overridden_mode, Some("map".to_string()));
-        assert!(result.pressure_downgraded);
+        assert!(result.overridden_mode.is_none());
+        assert!(!result.pressure_downgraded);
     }
 
     #[test]
-    fn pre_dispatch_downgrades_auto_under_evict_when_degrade_enabled() {
+    fn pre_dispatch_does_not_downgrade_auto_when_enforce_off() {
         if std::env::var("LCTX_NO_DEGRADE").is_ok() {
             return;
         }
+        // Default profile has degradation.enforce = false, so pressure
+        // should not downgrade even non-full modes
         let result = pre_dispatch_read(
             "nd_test2.rs",
             "auto",
@@ -698,8 +715,8 @@ mod tests {
             None,
             Some(&PressureAction::EvictLeastRelevant),
         );
-        assert_eq!(result.overridden_mode, Some("signatures".to_string()));
-        assert!(result.pressure_downgraded);
+        assert!(result.overridden_mode.is_none());
+        assert!(!result.pressure_downgraded);
     }
 
     // --- estimate_read_tokens unit tests ---
