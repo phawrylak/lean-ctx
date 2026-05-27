@@ -74,7 +74,13 @@ pub fn role_capabilities(role_name: &str) -> HashSet<Capability> {
             Capability::KnowledgeRead,
         ]),
         "minimal" => HashSet::from([Capability::FsRead, Capability::KnowledgeRead]),
-        _ => HashSet::from([
+        _ => capabilities_from_role(role_name),
+    }
+}
+
+fn capabilities_from_role(role_name: &str) -> HashSet<Capability> {
+    let Some(role) = crate::core::roles::load_role(role_name) else {
+        return HashSet::from([
             Capability::FsRead,
             Capability::FsWrite,
             Capability::ExecSandbox,
@@ -82,8 +88,39 @@ pub fn role_capabilities(role_name: &str) -> HashSet<Capability> {
             Capability::KnowledgeRead,
             Capability::KnowledgeWrite,
             Capability::AgentManage,
-        ]),
+        ]);
+    };
+
+    let mut caps = HashSet::new();
+    caps.insert(Capability::FsRead);
+
+    let has_tool = |name: &str| {
+        role.tools.allowed.iter().any(|a| a == "*" || a == name)
+            && !role.tools.denied.iter().any(|d| d == name || d == "*")
+    };
+
+    if has_tool("ctx_edit") {
+        caps.insert(Capability::FsWrite);
     }
+    if has_tool("ctx_shell") {
+        caps.insert(Capability::ExecSandbox);
+        caps.insert(Capability::ExecUnrestricted);
+    }
+    if has_tool("ctx_knowledge") {
+        caps.insert(Capability::KnowledgeRead);
+        caps.insert(Capability::KnowledgeWrite);
+    }
+    if has_tool("ctx_agent") || has_tool("ctx_task") || has_tool("ctx_handoff") {
+        caps.insert(Capability::AgentManage);
+    }
+    if role.io.allow_cross_project_search {
+        caps.insert(Capability::CrossProject);
+    }
+    if role.io.allow_secret_paths {
+        caps.insert(Capability::ConfigWrite);
+    }
+
+    caps
 }
 
 pub fn check_capabilities(role_name: &str, tool_name: &str) -> CapabilityCheckResult {

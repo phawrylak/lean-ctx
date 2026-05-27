@@ -369,12 +369,29 @@ fn try_load_toml(path: &Path) -> Option<Role> {
 }
 
 fn load_role_from_disk(name: &str) -> Option<Role> {
+    if !is_valid_role_name(name) {
+        tracing::warn!(
+            "[SECURITY] Invalid role name rejected (path-traversal/special chars): {name}"
+        );
+        return None;
+    }
+
     let filename = format!("{name}.toml");
     if let Some(dir) = roles_dir_project() {
         let path = dir.join(&filename);
-        if let Some(mut r) = try_load_toml(&path) {
-            r.role.name = name.to_string();
-            return Some(r);
+        if path.exists() {
+            if RESERVED_ROLE_NAMES
+                .iter()
+                .any(|r| r.eq_ignore_ascii_case(name))
+            {
+                tracing::warn!(
+                    "[SECURITY] Project-level shadowing of reserved role '{name}' ignored. \
+                     Use global ~/.lean-ctx/roles/ to customize built-in roles."
+                );
+            } else if let Some(mut r) = try_load_toml(&path) {
+                r.role.name = name.to_string();
+                return Some(r);
+            }
         }
     }
     if let Some(dir) = roles_dir_global() {
@@ -425,13 +442,25 @@ fn merge_roles(parent: &Role, child: &Role) -> Role {
     }
 }
 
-fn load_role_recursive(name: &str, depth: usize) -> Option<Role> {
-    if depth > 5 {
+fn load_role_recursive(name: &str, visited: &mut HashSet<String>) -> Option<Role> {
+    if !visited.insert(name.to_string()) {
+        tracing::warn!("[SECURITY] Circular role inheritance detected at '{name}'");
         return None;
     }
     let role = load_role_from_disk(name).or_else(|| builtin_roles().remove(name))?;
     if let Some(parent_name) = &role.role.inherits {
-        if let Some(parent) = load_role_recursive(parent_name, depth + 1) {
+        if is_privileged_role(parent_name) && roles_dir_project().is_some() {
+            let is_from_project =
+                roles_dir_project().is_some_and(|d| d.join(format!("{name}.toml")).exists());
+            if is_from_project {
+                tracing::warn!(
+                    "[SECURITY] Project-level role '{name}' inheriting from privileged \
+                     role '{parent_name}' is blocked."
+                );
+                return None;
+            }
+        }
+        if let Some(parent) = load_role_recursive(parent_name, visited) {
             return Some(merge_roles(&parent, &role));
         }
     }
@@ -441,7 +470,8 @@ fn load_role_recursive(name: &str, depth: usize) -> Option<Role> {
 // ── Public API ──────────────────────────────────────────────────
 
 pub fn load_role(name: &str) -> Option<Role> {
-    load_role_recursive(name, 0)
+    let mut visited = HashSet::new();
+    load_role_recursive(name, &mut visited)
 }
 
 pub fn active_role_name() -> String {
@@ -470,10 +500,31 @@ pub fn active_role() -> Role {
 /// These roles must be set via env var (`LEAN_CTX_ROLE`) or config file.
 const PRIVILEGED_ROLES: &[&str] = &["admin", "ops"];
 
+/// Reserved role names that cannot be shadowed from project-level config.
+const RESERVED_ROLE_NAMES: &[&str] = &["coder", "reviewer", "debugger", "ops", "admin"];
+
 /// Returns true if the named role has elevated privileges that require
 /// explicit configuration (env/config) rather than runtime activation.
+/// Case-insensitive comparison to prevent "Admin" bypass.
 pub fn is_privileged_role(name: &str) -> bool {
-    PRIVILEGED_ROLES.contains(&name)
+    let lower = name.to_ascii_lowercase();
+    PRIVILEGED_ROLES.iter().any(|p| *p == lower)
+}
+
+/// Validate role name: alphanumeric, underscore, hyphen only. No path traversal.
+fn is_valid_role_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 64
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+}
+
+/// Check if a merged role is effectively privileged (wildcard tools + no denials, or secret paths).
+fn is_effectively_privileged(role: &Role) -> bool {
+    let wildcard_tools =
+        role.tools.allowed.iter().any(|a| a == "*") && role.tools.denied.is_empty();
+    wildcard_tools || role.io.allow_secret_paths
 }
 
 pub fn set_active_role(name: &str) -> Result<Role, String> {
@@ -482,6 +533,12 @@ pub fn set_active_role(name: &str) -> Result<Role, String> {
 
 /// Set active role. `from_config` = true allows privileged roles (env/config startup).
 pub fn set_active_role_with_source(name: &str, from_config: bool) -> Result<Role, String> {
+    if !is_valid_role_name(name) {
+        return Err(format!(
+            "[SECURITY] Invalid role name '{name}'. Only alphanumeric, underscore, and hyphen allowed."
+        ));
+    }
+
     let role = load_role(name).ok_or_else(|| format!("Role '{name}' not found"))?;
 
     if !from_config && is_privileged_role(name) {
@@ -491,10 +548,20 @@ pub fn set_active_role_with_source(name: &str, from_config: bool) -> Result<Role
         ));
     }
 
+    let is_builtin = builtin_roles().contains_key(name);
+    if !from_config && !is_builtin && is_effectively_privileged(&role) {
+        return Err(format!(
+            "[SECURITY] Cannot activate role '{name}' at runtime: it has effectively \
+             privileged permissions (wildcard tools or secret path access). \
+             Set LEAN_CTX_ROLE={name} in environment or config."
+        ));
+    }
+
     let prev = active_role_name();
     let lock = ACTIVE_ROLE_NAME.get_or_init(|| std::sync::Mutex::new("coder".to_string()));
-    if let Ok(mut g) = lock.lock() {
-        *g = name.to_string();
+    match lock.lock() {
+        Ok(mut g) => *g = name.to_string(),
+        Err(poisoned) => *poisoned.into_inner() = name.to_string(),
     }
     if prev != name {
         crate::core::events::emit_role_changed(&prev, name);
@@ -768,5 +835,68 @@ mod tests {
         assert!(!is_privileged_role("coder"));
         assert!(!is_privileged_role("reviewer"));
         assert!(!is_privileged_role("debugger"));
+    }
+
+    // --- Phase 2 V2: Role name validation ---
+
+    #[test]
+    fn valid_role_names() {
+        assert!(is_valid_role_name("coder"));
+        assert!(is_valid_role_name("my-custom-role"));
+        assert!(is_valid_role_name("Role_123"));
+        assert!(is_valid_role_name("ADMIN"));
+    }
+
+    #[test]
+    fn invalid_role_names() {
+        assert!(!is_valid_role_name(""));
+        assert!(!is_valid_role_name("../../evil"));
+        assert!(!is_valid_role_name("role with spaces"));
+        assert!(!is_valid_role_name("role;drop"));
+        assert!(!is_valid_role_name("a".repeat(65).as_str()));
+    }
+
+    #[test]
+    fn case_insensitive_privileged_check() {
+        assert!(is_privileged_role("Admin"));
+        assert!(is_privileged_role("ADMIN"));
+        assert!(is_privileged_role("Ops"));
+        assert!(is_privileged_role("OPS"));
+    }
+
+    #[test]
+    fn invalid_role_name_rejected_at_set() {
+        let result = set_active_role("../../evil");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("Invalid role name"));
+    }
+
+    #[test]
+    fn effectively_privileged_role_blocked_at_runtime() {
+        let role = Role {
+            role: RoleMeta {
+                name: "sneaky".into(),
+                ..Default::default()
+            },
+            tools: ToolPolicy {
+                allowed: vec!["*".into()],
+                denied: vec![],
+            },
+            io: IoPolicy::default(),
+            limits: RoleLimits::default(),
+        };
+        assert!(
+            is_effectively_privileged(&role),
+            "wildcard + no denials = effectively privileged"
+        );
+    }
+
+    #[test]
+    fn debugger_runtime_switch_allowed() {
+        let result = set_active_role("debugger");
+        assert!(
+            result.is_ok(),
+            "built-in debugger must be activatable at runtime"
+        );
     }
 }
