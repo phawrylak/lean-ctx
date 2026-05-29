@@ -908,7 +908,15 @@ pub(super) fn memory_cleanup_outcome() -> Outcome {
 }
 
 pub(super) fn ram_guardian_outcome() -> Outcome {
-    let Some(snap) = crate::core::memory_guard::MemorySnapshot::capture() else {
+    // Measure the daemon's RSS (not the CLI process) when the daemon is running.
+    let daemon_pid = crate::daemon::read_daemon_pid();
+    let snap = match daemon_pid {
+        Some(pid) if crate::ipc::process::is_alive(pid) => {
+            crate::core::memory_guard::MemorySnapshot::capture_for_pid(pid)
+        }
+        _ => crate::core::memory_guard::MemorySnapshot::capture(),
+    };
+    let Some(snap) = snap else {
         return Outcome {
             ok: true,
             line: format!(
@@ -920,6 +928,11 @@ pub(super) fn ram_guardian_outcome() -> Outcome {
         "jemalloc"
     } else {
         "system"
+    };
+    let source = if daemon_pid.is_some() {
+        "daemon"
+    } else {
+        "self"
     };
     let ok = snap.pressure_level == crate::core::memory_guard::PressureLevel::Normal;
     let color = if ok { GREEN } else { RED };
@@ -934,7 +947,7 @@ pub(super) fn ram_guardian_outcome() -> Outcome {
     Outcome {
         ok,
         line: format!(
-            "{BOLD}RAM Guardian{RST}  {color}{:.0} MB{RST} / {:.1} GB system ({:.1}%)  {DIM}limit: {:.0} MB ({allocator}){RST}{pressure_hint}",
+            "{BOLD}RAM Guardian{RST}  {color}{:.0} MB{RST} / {:.1} GB system ({:.1}%)  {DIM}limit: {:.0} MB ({allocator}, {source}){RST}{pressure_hint}",
             snap.rss_bytes as f64 / 1_048_576.0,
             snap.system_ram_bytes as f64 / 1_073_741_824.0,
             snap.rss_percent,

@@ -28,6 +28,23 @@ pub fn get_rss_bytes() -> Option<u64> {
     }
 }
 
+/// RSS of an arbitrary process by PID, or `None` if unavailable/dead.
+pub fn get_rss_bytes_for_pid(pid: u32) -> Option<u64> {
+    #[cfg(target_os = "linux")]
+    {
+        linux_rss_for_pid(pid)
+    }
+    #[cfg(target_os = "macos")]
+    {
+        macos_rss_for_pid(pid)
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    {
+        let _ = pid;
+        None
+    }
+}
+
 /// Total physical RAM in bytes, or `None` if unavailable.
 pub fn get_system_ram_bytes() -> Option<u64> {
     #[cfg(target_os = "linux")]
@@ -92,8 +109,19 @@ impl PressureLevel {
 }
 
 impl MemorySnapshot {
+    /// Capture memory snapshot of the **current** process.
     pub fn capture() -> Option<Self> {
-        let rss = get_rss_bytes()?;
+        Self::capture_impl(get_rss_bytes()?)
+    }
+
+    /// Capture memory snapshot for the **daemon** process (by PID).
+    /// Falls back to the current process if the PID is dead or unreadable.
+    pub fn capture_for_pid(pid: u32) -> Option<Self> {
+        let rss = get_rss_bytes_for_pid(pid).or_else(get_rss_bytes)?;
+        Self::capture_impl(rss)
+    }
+
+    fn capture_impl(rss: u64) -> Option<Self> {
         let sys = get_system_ram_bytes()?;
         let limit = rss_limit_bytes()?;
         let pct = if sys > 0 {
@@ -257,7 +285,13 @@ pub fn force_purge() {
 
 #[cfg(target_os = "linux")]
 fn linux_rss() -> Option<u64> {
-    let status = std::fs::read_to_string("/proc/self/status").ok()?;
+    linux_rss_for_pid(std::process::id())
+}
+
+#[cfg(target_os = "linux")]
+fn linux_rss_for_pid(pid: u32) -> Option<u64> {
+    let path = format!("/proc/{pid}/status");
+    let status = std::fs::read_to_string(path).ok()?;
     for line in status.lines() {
         if let Some(val) = line.strip_prefix("VmRSS:") {
             let kb: u64 = val.trim().trim_end_matches(" kB").trim().parse().ok()?;
@@ -299,6 +333,22 @@ fn macos_rss() -> Option<u64> {
     } else {
         None
     }
+}
+
+#[cfg(target_os = "macos")]
+fn macos_rss_for_pid(pid: u32) -> Option<u64> {
+    // Use `ps -o rss= -p <pid>` as a portable fallback.
+    // `task_for_pid` requires root/entitlements, `proc_pid_rusage` is private API.
+    let output = std::process::Command::new("ps")
+        .args(["-o", "rss=", "-p", &pid.to_string()])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&output.stdout);
+    let kb: u64 = text.trim().parse().ok()?;
+    Some(kb * 1024)
 }
 
 #[cfg(target_os = "macos")]
@@ -382,5 +432,32 @@ mod tests {
     #[test]
     fn atomic_pressure_defaults_to_normal() {
         assert_eq!(current_pressure(), PressureLevel::Normal);
+    }
+
+    #[test]
+    fn rss_for_own_pid_matches_self() {
+        if cfg!(any(target_os = "linux", target_os = "macos")) {
+            let self_rss = get_rss_bytes().unwrap();
+            let pid_rss = get_rss_bytes_for_pid(std::process::id()).unwrap();
+            let ratio = self_rss as f64 / pid_rss as f64;
+            assert!(
+                (0.5..2.0).contains(&ratio),
+                "self RSS ({self_rss}) and pid-based RSS ({pid_rss}) should be within 2x"
+            );
+        }
+    }
+
+    #[test]
+    fn rss_for_dead_pid_returns_none() {
+        let dead_pid = 999_999_999u32;
+        assert!(get_rss_bytes_for_pid(dead_pid).is_none());
+    }
+
+    #[test]
+    fn capture_for_pid_falls_back_on_dead_pid() {
+        if cfg!(any(target_os = "linux", target_os = "macos")) {
+            let snap = MemorySnapshot::capture_for_pid(999_999_999);
+            assert!(snap.is_some(), "should fall back to self RSS");
+        }
     }
 }
