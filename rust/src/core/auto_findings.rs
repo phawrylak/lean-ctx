@@ -1,6 +1,7 @@
 use std::sync::Mutex;
 use std::time::Instant;
 
+#[derive(Clone)]
 pub struct AutoFinding {
     pub file: Option<String>,
     pub summary: String,

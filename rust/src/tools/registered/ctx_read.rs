@@ -509,7 +509,11 @@ impl CtxReadTool {
         // related issues/PRs/schemas without a separate tool call.
         let hints_suffix = {
             if let Some(index) = crate::core::graph_index::ProjectIndex::load(&ctx.project_root) {
-                let hints = crate::core::cross_source_hints::hints_for_file(path, &index.edges);
+                let hints = crate::core::cross_source_hints::hints_for_file(
+                    path,
+                    &index.edges,
+                    &ctx.project_root,
+                );
                 if hints.is_empty() {
                     String::new()
                 } else {

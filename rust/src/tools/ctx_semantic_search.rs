@@ -719,7 +719,7 @@ fn hybrid_results_for_root(
         ensure_embeddings(root, index, engine, &mut embed_idx)?;
 
     let backend = crate::core::dense_backend::DenseBackendKind::try_from_env()?;
-    let cfg = HybridConfig::default();
+    let cfg = HybridConfig::from_config();
     let filter_fn = |p: &str| filter.matches(p);
     let filter_pred: Option<&dyn Fn(&str) -> bool> = filter
         .is_active()
@@ -740,8 +740,44 @@ fn hybrid_results_for_root(
         filter_pred,
         graph_ranks_ref,
     )?;
+
+    if cfg.splade_weight > 0.0 {
+        let splade = crate::core::splade_retrieval::hybrid_retrieve(query, index, candidate_k);
+        if !splade.is_empty() {
+            boost_with_splade(&mut results, &splade, cfg.splade_weight);
+        }
+    }
+
     results.truncate(top_k);
     Ok((results, coverage))
+}
+
+/// Boost existing hybrid results with SPLADE expansion scores.
+fn boost_with_splade(
+    results: &mut [HybridResult],
+    splade: &[crate::core::splade_retrieval::SpladeResult],
+    weight: f64,
+) {
+    use std::collections::HashMap;
+    let rrf_k = 60.0_f64;
+
+    let boosts: HashMap<&str, f64> = splade
+        .iter()
+        .enumerate()
+        .map(|(rank, sr)| (sr.file_path.as_str(), weight / (rrf_k + rank as f64 + 1.0)))
+        .collect();
+
+    for r in results.iter_mut() {
+        if let Some(&boost) = boosts.get(r.file_path.as_str()) {
+            r.rrf_score += boost;
+        }
+    }
+
+    results.sort_by(|a, b| {
+        b.rrf_score
+            .partial_cmp(&a.rrf_score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
 }
 
 fn label_for_root(root: &Path) -> String {
@@ -815,7 +851,7 @@ fn hybrid_search_mode(
             Err(e) => return format!("ERR: {e}"),
         };
 
-        let cfg = HybridConfig::default();
+        let cfg = HybridConfig::from_config();
         let filter_fn = |p: &str| filter.matches(p);
         let filter_pred: Option<&dyn Fn(&str) -> bool> = filter
             .is_active()
@@ -838,6 +874,14 @@ fn hybrid_search_mode(
             Ok(v) => v,
             Err(e) => return format!("ERR: {e}"),
         };
+
+        if cfg.splade_weight > 0.0 {
+            let splade = crate::core::splade_retrieval::hybrid_retrieve(query, index, top_k);
+            if !splade.is_empty() {
+                boost_with_splade(&mut results, &splade, cfg.splade_weight);
+            }
+        }
+
         results.truncate(top_k);
 
         let header = if compact {
@@ -1171,6 +1215,34 @@ fn normalize_languages(langs: &[String]) -> HashSet<String> {
         }
     }
     out
+}
+
+/// Public wrapper for eval harness: load embedding engine + index.
+#[cfg(feature = "embeddings")]
+pub fn load_engine_and_index_pub(
+    root: &Path,
+) -> Result<(&'static EmbeddingEngine, EmbeddingIndex), String> {
+    load_engine_and_index(root)
+}
+
+/// Public wrapper for eval harness: prepare embeddings for a project.
+#[cfg(feature = "embeddings")]
+pub fn ensure_embeddings_for_eval(
+    root: &Path,
+    index: &BM25Index,
+    engine: &EmbeddingEngine,
+    embed_idx: &mut EmbeddingIndex,
+) -> Result<(Vec<Vec<f32>>, f64, Vec<String>), String> {
+    ensure_embeddings(root, index, engine, embed_idx)
+}
+
+/// Public wrapper for eval harness: apply SPLADE boosting.
+pub fn boost_with_splade_pub(
+    results: &mut [HybridResult],
+    splade: &[crate::core::splade_retrieval::SpladeResult],
+    weight: f64,
+) {
+    boost_with_splade(results, splade, weight);
 }
 
 #[cfg(test)]

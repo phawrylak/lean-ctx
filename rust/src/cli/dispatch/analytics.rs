@@ -277,3 +277,44 @@ fn resolve_graph_root(arg: Option<&String>) -> String {
         })
         .unwrap_or_else(|| ".".to_string())
 }
+
+pub(super) fn cmd_compact(rest: &[String]) {
+    let target = rest.first().map_or_else(
+        || {
+            let home = dirs::home_dir().unwrap_or_default();
+            let claude = home.join(".claude").join("projects");
+            if claude.is_dir() {
+                claude
+            } else {
+                let cursor = home.join(".cursor").join("agent-transcripts");
+                if cursor.is_dir() {
+                    cursor
+                } else {
+                    std::env::current_dir().unwrap_or_default()
+                }
+            }
+        },
+        std::path::PathBuf::from,
+    );
+
+    if !target.exists() {
+        eprintln!("Path does not exist: {}", target.display());
+        std::process::exit(1);
+    }
+
+    let result = if target.is_file() {
+        core::transcript_compact::compact_file(&target)
+    } else {
+        core::transcript_compact::compact_directory(&target)
+    };
+
+    match result {
+        Ok(stats) => {
+            println!("Transcript compaction: {stats}");
+        }
+        Err(e) => {
+            eprintln!("Error: {e}");
+            std::process::exit(1);
+        }
+    }
+}

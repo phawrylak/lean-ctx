@@ -58,8 +58,8 @@ impl MemoryCleanup {
 #[serde(rename_all = "lowercase")]
 pub enum MemoryProfile {
     Low,
-    #[default]
     Balanced,
+    #[default]
     Performance,
 }
 

@@ -159,7 +159,7 @@ fn proof_graph_edges_produce_hints_for_ctx_read() {
     let mut all_edges: Vec<IndexEdge> = Vec::new();
     cross_source_edges::merge_edges(&mut all_edges, artifacts.edges);
 
-    let hints = cross_source_hints::hints_for_file("src/auth.rs", &all_edges);
+    let hints = cross_source_hints::hints_for_file("src/auth.rs", &all_edges, "/project");
 
     assert!(
         !hints.is_empty(),
@@ -413,7 +413,7 @@ fn proof_end_to_end_provider_data_searchable() {
     );
 
     // Cross-source hints should work for the websocket file
-    let hints = cross_source_hints::hints_for_file("src/websocket.rs", &edges);
+    let hints = cross_source_hints::hints_for_file("src/websocket.rs", &edges, "/project");
     assert!(
         !hints.is_empty(),
         "WIRING BROKEN: No cross-source hints for src/websocket.rs after full pipeline"

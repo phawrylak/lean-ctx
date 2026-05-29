@@ -10,13 +10,13 @@ pub fn handle(args: &serde_json::Map<String, serde_json::Value>, ctx: &ToolConte
 
     match action {
         // -- Discovery --
-        "discover" => handle_discover(),
+        "discover" => handle_discover(ctx),
 
         // -- Registry-based routing (provider_id + resource) --
         "query" => handle_registry_query(args, ctx),
 
         // -- MCP Bridge convenience actions --
-        "mcp_resources" => handle_mcp_resources(args),
+        "mcp_resources" => handle_mcp_resources(args, ctx),
 
         // -- Legacy GitLab actions (backward-compatible) --
         "gitlab_issues" => handle_gitlab_issues(args),
@@ -36,8 +36,10 @@ pub fn handle(args: &serde_json::Map<String, serde_json::Value>, ctx: &ToolConte
 // Discovery
 // ---------------------------------------------------------------------------
 
-fn handle_discover() -> String {
-    crate::core::providers::init::init_builtin_providers();
+fn handle_discover(ctx: &ToolContext) -> String {
+    crate::core::providers::init::init_with_project_root(Some(std::path::Path::new(
+        &ctx.project_root,
+    )));
     let infos = global_registry().discover();
     if infos.is_empty() {
         return "No providers registered. Set GITHUB_TOKEN or GITLAB_TOKEN.".to_string();
@@ -65,8 +67,13 @@ fn handle_discover() -> String {
 // MCP Bridge convenience: list resources from a specific MCP bridge
 // ---------------------------------------------------------------------------
 
-fn handle_mcp_resources(args: &serde_json::Map<String, serde_json::Value>) -> String {
-    crate::core::providers::init::init_builtin_providers();
+fn handle_mcp_resources(
+    args: &serde_json::Map<String, serde_json::Value>,
+    ctx: &ToolContext,
+) -> String {
+    crate::core::providers::init::init_with_project_root(Some(std::path::Path::new(
+        &ctx.project_root,
+    )));
 
     let Some(provider_id) = args.get("provider").and_then(|v| v.as_str()) else {
         let registry = global_registry();

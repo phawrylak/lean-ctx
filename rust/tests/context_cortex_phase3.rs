@@ -212,7 +212,7 @@ fn hints_surface_related_issues_for_code_file() {
         },
     ];
 
-    let hints = hints_for_file("src/auth.rs", &edges);
+    let hints = hints_for_file("src/auth.rs", &edges, "/project");
     assert_eq!(hints.len(), 2);
     assert!(hints.iter().any(|h| h.source_uri.contains("issues/42")));
     assert!(hints
@@ -237,7 +237,7 @@ fn hints_sorted_by_weight() {
         },
     ];
 
-    let hints = hints_for_file("src/auth.rs", &edges);
+    let hints = hints_for_file("src/auth.rs", &edges, "/project");
     assert_eq!(hints[0].source_uri, "github://issues/2");
     assert_eq!(hints[1].source_uri, "github://issues/1");
 }
@@ -251,7 +251,7 @@ fn hints_format_is_human_readable() {
         weight: 1.0,
     }];
 
-    let hints = hints_for_file("src/auth.rs", &edges);
+    let hints = hints_for_file("src/auth.rs", &edges, "/project");
     let formatted = format_hints(&hints);
 
     assert!(formatted.contains("Cross-Source Hints"));
@@ -424,6 +424,6 @@ fn end_to_end_saliency_pipeline() {
     );
 
     // 5. Cross-source hints for auth.rs
-    let hints = hints_for_file("src/auth.rs", &edges);
+    let hints = hints_for_file("src/auth.rs", &edges, "/project");
     assert!(!hints.is_empty());
 }

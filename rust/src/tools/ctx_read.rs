@@ -388,24 +388,22 @@ fn handle_with_options_inner(
                 cache.record_cache_hit(path);
                 let out = if crate::core::protocol::meta_visible() {
                     format!(
-                        "{file_ref}={short} [unchanged, {line_count}L, use cached context]\nFile unchanged on disk (same hash). If you haven't seen this content, use fresh=true to force re-read.",
+                        "{file_ref}={short} [unchanged {line_count}L]\nUnchanged on disk. Use fresh=true to force re-read.",
                         )
                 } else {
                     let proof = content_opt
                         .as_deref()
                         .and_then(|c| cache_hit_proof_line(c, read_count));
                     let reads_note = if read_count > 3 {
-                        format!(" (read {}x, unchanged)", read_count + 1)
+                        format!(" (read {}x)", read_count + 1)
                     } else {
                         String::new()
                     };
                     match proof {
                         Some(p) => format!(
-                            "{file_ref}={short} [unchanged, {line_count}L, use cached context{reads_note} | first: \"{p}\"]"
+                            "{file_ref}={short} [unchanged {line_count}L{reads_note} | \"{p}\"]"
                         ),
-                        None => format!(
-                            "{file_ref}={short} [unchanged, {line_count}L, use cached context{reads_note}]"
-                        ),
+                        None => format!("{file_ref}={short} [unchanged {line_count}L{reads_note}]"),
                     }
                 };
                 let out = crate::core::redaction::redact_text_if_enabled(&out);
@@ -717,23 +715,23 @@ fn handle_full_with_auto_delta(
         if policy_allows_stub && store_result.full_content_delivered {
             let out = if crate::core::protocol::meta_visible() {
                 format!(
-                    "{file_ref}={short} [unchanged, {}L, use cached context]\nFile unchanged on disk (same hash). If you haven't seen this content, use fresh=true to force re-read.",
+                    "{file_ref}={short} [unchanged {}L]\nUnchanged on disk. Use fresh=true to force re-read.",
                     store_result.line_count
                 )
             } else {
                 let proof = cache_hit_proof_line(&disk_content, store_result.read_count);
                 let reads_note = if store_result.read_count > 3 {
-                    format!(" (read {}x, unchanged)", store_result.read_count)
+                    format!(" (read {}x)", store_result.read_count)
                 } else {
                     String::new()
                 };
                 match proof {
                     Some(p) => format!(
-                        "{file_ref}={short} [unchanged, {}L, use cached context{reads_note} | first: \"{p}\"]",
+                        "{file_ref}={short} [unchanged {}L{reads_note} | \"{p}\"]",
                         store_result.line_count
                     ),
                     None => format!(
-                        "{file_ref}={short} [unchanged, {}L, use cached context{reads_note}]",
+                        "{file_ref}={short} [unchanged {}L{reads_note}]",
                         store_result.line_count
                     ),
                 }

@@ -12,6 +12,7 @@ use crate::tools::CrpMode;
 
 pub(crate) const MAX_FILE_SIZE: u64 = 512_000;
 pub(crate) const MAX_WALK_DEPTH: usize = 20;
+const MAX_MATCH_LINE_WIDTH: usize = 150;
 
 /// Searches files for a regex pattern with compressed output and monorepo scope hints.
 pub fn handle(
@@ -23,6 +24,7 @@ pub fn handle(
     respect_gitignore: bool,
     allow_secret_paths: bool,
 ) -> (String, usize) {
+    let ext_filter = ext_filter.map(|e| e.strip_prefix('.').unwrap_or(e));
     const MAX_PATTERN_LEN: usize = 1024;
     const MAX_REGEX_SIZE: usize = 1 << 20; // 1 MiB DFA limit
 
@@ -142,11 +144,15 @@ pub fn handle(
                     protocol::shorten_path_relative(&path.to_string_lossy(), &root_str);
                 // Count raw tokens incrementally (avoids separate Vec + join)
                 raw_tokens_accum += count_tokens(line.trim()) + 2;
-                let shown = if redact {
+                let mut shown = if redact {
                     crate::core::redaction::redact_text(line.trim())
                 } else {
                     line.trim().to_string()
                 };
+                if shown.len() > MAX_MATCH_LINE_WIDTH {
+                    shown.truncate(shown.floor_char_boundary(MAX_MATCH_LINE_WIDTH));
+                    shown.push_str("...");
+                }
                 matches.push(format!("{short_path}:{} {}", i + 1, shown));
                 if matches.len() >= max_results {
                     break;
@@ -191,9 +197,18 @@ pub fn handle(
 
     let mut result = format!("{} matches in {} files", matches.len(), files_searched);
     if matched_files.len() > 1 {
-        result.push_str(" [");
-        result.push_str(&matched_files.join(", "));
-        result.push(']');
+        if matched_files.len() <= 10 {
+            result.push_str(" [");
+            result.push_str(&matched_files.join(", "));
+            result.push(']');
+        } else {
+            let shown: Vec<&str> = matched_files.iter().take(8).copied().collect();
+            result.push_str(&format!(
+                " [{}, +{} more]",
+                shown.join(", "),
+                matched_files.len() - 8
+            ));
+        }
     }
     result.push_str(":\n");
     result.push_str(&matches.join("\n"));
@@ -212,7 +227,24 @@ pub fn handle(
         ));
     }
 
-    let scope_hint = monorepo_scope_hint(&matches, dir);
+    let scope_hint = {
+        static SHOWN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+        if SHOWN.load(std::sync::atomic::Ordering::Relaxed) {
+            None
+        } else {
+            let hint = monorepo_scope_hint(&matches, dir);
+            if hint.is_some() {
+                SHOWN.store(true, std::sync::atomic::Ordering::Relaxed);
+            }
+            hint
+        }
+    };
+
+    if let Some(delta) = crate::core::search_delta::compute_delta(pattern, &matches) {
+        let native_estimate = (raw_tokens_accum as f64 * 2.5).ceil() as usize;
+        let original = native_estimate.max(raw_tokens_accum);
+        return (delta, original);
+    }
 
     if symbol_map::substitution_enabled() {
         let file_ext = ext_filter.unwrap_or("rs");
@@ -237,16 +269,10 @@ pub fn handle(
         result.push_str(&hint);
     }
 
-    let sent = count_tokens(&result);
-
-    // The "original" cost is what a native grep with context lines would produce.
-    // rg defaults to showing full paths + 2 context lines per match. We estimate
-    // the native cost as ~3x the raw match output (context + separators + headers).
     let native_estimate = (raw_tokens_accum as f64 * 2.5).ceil() as usize;
     let original = native_estimate.max(raw_tokens_accum);
-    let savings = protocol::format_savings(original, sent);
 
-    (format!("{result}\n{savings}"), original)
+    (result, original)
 }
 
 pub(crate) fn is_binary_ext(path: &Path) -> bool {

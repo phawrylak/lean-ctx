@@ -326,7 +326,16 @@ const TEMPLATES: &[InstructionTemplate] = &[
 ];
 
 /// Generates the INSTRUCTION CODES block for agent system prompts.
+/// Only emits content when CRP mode is Tdd (otherwise returns empty string
+/// to avoid wasting ~80-100 tokens per MCP instructions payload).
 pub fn instruction_decoder_block() -> String {
+    let mode = crate::core::profiles::active_profile()
+        .compression
+        .crp_mode_effective()
+        .to_string();
+    if mode != "tdd" {
+        return String::new();
+    }
     let pairs: Vec<String> = TEMPLATES
         .iter()
         .map(|t| format!("{}={}", t.code, t.full))

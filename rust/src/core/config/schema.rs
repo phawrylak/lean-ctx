@@ -259,9 +259,42 @@ impl ConfigSchema {
             "minimal_overhead".into(),
             key_with_env(
                 "bool",
-                serde_json::json!(false),
+                serde_json::json!(true),
                 "Skip session/knowledge/gotcha blocks in MCP instructions",
                 "LEAN_CTX_MINIMAL",
+            ),
+        );
+        root.insert(
+            "symbol_map_auto".into(),
+            key(
+                "bool",
+                serde_json::json!(true),
+                "Auto-enable SymbolMap for projects with >50 source files",
+            ),
+        );
+        root.insert(
+            "journal_enabled".into(),
+            key(
+                "bool",
+                serde_json::json!(true),
+                "Write human-readable activity journal to ~/.lean-ctx/journal.md",
+            ),
+        );
+        root.insert(
+            "auto_capture".into(),
+            key(
+                "bool",
+                serde_json::json!(true),
+                "Automatic knowledge capture from tool findings",
+            ),
+        );
+        root.insert(
+            "cache_policy".into(),
+            key_with_env(
+                "enum(aggressive|safe|off)",
+                serde_json::json!("aggressive"),
+                "Cache policy for ctx_read: aggressive (13-tok stubs), safe (map on hit), off (always disk)",
+                "LEAN_CTX_CACHE_POLICY",
             ),
         );
         root.insert(
@@ -312,8 +345,8 @@ impl ConfigSchema {
             "memory_profile".into(),
             key_enum_with_env(
                 &["low", "balanced", "performance"],
-                "balanced",
-                "Controls RAM vs feature trade-off",
+                "performance",
+                "Controls RAM vs feature trade-off (performance = max quality)",
                 "LEAN_CTX_MEMORY_PROFILE",
             ),
         );
@@ -548,9 +581,59 @@ impl ConfigSchema {
                 "Maximum total disk usage for the archive",
             ),
         );
+        archive.insert(
+            "ephemeral".into(),
+            key("bool", serde_json::json!(cfg.archive.ephemeral), "Replace large results with summary+ref (ctx_expand to retrieve). Env: LEAN_CTX_EPHEMERAL"),
+        );
         sections.insert("archive".into(), SectionSchema {
             description: "Settings for the zero-loss compression archive (large tool outputs saved to disk)".into(),
             keys: archive,
+        });
+
+        let mut search = BTreeMap::new();
+        search.insert(
+            "bm25_weight".into(),
+            key(
+                "f64",
+                serde_json::json!(cfg.search.bm25_weight),
+                "BM25 lexical search weight in RRF fusion",
+            ),
+        );
+        search.insert(
+            "dense_weight".into(),
+            key(
+                "f64",
+                serde_json::json!(cfg.search.dense_weight),
+                "Dense vector search weight in RRF fusion",
+            ),
+        );
+        search.insert(
+            "bm25_candidates".into(),
+            key(
+                "usize",
+                serde_json::json!(cfg.search.bm25_candidates),
+                "Number of BM25 candidates to retrieve before fusion",
+            ),
+        );
+        search.insert(
+            "dense_candidates".into(),
+            key(
+                "usize",
+                serde_json::json!(cfg.search.dense_candidates),
+                "Number of dense candidates to retrieve before fusion",
+            ),
+        );
+        search.insert(
+            "splade_weight".into(),
+            key(
+                "f64",
+                serde_json::json!(cfg.search.splade_weight),
+                "SPLADE expansion weight (0.0 to disable)",
+            ),
+        );
+        sections.insert("search".into(), SectionSchema {
+            description: "Hybrid search weights for ctx_semantic_search (BM25 + dense vector + SPLADE + graph proximity)".into(),
+            keys: search,
         });
 
         let mut autonomy = BTreeMap::new();
@@ -1222,6 +1305,52 @@ impl ConfigSchema {
                 ),
             );
         }
+
+        let mut llm_keys = BTreeMap::new();
+        llm_keys.insert(
+            "enabled".into(),
+            key(
+                "bool",
+                serde_json::json!(false),
+                "Enable optional LLM enhancements (query expansion, contradiction explanation)",
+            ),
+        );
+        llm_keys.insert(
+            "backend".into(),
+            key_enum(
+                &["ollama", "openrouter", "anthropic"],
+                "ollama",
+                "LLM backend provider",
+            ),
+        );
+        llm_keys.insert(
+            "model".into(),
+            key(
+                "string",
+                serde_json::json!("llama3.2"),
+                "Model name for the selected backend",
+            ),
+        );
+        llm_keys.insert(
+            "api_key".into(),
+            key(
+                "string",
+                serde_json::json!(""),
+                "API key for OpenRouter or Anthropic backends",
+            ),
+        );
+        llm_keys.insert(
+            "timeout_secs".into(),
+            key(
+                "u64",
+                serde_json::json!(10),
+                "HTTP timeout for LLM requests",
+            ),
+        );
+        sections.insert("llm".into(), SectionSchema {
+            description: "Optional LLM enhancement settings (query expansion, contradiction explanation). Deterministic fallback when disabled or unreachable.".into(),
+            keys: llm_keys,
+        });
 
         ConfigSchema {
             version: 1,

@@ -227,7 +227,7 @@ fn scenario_cross_source_edges_link_issues_to_files() {
     let mut all_edges: Vec<IndexEdge> = Vec::new();
     cross_source_edges::merge_edges(&mut all_edges, artifacts.edges);
 
-    let hints = cross_source_hints::hints_for_file("src/auth/handler.rs", &all_edges);
+    let hints = cross_source_hints::hints_for_file("src/auth/handler.rs", &all_edges, "/project");
     assert!(
         !hints.is_empty(),
         "Should generate hints for src/auth/handler.rs"

@@ -304,7 +304,7 @@ fn scenario_bug_investigation_full_pipeline() {
     );
 
     // === 5. CROSS-SOURCE HINTS ===
-    let hints = hints_for_file("src/auth/jwt.rs", &edges);
+    let hints = hints_for_file("src/auth/jwt.rs", &edges, "/project");
     assert!(!hints.is_empty(), "jwt.rs should have cross-source hints");
     let formatted = format_hints(&hints);
     assert!(
@@ -449,7 +449,7 @@ fn scenario_feature_development_cross_source() {
     );
 
     // Hints for user.rs should include the Jira ticket
-    let hints = hints_for_file("src/models/user.rs", &edges);
+    let hints = hints_for_file("src/models/user.rs", &edges, "/project");
     assert!(!hints.is_empty(), "user.rs should have hints from Jira");
 }
 

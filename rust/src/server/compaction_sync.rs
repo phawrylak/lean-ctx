@@ -40,6 +40,7 @@ pub fn sync_if_compacted(cache: &mut SessionCache, data_dir: &Path) -> bool {
     };
 
     LAST_COMPACTION_TS.store(latest_compaction_ts, Ordering::Relaxed);
+    crate::core::search_delta::reset();
     let reset_count = cache.reset_delivery_flags();
     if reset_count > 0 {
         eprintln!(

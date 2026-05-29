@@ -447,6 +447,25 @@ fn is_disabled() -> bool {
     std::env::var("LEAN_CTX_DISABLED").is_ok()
 }
 
+/// Detects if Claude Code with interleaved thinking is active.
+/// PreToolUse hooks that mutate tool_use blocks (rewrite/redirect) corrupt
+/// thinking block signatures, causing persistent 400 errors (#313).
+fn is_thinking_mode_active() -> bool {
+    if std::env::var("CLAUDE_CODE_THINKING").is_ok() {
+        return true;
+    }
+    if let Ok(v) = std::env::var("CLAUDE_CODE_ENTRYPOINT") {
+        if !v.is_empty() {
+            if let Ok(model) = std::env::var("ANTHROPIC_MODEL") {
+                if model.contains("thinking") || model.contains("opus") {
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+
 fn is_harden_active() -> bool {
     matches!(std::env::var("LEAN_CTX_HARDEN"), Ok(v) if v.trim() == "1")
 }
@@ -532,6 +551,10 @@ fn build_dual_rewrite_output(tool_input: Option<&serde_json::Value>, rewritten: 
 pub fn handle_rewrite() {
     let allow = build_dual_allow_output();
     if is_disabled() {
+        print!("{allow}");
+        return;
+    }
+    if is_thinking_mode_active() {
         print!("{allow}");
         return;
     }
@@ -849,7 +872,7 @@ fn emit_rewrite(rewritten: &str) {
 
 pub fn handle_redirect() {
     let allow = build_dual_allow_output();
-    if is_disabled() {
+    if is_disabled() || is_thinking_mode_active() {
         let _ = read_stdin_with_timeout(HOOK_STDIN_TIMEOUT);
         print!("{allow}");
         return;
@@ -1147,7 +1170,7 @@ pub fn handle_copilot() {
 /// not via stdin JSON. Uses native OS paths (not MSYS) because the calling
 /// shell may be PowerShell or cmd on Windows.
 pub fn handle_rewrite_inline() {
-    if is_disabled() {
+    if is_disabled() || is_thinking_mode_active() {
         return;
     }
     let binary = resolve_binary_native();

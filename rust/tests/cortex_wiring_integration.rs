@@ -98,7 +98,7 @@ fn full_pipeline_provider_to_hints() {
     );
 
     // Step 4: Cross-source hints for the referenced file
-    let hints = cross_source_hints::hints_for_file("src/auth/handler.rs", &edges);
+    let hints = cross_source_hints::hints_for_file("src/auth/handler.rs", &edges, "/project");
     assert!(
         !hints.is_empty(),
         "should find hints for src/auth/handler.rs"
@@ -165,7 +165,7 @@ fn multi_file_reference_produces_hints_for_each() {
         "src/auth/middleware.rs",
         "src/db/sessions.rs",
     ] {
-        let hints = cross_source_hints::hints_for_file(file, &edges);
+        let hints = cross_source_hints::hints_for_file(file, &edges, "/project");
         assert!(!hints.is_empty(), "should find hints for {file}");
         assert!(
             hints.iter().any(|h| h.source_uri.contains("issues/55")),
@@ -298,7 +298,7 @@ fn mcp_handler_flow_provider_then_read_hints() {
     assert!(result.edges_created > 0);
 
     // Step 3: Simulate ctx_read — check cross-source hints for referenced files
-    let hints_pool = cross_source_hints::hints_for_file("src/db/pool.rs", &edges);
+    let hints_pool = cross_source_hints::hints_for_file("src/db/pool.rs", &edges, "/project");
     assert!(
         !hints_pool.is_empty(),
         "pool.rs should have cross-source hints"
@@ -316,13 +316,13 @@ fn mcp_handler_flow_provider_then_read_hints() {
         "pool.rs should link to PR #88"
     );
 
-    let hints_config = cross_source_hints::hints_for_file("src/db/config.rs", &edges);
+    let hints_config = cross_source_hints::hints_for_file("src/db/config.rs", &edges, "/project");
     assert!(
         !hints_config.is_empty(),
         "config.rs should have cross-source hints"
     );
 
-    let hints_test = cross_source_hints::hints_for_file("tests/pool_test.rs", &edges);
+    let hints_test = cross_source_hints::hints_for_file("tests/pool_test.rs", &edges, "/project");
     assert!(
         !hints_test.is_empty(),
         "pool_test.rs should have cross-source hints"

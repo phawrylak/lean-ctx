@@ -380,6 +380,21 @@ pub struct Config {
     /// Override via LEAN_CTX_MINIMAL env var.
     #[serde(default)]
     pub minimal_overhead: bool,
+    /// Auto-enable SymbolMap for projects with >50 source files.
+    #[serde(default = "serde_defaults::default_true")]
+    pub symbol_map_auto: bool,
+    /// Enable human-readable activity journal (~/.lean-ctx/journal.md).
+    #[serde(default)]
+    pub journal_enabled: bool,
+    /// Opt-in: auto-persist interesting findings as knowledge facts.
+    #[serde(default)]
+    pub auto_capture: bool,
+    /// Hybrid search weights (BM25/dense/candidates).
+    #[serde(default)]
+    pub search: crate::core::hybrid_search::HybridConfig,
+    /// Optional LLM enhancement (query expansion, contradiction explanation).
+    #[serde(default)]
+    pub llm: crate::core::llm_enhance::LlmConfig,
     /// Disable shell hook injection (the _lc() function that wraps CLI commands).
     /// Override via LEAN_CTX_NO_HOOK env var.
     #[serde(default)]
@@ -540,16 +555,27 @@ pub struct ArchiveConfig {
     pub threshold_chars: usize,
     pub max_age_hours: u64,
     pub max_disk_mb: u64,
+    pub ephemeral: bool,
 }
 
 impl Default for ArchiveConfig {
     fn default() -> Self {
         Self {
             enabled: true,
-            threshold_chars: 4096,
+            threshold_chars: 800,
             max_age_hours: 48,
             max_disk_mb: 500,
+            ephemeral: true,
         }
+    }
+}
+
+impl ArchiveConfig {
+    pub fn ephemeral_effective(&self) -> bool {
+        if let Ok(v) = std::env::var("LEAN_CTX_EPHEMERAL") {
+            return !matches!(v.trim(), "0" | "false" | "off");
+        }
+        self.ephemeral && self.enabled
     }
 }
 
@@ -891,7 +917,12 @@ impl Default for Config {
             allow_paths: Vec::new(),
             extra_roots: Vec::new(),
             content_defined_chunking: false,
-            minimal_overhead: false,
+            minimal_overhead: true,
+            symbol_map_auto: true,
+            journal_enabled: true,
+            auto_capture: true,
+            search: crate::core::hybrid_search::HybridConfig::default(),
+            llm: crate::core::llm_enhance::LlmConfig::default(),
             shell_hook_disabled: false,
             shell_activation: ShellActivation::default(),
             update_check_disabled: false,
@@ -2031,6 +2062,9 @@ impl Config {
         }
         if local.archive.max_disk_mb != ArchiveConfig::default().max_disk_mb {
             self.archive.max_disk_mb = local.archive.max_disk_mb;
+        }
+        if !local.archive.ephemeral {
+            self.archive.ephemeral = false;
         }
         let mem_def = MemoryPolicy::default();
         if local.memory.knowledge.max_facts != mem_def.knowledge.max_facts {

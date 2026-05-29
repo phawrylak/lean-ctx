@@ -39,6 +39,9 @@ fn compress_request_body(body: &[u8]) -> (Vec<u8>, usize, usize) {
     let mut modified = false;
 
     if let Some(messages) = doc.get_mut("messages").and_then(|m| m.as_array_mut()) {
+        super::history_prune::prune_history(messages, 6);
+        modified = true;
+
         for msg in messages.iter_mut() {
             let role = msg.get("role").and_then(|r| r.as_str()).unwrap_or("");
             if role != "user" {

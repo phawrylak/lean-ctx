@@ -36,7 +36,14 @@ pub fn discover_configs(project_root: Option<&Path>) -> Vec<DiscoveredConfig> {
     // Deduplicate: project-local configs override global ones (last wins).
     let mut seen = std::collections::HashMap::new();
     for cfg in configs {
-        seen.insert(cfg.config.id.clone(), cfg);
+        if let Some(prev) = seen.insert(cfg.config.id.clone(), cfg.clone()) {
+            tracing::info!(
+                "[config_provider] '{}' overridden: {} → {}",
+                cfg.config.id,
+                prev.source_path.display(),
+                cfg.source_path.display()
+            );
+        }
     }
     let mut result: Vec<_> = seen.into_values().collect();
     result.sort_by(|a, b| a.config.id.cmp(&b.config.id));
@@ -75,8 +82,21 @@ fn config_directories(project_root: Option<&Path>) -> Vec<PathBuf> {
 
 /// Try to load and parse a single config file.
 fn try_load_config(path: &Path) -> Option<DiscoveredConfig> {
-    let ext = path.extension()?.to_str()?;
-    let content = std::fs::read_to_string(path).ok()?;
+    let Some(ext) = path.extension().and_then(|e| e.to_str()) else {
+        tracing::debug!(
+            "[config_provider] skipping {}: no extension",
+            path.display()
+        );
+        return None;
+    };
+
+    let content = match std::fs::read_to_string(path) {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::warn!("[config_provider] failed to read {}: {e}", path.display());
+            return None;
+        }
+    };
 
     let config: ProviderConfig = match ext {
         "toml" => toml::from_str(&content)
@@ -91,7 +111,13 @@ fn try_load_config(path: &Path) -> Option<DiscoveredConfig> {
                 e
             })
             .ok()?,
-        _ => return None,
+        other => {
+            tracing::debug!(
+                "[config_provider] skipping {}: unsupported extension .{other}",
+                path.display()
+            );
+            return None;
+        }
     };
 
     if let Err(e) = config.validate() {

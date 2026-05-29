@@ -19,15 +19,25 @@ pub struct CrossSourceHint {
 
 /// Find cross-source hints for a given file path by looking up
 /// edges in the graph index that connect to external URIs.
-pub fn hints_for_file(file_path: &str, edges: &[IndexEdge]) -> Vec<CrossSourceHint> {
+/// Matches both absolute and project-relative paths since edges
+/// store relative paths while ctx_read passes absolute ones.
+pub fn hints_for_file(
+    file_path: &str,
+    edges: &[IndexEdge],
+    project_root: &str,
+) -> Vec<CrossSourceHint> {
+    let rel = crate::core::graph_index::graph_relative_key(file_path, project_root);
+
+    let matches_path = |edge_path: &str| -> bool { edge_path == file_path || edge_path == rel };
+
     let mut hints: Vec<CrossSourceHint> = edges
         .iter()
         .filter(|e| {
-            (e.from == file_path && is_external_uri(&e.to))
-                || (e.to == file_path && is_external_uri(&e.from))
+            (matches_path(&e.from) && is_external_uri(&e.to))
+                || (matches_path(&e.to) && is_external_uri(&e.from))
         })
         .map(|e| {
-            if e.from == file_path {
+            if matches_path(&e.from) {
                 CrossSourceHint {
                     source_uri: e.to.clone(),
                     relation: e.kind.clone(),
@@ -87,6 +97,8 @@ mod tests {
         }
     }
 
+    const ROOT: &str = "/project";
+
     #[test]
     fn finds_hints_from_forward_edges() {
         let edges = vec![
@@ -94,7 +106,7 @@ mod tests {
             edge("src/auth.rs", "postgres://schemas/sessions", "queries", 1.2),
         ];
 
-        let hints = hints_for_file("src/auth.rs", &edges);
+        let hints = hints_for_file("src/auth.rs", &edges, ROOT);
         assert_eq!(hints.len(), 2);
         assert!(hints.iter().any(|h| h.source_uri.contains("issues/42")));
         assert!(hints
@@ -111,16 +123,23 @@ mod tests {
             0.8,
         )];
 
-        let hints = hints_for_file("src/auth.rs", &edges);
+        let hints = hints_for_file("src/auth.rs", &edges, ROOT);
         assert_eq!(hints.len(), 1);
         assert!(hints[0].source_uri.contains("issues/42"));
+    }
+
+    #[test]
+    fn finds_hints_with_absolute_path() {
+        let edges = vec![edge("src/auth.rs", "github://issues/42", "mentions", 1.0)];
+        let hints = hints_for_file("/project/src/auth.rs", &edges, "/project");
+        assert_eq!(hints.len(), 1, "absolute path should match relative edge");
     }
 
     #[test]
     fn ignores_code_to_code_edges() {
         let edges = vec![edge("src/auth.rs", "src/db.rs", "imports", 1.0)];
 
-        let hints = hints_for_file("src/auth.rs", &edges);
+        let hints = hints_for_file("src/auth.rs", &edges, ROOT);
         assert!(hints.is_empty());
     }
 
@@ -137,7 +156,7 @@ mod tests {
             })
             .collect();
 
-        let hints = hints_for_file("src/auth.rs", &edges);
+        let hints = hints_for_file("src/auth.rs", &edges, ROOT);
         assert_eq!(hints.len(), 5);
     }
 
@@ -149,7 +168,7 @@ mod tests {
             edge("src/auth.rs", "github://issues/3", "mentions", 1.0),
         ];
 
-        let hints = hints_for_file("src/auth.rs", &edges);
+        let hints = hints_for_file("src/auth.rs", &edges, ROOT);
         assert_eq!(hints[0].source_uri, "github://issues/2");
         assert_eq!(hints[1].source_uri, "github://issues/3");
         assert_eq!(hints[2].source_uri, "github://issues/1");

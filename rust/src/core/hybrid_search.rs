@@ -23,11 +23,21 @@ const DEFAULT_BM25_WEIGHT: f64 = 1.0;
 const DEFAULT_DENSE_WEIGHT: f64 = 1.0;
 
 /// Configuration for hybrid search behavior.
+/// Configurable via `[search]` in `.lean-ctx.toml`.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
 pub struct HybridConfig {
     pub bm25_weight: f64,
     pub dense_weight: f64,
     pub bm25_candidates: usize,
     pub dense_candidates: usize,
+    /// Weight for SPLADE expansion signal. 0.0 disables SPLADE.
+    #[serde(default = "default_splade_weight")]
+    pub splade_weight: f64,
+}
+
+fn default_splade_weight() -> f64 {
+    0.5
 }
 
 impl Default for HybridConfig {
@@ -35,9 +45,17 @@ impl Default for HybridConfig {
         Self {
             bm25_weight: DEFAULT_BM25_WEIGHT,
             dense_weight: DEFAULT_DENSE_WEIGHT,
-            bm25_candidates: 50,
-            dense_candidates: 50,
+            bm25_candidates: 75,
+            dense_candidates: 75,
+            splade_weight: 0.5,
         }
+    }
+}
+
+impl HybridConfig {
+    /// Load from the global config, falling back to defaults.
+    pub fn from_config() -> Self {
+        crate::core::config::Config::load().search
     }
 }
 

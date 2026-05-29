@@ -2,6 +2,7 @@ pub mod anthropic;
 pub mod compress;
 pub mod forward;
 pub mod google;
+pub mod history_prune;
 pub mod introspect;
 pub mod metrics;
 pub mod openai;

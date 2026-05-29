@@ -408,6 +408,30 @@ pub fn cmd_benchmark(args: &[String]) {
         "--help" | "-h" => {
             println!("Usage: lean-ctx benchmark run [path] [--json]");
             println!("       lean-ctx benchmark report [path]");
+            println!("       lean-ctx benchmark eval [path] [--json]");
+        }
+        "eval" => {
+            let path = args.get(1).map_or(".", std::string::String::as_str);
+            let is_json = args.iter().any(|a| a == "--json");
+            let root = std::path::Path::new(path);
+
+            let index = crate::core::bm25_index::BM25Index::build_from_directory(root);
+            let cfg = crate::core::hybrid_search::HybridConfig::from_config();
+            let queries = crate::core::eval_harness::generate_self_eval(&index, 50);
+
+            if queries.is_empty() {
+                eprintln!("No symbols found — cannot generate eval queries.");
+                std::process::exit(1);
+            }
+
+            let scorecard = crate::core::eval_harness::run_eval(root, &queries, &index, &cfg);
+            if is_json {
+                if let Ok(json) = serde_json::to_string_pretty(&scorecard) {
+                    println!("{json}");
+                }
+            } else {
+                print!("{scorecard}");
+            }
         }
         "run" => {
             let path = args.get(1).map_or(".", std::string::String::as_str);

@@ -881,8 +881,12 @@ impl LeanCtxServer {
         };
 
         let pre_compression = result_text.clone();
+        let deeply_compressed = matches!(
+            name,
+            "ctx_read" | "ctx_multi_read" | "ctx_smart_read" | "ctx_compress" | "ctx_overview"
+        );
         let skip_terse = is_raw_shell
-            || tool_saved_tokens > 0
+            || (tool_saved_tokens > 0 && deeply_compressed)
             || (name == "ctx_shell"
                 && helpers::get_str(args, "command")
                     .is_some_and(|c| crate::shell::compress::has_structural_output(&c)));
@@ -1119,7 +1123,36 @@ impl LeanCtxServer {
         if let Some(finding) = crate::core::auto_findings::extract(name, &result_text) {
             let mut session = self.session.write().await;
             session.add_finding(finding.file.as_deref(), None, &finding.summary);
+            let project_root = session.project_root.clone();
             drop(session);
+            if let Some(ref root) = project_root {
+                let f = finding.clone();
+                let r = root.clone();
+                std::thread::spawn(move || {
+                    crate::core::auto_capture::capture_finding(&r, &f);
+                });
+            }
+        }
+        if let Some(extra) = crate::core::auto_capture::extract_extra(name, &result_text) {
+            let session = self.session.read().await;
+            let project_root = session.project_root.clone();
+            drop(session);
+            if let Some(ref root) = project_root {
+                let e = extra.clone();
+                let r = root.clone();
+                std::thread::spawn(move || {
+                    crate::core::auto_capture::capture_finding(&r, &e);
+                });
+            }
+        }
+
+        {
+            let tool_name = name.to_string();
+            let summary = result_text.lines().next().unwrap_or("").to_string();
+            std::thread::spawn(move || {
+                crate::core::journal::maybe_day_separator();
+                crate::core::journal::log_tool_call(&tool_name, &summary);
+            });
         }
 
         #[allow(clippy::cast_possible_truncation)]

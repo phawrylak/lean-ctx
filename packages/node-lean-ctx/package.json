@@ -1,0 +1,23 @@
+{
+  "name": "lean-ctx",
+  "version": "0.1.0",
+  "description": "SDK for lean-ctx — context compression for AI agents",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "license": "MIT",
+  "keywords": ["llm", "context", "compression", "ai", "mcp", "vercel-ai"],
+  "scripts": {
+    "build": "tsc",
+    "prepublishOnly": "npm run build"
+  },
+  "peerDependencies": {
+    "ai": ">=3.0.0"
+  },
+  "peerDependenciesMeta": {
+    "ai": { "optional": true }
+  },
+  "devDependencies": {
+    "typescript": "^5.0.0"
+  },
+  "files": ["dist/", "README.md"]
+}

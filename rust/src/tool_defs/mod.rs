@@ -26,6 +26,7 @@ pub const CORE_TOOL_NAMES: &[&str] = &[
     "ctx_graph",
     "ctx_call",
     "ctx_provider",
+    "ctx_expand",
 ];
 
 pub fn core_tool_names() -> &'static [&'static str] {

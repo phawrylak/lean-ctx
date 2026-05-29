@@ -357,6 +357,10 @@ pub fn run() {
                 super::cmd_benchmark(&rest);
                 return;
             }
+            "compact" => {
+                cmd_compact(&rest);
+                return;
+            }
             "profile" => {
                 super::cmd_profile(&rest);
                 return;

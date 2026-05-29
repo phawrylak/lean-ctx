@@ -5,6 +5,7 @@
 //!   - `JIRA_EMAIL`: User email for Basic Auth
 //!   - `JIRA_TOKEN`: API token
 //!   - `JIRA_PROJECT`: Default project key (e.g., "PROJ")
+//!   - `JIRA_DEPLOYMENT`: `cloud` (default) or `server` for Data Center/Server
 
 use crate::core::providers::{ContextProvider, ProviderItem, ProviderParams, ProviderResult};
 
@@ -33,11 +34,18 @@ fn simple_base64(input: &[u8]) -> String {
     out
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum JiraDeployment {
+    Cloud,
+    Server,
+}
+
 pub struct JiraConfig {
     pub base_url: String,
     pub email: String,
     pub token: String,
     pub project: Option<String>,
+    pub deployment: JiraDeployment,
 }
 
 impl JiraConfig {
@@ -47,11 +55,21 @@ impl JiraConfig {
         let token = std::env::var("JIRA_TOKEN").map_err(|_| "JIRA_TOKEN not set")?;
         let project = std::env::var("JIRA_PROJECT").ok();
 
+        let deployment = match std::env::var("JIRA_DEPLOYMENT")
+            .unwrap_or_default()
+            .to_lowercase()
+            .as_str()
+        {
+            "server" | "dc" | "datacenter" => JiraDeployment::Server,
+            _ => JiraDeployment::Cloud,
+        };
+
         Ok(Self {
             base_url: base_url.trim_end_matches('/').to_string(),
             email,
             token,
             project,
+            deployment,
         })
     }
 
@@ -115,36 +133,137 @@ impl ContextProvider for JiraProvider {
     }
 }
 
+// ---------------------------------------------------------------------------
+// HTTP helper with status-code-aware error messages
+// ---------------------------------------------------------------------------
+
+fn jira_request(
+    config: &JiraConfig,
+    method: &str,
+    url: &str,
+    body: Option<&[u8]>,
+) -> Result<String, String> {
+    let resp = match method {
+        "POST" => ureq::post(url)
+            .header("Authorization", &config.auth_header())
+            .header("Accept", "application/json")
+            .header("Content-Type", "application/json")
+            .send(body.unwrap_or(&[]))
+            .map_err(|ref e| jira_error_with_hint(e))?,
+        _ => ureq::get(url)
+            .header("Authorization", &config.auth_header())
+            .header("Accept", "application/json")
+            .call()
+            .map_err(|ref e| jira_error_with_hint(e))?,
+    };
+
+    resp.into_body()
+        .read_to_string()
+        .map_err(|e| format!("Jira read error: {e}"))
+}
+
+fn jira_error_with_hint(e: &ureq::Error) -> String {
+    let hint = match e {
+        ureq::Error::StatusCode(410) => {
+            " (endpoint removed — update lean-ctx or check Jira Cloud API version)"
+        }
+        ureq::Error::StatusCode(401) => " (check JIRA_EMAIL + JIRA_TOKEN credentials)",
+        ureq::Error::StatusCode(403) => " (insufficient permissions for this resource)",
+        ureq::Error::StatusCode(404) => {
+            " (endpoint not found — check JIRA_URL and JIRA_DEPLOYMENT setting)"
+        }
+        _ => "",
+    };
+    format!("Jira API error: {e}{hint}")
+}
+
+// ---------------------------------------------------------------------------
+// Issues — Cloud: POST /rest/api/3/search/jql  |  Server: GET /rest/api/2/search
+// ---------------------------------------------------------------------------
+
 fn list_issues(config: &JiraConfig, params: &ProviderParams) -> Result<ProviderResult, String> {
-    let limit = params.limit.unwrap_or(20);
+    match config.deployment {
+        JiraDeployment::Cloud => list_issues_cloud(config, params),
+        JiraDeployment::Server => list_issues_server(config, params),
+    }
+}
+
+fn build_jql(config: &JiraConfig, params: &ProviderParams) -> String {
     let project = params
         .state
         .as_deref()
         .or(config.project.as_deref())
         .unwrap_or("*");
 
-    let jql = if project == "*" {
+    if project == "*" {
         "ORDER BY updated DESC".to_string()
     } else {
         format!("project={project} ORDER BY updated DESC")
-    };
+    }
+}
+
+fn list_issues_cloud(
+    config: &JiraConfig,
+    params: &ProviderParams,
+) -> Result<ProviderResult, String> {
+    let limit = params.limit.unwrap_or(20);
+    let jql = build_jql(config, params);
+    let url = format!("{}/rest/api/3/search/jql", config.base_url);
+
+    let mut all_items = Vec::new();
+    let mut next_page_token: Option<String> = None;
+    loop {
+        let page_size = (limit - all_items.len()).min(100);
+        let mut body = serde_json::json!({
+            "jql": jql,
+            "maxResults": page_size,
+            "fields": ["summary", "status", "reporter", "created", "updated", "labels", "description"]
+        });
+        if let Some(ref token) = next_page_token {
+            body["nextPageToken"] = serde_json::json!(token);
+        }
+
+        let body_bytes = serde_json::to_vec(&body).unwrap_or_default();
+        let text = jira_request(config, "POST", &url, Some(&body_bytes))?;
+        let resp: serde_json::Value =
+            serde_json::from_str(&text).map_err(|e| format!("Jira JSON parse error: {e}"))?;
+
+        let issues = resp["issues"].as_array().cloned().unwrap_or_default();
+        all_items.extend(issues.iter().map(|issue| parse_issue(issue, config)));
+
+        next_page_token = resp["nextPageToken"].as_str().map(String::from);
+
+        if next_page_token.is_none() || all_items.len() >= limit {
+            break;
+        }
+    }
+
+    let truncated = next_page_token.is_some();
+    all_items.truncate(limit);
+
+    Ok(ProviderResult {
+        provider: "jira".into(),
+        resource_type: "issues".into(),
+        total_count: Some(all_items.len()),
+        truncated,
+        items: all_items,
+    })
+}
+
+fn list_issues_server(
+    config: &JiraConfig,
+    params: &ProviderParams,
+) -> Result<ProviderResult, String> {
+    let limit = params.limit.unwrap_or(20);
+    let jql = build_jql(config, params);
 
     let url = format!(
-        "{}/rest/api/3/search?jql={}&maxResults={limit}",
+        "{}/rest/api/2/search?jql={}&maxResults={limit}",
         config.base_url,
         urlencoding::encode(&jql)
     );
 
-    let response = ureq::get(&url)
-        .header("Authorization", &config.auth_header())
-        .header("Accept", "application/json")
-        .call()
-        .map_err(|e| format!("Jira API error: {e}"))?;
-
-    let text = response
-        .into_body()
-        .read_to_string()
-        .map_err(|e| format!("Jira read error: {e}"))?;
+    let text = jira_request(config, "GET", &url, None)?;
     let body: serde_json::Value =
         serde_json::from_str(&text).map_err(|e| format!("Jira JSON parse error: {e}"))?;
 
@@ -153,38 +272,7 @@ fn list_issues(config: &JiraConfig, params: &ProviderParams) -> Result<ProviderR
 
     let items: Vec<ProviderItem> = issues
         .iter()
-        .map(|issue| {
-            let fields = &issue["fields"];
-            ProviderItem {
-                id: issue["key"].as_str().unwrap_or_default().to_string(),
-                title: fields["summary"].as_str().unwrap_or_default().to_string(),
-                state: fields["status"]["name"].as_str().map(String::from),
-                author: fields["reporter"]["displayName"].as_str().map(String::from),
-                created_at: fields["created"].as_str().map(String::from),
-                updated_at: fields["updated"].as_str().map(String::from),
-                url: Some(format!(
-                    "{}/browse/{}",
-                    config.base_url,
-                    issue["key"].as_str().unwrap_or_default()
-                )),
-                labels: fields["labels"]
-                    .as_array()
-                    .map(|arr| {
-                        arr.iter()
-                            .filter_map(|v| v.as_str().map(String::from))
-                            .collect()
-                    })
-                    .unwrap_or_default(),
-                body: fields["description"]
-                    .as_str()
-                    .map(String::from)
-                    .or_else(|| {
-                        fields["description"]["content"]
-                            .as_array()
-                            .map(|_| "[Jira rich text — see web UI]".to_string())
-                    }),
-            }
-        })
+        .map(|issue| parse_issue(issue, config))
         .collect();
 
     Ok(ProviderResult {
@@ -195,6 +283,43 @@ fn list_issues(config: &JiraConfig, params: &ProviderParams) -> Result<ProviderR
         truncated: total > limit,
     })
 }
+
+fn parse_issue(issue: &serde_json::Value, config: &JiraConfig) -> ProviderItem {
+    let fields = &issue["fields"];
+    ProviderItem {
+        id: issue["key"].as_str().unwrap_or_default().to_string(),
+        title: fields["summary"].as_str().unwrap_or_default().to_string(),
+        state: fields["status"]["name"].as_str().map(String::from),
+        author: fields["reporter"]["displayName"].as_str().map(String::from),
+        created_at: fields["created"].as_str().map(String::from),
+        updated_at: fields["updated"].as_str().map(String::from),
+        url: Some(format!(
+            "{}/browse/{}",
+            config.base_url,
+            issue["key"].as_str().unwrap_or_default()
+        )),
+        labels: fields["labels"]
+            .as_array()
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str().map(String::from))
+                    .collect()
+            })
+            .unwrap_or_default(),
+        body: fields["description"]
+            .as_str()
+            .map(String::from)
+            .or_else(|| {
+                fields["description"]["content"]
+                    .as_array()
+                    .map(|_| "[Jira rich text — see web UI]".to_string())
+            }),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Sprints — /rest/agile/1.0/board/{id}/sprint
+// ---------------------------------------------------------------------------
 
 fn list_sprints(config: &JiraConfig, params: &ProviderParams) -> Result<ProviderResult, String> {
     let board_id = params
@@ -208,16 +333,7 @@ fn list_sprints(config: &JiraConfig, params: &ProviderParams) -> Result<Provider
         config.base_url
     );
 
-    let response = ureq::get(&url)
-        .header("Authorization", &config.auth_header())
-        .header("Accept", "application/json")
-        .call()
-        .map_err(|e| format!("Jira Agile API error: {e}"))?;
-
-    let text = response
-        .into_body()
-        .read_to_string()
-        .map_err(|e| format!("Jira read error: {e}"))?;
+    let text = jira_request(config, "GET", &url, None)?;
     let body: serde_json::Value =
         serde_json::from_str(&text).map_err(|e| format!("Jira JSON parse error: {e}"))?;
 
@@ -268,5 +384,126 @@ mod tests {
         let provider = JiraProvider::new();
         assert!(provider.supported_actions().contains(&"issues"));
         assert!(provider.supported_actions().contains(&"sprints"));
+    }
+
+    #[test]
+    fn deployment_defaults_to_cloud() {
+        std::env::remove_var("JIRA_DEPLOYMENT");
+        std::env::set_var("JIRA_URL", "https://test.atlassian.net");
+        std::env::set_var("JIRA_EMAIL", "test@test.com");
+        std::env::set_var("JIRA_TOKEN", "token");
+        let cfg = JiraConfig::from_env().unwrap();
+        assert_eq!(cfg.deployment, JiraDeployment::Cloud);
+        std::env::remove_var("JIRA_URL");
+        std::env::remove_var("JIRA_EMAIL");
+        std::env::remove_var("JIRA_TOKEN");
+    }
+
+    #[test]
+    fn deployment_server_variants() {
+        for val in &["server", "dc", "datacenter", "SERVER", "DC"] {
+            std::env::set_var("JIRA_URL", "https://jira.internal");
+            std::env::set_var("JIRA_EMAIL", "u@e.com");
+            std::env::set_var("JIRA_TOKEN", "t");
+            std::env::set_var("JIRA_DEPLOYMENT", val);
+            let cfg = JiraConfig::from_env().unwrap();
+            assert_eq!(cfg.deployment, JiraDeployment::Server, "failed for {val}");
+        }
+        std::env::remove_var("JIRA_URL");
+        std::env::remove_var("JIRA_EMAIL");
+        std::env::remove_var("JIRA_TOKEN");
+        std::env::remove_var("JIRA_DEPLOYMENT");
+    }
+
+    #[test]
+    fn build_jql_with_project() {
+        let cfg = JiraConfig {
+            base_url: "https://x.atlassian.net".into(),
+            email: String::new(),
+            token: String::new(),
+            project: Some("PROJ".into()),
+            deployment: JiraDeployment::Cloud,
+        };
+        let params = ProviderParams::default();
+        assert_eq!(
+            build_jql(&cfg, &params),
+            "project=PROJ ORDER BY updated DESC"
+        );
+    }
+
+    #[test]
+    fn build_jql_wildcard() {
+        let cfg = JiraConfig {
+            base_url: String::new(),
+            email: String::new(),
+            token: String::new(),
+            project: None,
+            deployment: JiraDeployment::Cloud,
+        };
+        let params = ProviderParams::default();
+        assert_eq!(build_jql(&cfg, &params), "ORDER BY updated DESC");
+    }
+
+    #[test]
+    fn error_hint_410() {
+        let msg = jira_error_with_hint(&ureq::Error::StatusCode(410));
+        assert!(msg.contains("endpoint removed"), "{msg}");
+    }
+
+    #[test]
+    fn error_hint_401() {
+        let msg = jira_error_with_hint(&ureq::Error::StatusCode(401));
+        assert!(msg.contains("JIRA_EMAIL"), "{msg}");
+    }
+
+    #[test]
+    fn error_hint_403() {
+        let msg = jira_error_with_hint(&ureq::Error::StatusCode(403));
+        assert!(msg.contains("permissions"), "{msg}");
+    }
+
+    #[test]
+    fn error_hint_404() {
+        let msg = jira_error_with_hint(&ureq::Error::StatusCode(404));
+        assert!(msg.contains("JIRA_DEPLOYMENT"), "{msg}");
+    }
+
+    #[test]
+    fn parse_issue_extracts_fields() {
+        let issue = serde_json::json!({
+            "key": "PROJ-123",
+            "fields": {
+                "summary": "Test issue",
+                "status": { "name": "Open" },
+                "reporter": { "displayName": "Alice" },
+                "created": "2026-01-01T00:00:00Z",
+                "updated": "2026-05-01T00:00:00Z",
+                "labels": ["bug", "urgent"],
+                "description": "Fix the thing"
+            }
+        });
+        let cfg = JiraConfig {
+            base_url: "https://x.atlassian.net".into(),
+            email: String::new(),
+            token: String::new(),
+            project: None,
+            deployment: JiraDeployment::Cloud,
+        };
+        let item = parse_issue(&issue, &cfg);
+        assert_eq!(item.id, "PROJ-123");
+        assert_eq!(item.title, "Test issue");
+        assert_eq!(item.state.as_deref(), Some("Open"));
+        assert_eq!(item.author.as_deref(), Some("Alice"));
+        assert_eq!(item.labels, vec!["bug", "urgent"]);
+        assert_eq!(item.body.as_deref(), Some("Fix the thing"));
+        assert!(item.url.as_deref().unwrap().contains("/browse/PROJ-123"));
+    }
+
+    #[test]
+    fn base64_encoding() {
+        assert_eq!(simple_base64(b"user:token"), "dXNlcjp0b2tlbg==");
+        assert_eq!(simple_base64(b"a"), "YQ==");
+        assert_eq!(simple_base64(b"ab"), "YWI=");
+        assert_eq!(simple_base64(b"abc"), "YWJj");
     }
 }
