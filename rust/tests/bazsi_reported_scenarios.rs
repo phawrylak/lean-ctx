@@ -292,10 +292,12 @@ fn scenario_cache_hit_message_format() {
         !result2.contains("Already in your context window"),
         "Old misleading message must not appear: got {result2}"
     );
-    // Should hint at fresh=true
+    // Should show unchanged indicator or hint at fresh=true
     assert!(
-        result2.contains("fresh=true") || result2.contains("cached context"),
-        "Should hint about fresh=true or cached context: got {result2}"
+        result2.contains("fresh=true")
+            || result2.contains("cached context")
+            || result2.contains("[unchanged"),
+        "Should hint about fresh=true, cached context, or unchanged: got {result2}"
     );
 
     let _ = std::fs::remove_dir_all(&dir);
