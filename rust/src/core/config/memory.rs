@@ -101,9 +101,11 @@ impl MemoryProfile {
 
 /// Controls visibility of token savings footers in tool output.
 ///
-/// - `never` (default): suppressed everywhere
-/// - `always`: shown everywhere
+/// - `always` (default): shown on every compressed response
+/// - `never`: suppressed everywhere
 /// - `auto`: legacy compatibility mode; behavior is transport/context dependent
+///
+/// Also controllable via `LEAN_CTX_SHOW_SAVINGS=1|0` (overrides this setting).
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "lowercase")]
 pub enum SavingsFooter {

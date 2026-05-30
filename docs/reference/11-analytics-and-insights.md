@@ -1,0 +1,234 @@
+# Journey 11 — Analytics, Insights & Reporting
+
+> How much is lean-ctx actually saving you? Where is context being wasted? Which
+> commands are slow? This journey covers every reporting, measurement, and
+> "show me the numbers" surface — without ever costing the agent extra tokens
+> (all of this is CLI / dashboard, not injected context).
+
+Source files referenced here:
+- `rust/src/cli/dispatch/analytics.rs` — `gain` (all modes)
+- `rust/src/tools/ctx_gain.rs`, `core/stats/` — savings engine
+- `rust/src/cli/session_cmd.rs` — `wrapped`
+- `rust/src/cli/tee_cmd.rs` — `tee`, `filter`, `slow-log`
+- `rust/src/cli/dispatch/network.rs` — `dashboard`, `watch`
+
+---
+
+## 0. The principle
+
+> Per the project's own rule: lean-ctx never prints "↓80% saved" into agent
+> context — that would burn tokens. Savings live **here**, in the CLI and
+> dashboard, where a human looks at them.
+
+So analytics is a pull model: nothing is added to your agent's window; you run a
+command when you want the numbers.
+
+---
+
+## 1. `gain` — the savings dashboard
+
+`lean-ctx gain` is the single entry point, with one mode per question:
+
+```bash
+lean-ctx gain                      # headline savings summary
+```
+
+| Flag | Answers |
+|------|---------|
+| `--live` (`--watch`) | live-updating savings as you work |
+| `--graph` | savings over time, sparkline |
+| `--daily` | per-day breakdown |
+| `--cost` | dollar cost saved (model-priced) |
+| `--score` | efficiency score |
+| `--tasks` | savings grouped by task |
+| `--agents` | savings grouped by agent (see Journey 8) |
+| `--heatmap` | which files/commands save the most |
+| `--wrapped` | "Spotify Wrapped"-style recap |
+| `--pipeline` | provider-pipeline processing stats |
+| `--deep` | everything: report + tasks + cost + agents + heatmap |
+| `--json` | machine-readable (for scripts/CI) |
+| `--reset` | clear all savings data |
+
+Refinements: `--model <name>` (price against a specific model), `--period <p>`
+(time window, default `all`), `--limit <n>` (rows, default 10).
+
+> Start with `lean-ctx gain`; reach for `--deep` when you want the full picture
+> in one shot, or `--cost --model gpt-4o` to put a dollar figure on it.
+
+---
+
+## 2. `wrapped` — the shareable recap
+
+```bash
+lean-ctx wrapped                   # (also: lean-ctx gain --wrapped)
+```
+
+A celebratory, screenshot-friendly summary of tokens/cost saved over a period —
+good for sharing with your team or justifying the tool to a lead.
+
+---
+
+## 3. `token-report` — tokens + memory
+
+```bash
+lean-ctx token-report              # tokens saved + memory footprint
+lean-ctx token-report --json
+```
+
+Where `gain` focuses on savings, `token-report` (alias `report-tokens`) adds the
+memory side: how much session/knowledge/cache state lean-ctx is holding.
+
+---
+
+## 4. Finding waste — `discover` and `ghost`
+
+```bash
+lean-ctx discover                  # commands in your shell history that ran uncompressed
+lean-ctx ghost                     # "ghost tokens": hidden waste lean-ctx could catch
+lean-ctx ghost --json
+```
+
+- `discover` scans shell history for commands you ran *without* lean-ctx — your
+  "you could have saved more here" list.
+- `ghost` quantifies waste that's currently slipping through, so you know
+  whether tightening compression (Journey 10) is worth it.
+
+---
+
+## 5. Performance — `slow-log`
+
+```bash
+lean-ctx slow-log list             # slowest commands lean-ctx wrapped
+lean-ctx slow-log clear
+```
+
+If lean-ctx ever feels like it's adding latency, this tells you exactly which
+commands were slow to compress, so you can exclude or filter them.
+
+---
+
+## 6. Output logs — `tee`
+
+```bash
+lean-ctx tee list                  # captured output logs
+lean-ctx tee last                  # the most recent
+lean-ctx tee show <id>
+lean-ctx tee clear
+```
+
+`tee` keeps a log of compressed command outputs so you can recover the *full*
+output of something you ran earlier without re-running it.
+
+---
+
+## 7. The web dashboard — `dashboard`
+
+```bash
+lean-ctx dashboard                 # http://localhost:3333
+lean-ctx dashboard --port 4000 --host 0.0.0.0
+```
+
+A browser UI over everything in this journey: live savings, heatmaps, sessions,
+knowledge, agents. The richest way to explore; ideal for a second monitor.
+
+> This dashboard is the home for the UX feedback in issue #249 — it's where
+> context-management visualization lives, distinct from the CLI numbers.
+
+---
+
+## 8. The live TUI — `watch`
+
+```bash
+lean-ctx watch                     # real-time event stream in the terminal
+```
+
+A terminal dashboard (no browser) showing the live event stream — reads,
+compressions, cache hits — as they happen. Great for confirming "is lean-ctx
+actually intercepting this?" in real time.
+
+---
+
+## 9. Quality scoring — `cep` and `benchmark`
+
+```bash
+lean-ctx cep                       # CEP score trends (Context Engineering Protocol)
+lean-ctx benchmark run             # run the benchmark suite
+lean-ctx benchmark report          # results
+lean-ctx benchmark eval / compare  # evaluate / compare runs
+```
+
+- `cep` tracks the Context Engineering Protocol score over time — a measure of
+  how well-structured the agent's context has been.
+- `benchmark` measures compression quality/throughput so regressions are caught
+  (also used in CI, Journey 9).
+
+---
+
+## 10. Learning loops — `learn` and `gotchas`
+
+These turn observed history into durable insight:
+
+```bash
+lean-ctx gotchas list              # recorded bugs/footguns ("bug memory")
+lean-ctx gotchas stats / export / clear
+lean-ctx learn                     # learned gotchas
+lean-ctx learn --apply             # promote them into AGENTS.md
+```
+
+- `gotchas` (alias `bugs`) is a memory of mistakes/footguns hit in this project.
+- `learn --apply` promotes high-value lessons into your agent rules — the
+  analytics-to-governance bridge (pairs with `export-rules`, Journey 10).
+
+---
+
+## 11. Raw stats & transcript compaction
+
+```bash
+lean-ctx stats                     # raw stats store summary
+lean-ctx stats json                # raw JSON
+lean-ctx stats reset-cep           # reset CEP scores only
+lean-ctx compact [path]            # compress stored agent transcripts
+```
+
+`stats` is the low-level store behind `gain`; `compact` shrinks saved agent
+transcripts so long histories don't bloat the data dir.
+
+---
+
+## 12. Decision guide
+
+| You want… | Reach for |
+|-----------|-----------|
+| Headline savings | `gain` (§1) |
+| A shareable recap | `wrapped` (§2) |
+| Tokens **and** memory footprint | `token-report` (§3) |
+| Where am I still wasting tokens? | `discover`, `ghost` (§4) |
+| Is lean-ctx slowing me down? | `slow-log` (§5) |
+| Recover an earlier full output | `tee` (§6) |
+| Rich visual exploration | `dashboard` (§7) |
+| Watch it work live | `watch` (§8) |
+| Context-quality / regression tracking | `cep`, `benchmark` (§9) |
+| Turn history into rules | `learn`, `gotchas` (§10) |
+| Raw numbers / shrink transcripts | `stats`, `compact` (§11) |
+
+---
+
+## Storage & data (analytics)
+
+| Path | Contents |
+|------|----------|
+| `~/.lean-ctx/` stats store | savings/usage that `gain`/`stats` read |
+| `~/.lean-ctx/pipeline_stats.json` | provider-pipeline stats (`gain --pipeline`) |
+| tee logs | captured full command outputs |
+| gotchas/bug memory | recorded footguns |
+
+---
+
+## UX notes captured during this walkthrough
+
+- `gain` has 12+ modes that aren't discoverable from `gain` alone; §1 tabulates
+  every one so users stop guessing flag names.
+- The deliberate "no savings text in agent context" rule is stated up front (§0)
+  so users understand *why* the numbers only live in the CLI/dashboard.
+- `discover`/`ghost` (waste finders) and `learn`/`gotchas` (learning loops) are
+  powerful but obscure; grouped here by intent so they're actually found.

@@ -137,7 +137,7 @@ pub fn semantic_recall<'a>(
     query: &str,
     top_k: usize,
 ) -> Vec<ScoredFact<'a>> {
-    let Ok(query_embedding) = engine.embed(query) else {
+    let Ok(query_embedding) = engine.embed_query(query) else {
         return lexical_fallback(knowledge, query, top_k);
     };
 
@@ -213,7 +213,7 @@ pub fn semantic_recall_semantic_only<'a>(
     query: &str,
     top_k: usize,
 ) -> Vec<ScoredFact<'a>> {
-    let Ok(query_embedding) = engine.embed(query) else {
+    let Ok(query_embedding) = engine.embed_query(query) else {
         return Vec::new();
     };
 

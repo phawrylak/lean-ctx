@@ -171,3 +171,52 @@ async fn build_response(
     resp.body(Body::from(resp_bytes))
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn parts_for(uri: &str) -> Parts {
+        Request::builder().uri(uri).body(()).unwrap().into_parts().0
+    }
+
+    #[test]
+    fn upstream_url_preserves_subpath() {
+        let base = "https://api.anthropic.com";
+        let parts = parts_for("/v1/messages/count_tokens");
+        assert_eq!(
+            build_upstream_url(&parts, base, "/v1/messages"),
+            "https://api.anthropic.com/v1/messages/count_tokens"
+        );
+    }
+
+    #[test]
+    fn upstream_url_preserves_batches_subpath() {
+        let base = "https://api.anthropic.com";
+        let parts = parts_for("/v1/messages/batches/batch_123/results");
+        assert_eq!(
+            build_upstream_url(&parts, base, "/v1/messages"),
+            "https://api.anthropic.com/v1/messages/batches/batch_123/results"
+        );
+    }
+
+    #[test]
+    fn upstream_url_exact_path() {
+        let base = "https://api.anthropic.com";
+        let parts = parts_for("/v1/messages");
+        assert_eq!(
+            build_upstream_url(&parts, base, "/v1/messages"),
+            "https://api.anthropic.com/v1/messages"
+        );
+    }
+
+    #[test]
+    fn upstream_url_preserves_query_params() {
+        let base = "https://api.anthropic.com";
+        let parts = parts_for("/v1/messages/count_tokens?model=claude-4");
+        assert_eq!(
+            build_upstream_url(&parts, base, "/v1/messages"),
+            "https://api.anthropic.com/v1/messages/count_tokens?model=claude-4"
+        );
+    }
+}

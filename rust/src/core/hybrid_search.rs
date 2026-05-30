@@ -217,7 +217,7 @@ fn dense_search(
     embeddings: &[Vec<f32>],
     top_k: usize,
 ) -> Vec<DenseSearchResult> {
-    let Ok(query_embedding) = engine.embed(query) else {
+    let Ok(query_embedding) = engine.embed_query(query) else {
         return Vec::new();
     };
 

@@ -106,6 +106,7 @@ pub struct InjectResult {
     pub updated: Vec<String>,
     pub already: Vec<String>,
     pub errors: Vec<String>,
+    pub backed_up: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -121,31 +122,53 @@ pub fn inject_all_rules(home: &std::path::Path) -> InjectResult {
     if crate::core::config::Config::load().rules_scope_effective()
         == crate::core::config::RulesScope::Project
     {
-        return InjectResult {
-            injected: Vec::new(),
-            updated: Vec::new(),
-            already: Vec::new(),
-            errors: Vec::new(),
-        };
+        return InjectResult::default();
     }
 
     let targets = build_rules_targets(home);
 
-    let mut result = InjectResult {
-        injected: Vec::new(),
-        updated: Vec::new(),
-        already: Vec::new(),
-        errors: Vec::new(),
-    };
+    let mut result = InjectResult::default();
 
     for target in &targets {
         if !is_tool_detected(target, home) {
             continue;
         }
 
+        let bak_path = target.path.with_extension(format!(
+            "{}.bak",
+            target
+                .path
+                .extension()
+                .and_then(|e| e.to_str())
+                .unwrap_or("")
+        ));
+        let bak_existed_before = bak_path.exists();
+        let bak_mtime_before = bak_existed_before
+            .then(|| {
+                std::fs::metadata(&bak_path)
+                    .ok()
+                    .and_then(|m| m.modified().ok())
+            })
+            .flatten();
+
         match inject_rules(target) {
             Ok(RulesResult::Injected) => result.injected.push(target.name.to_string()),
-            Ok(RulesResult::Updated) => result.updated.push(target.name.to_string()),
+            Ok(RulesResult::Updated) => {
+                result.updated.push(target.name.to_string());
+                let bak_is_new = if bak_existed_before {
+                    std::fs::metadata(&bak_path)
+                        .ok()
+                        .and_then(|m| m.modified().ok())
+                        != bak_mtime_before
+                } else {
+                    bak_path.exists()
+                };
+                if bak_is_new {
+                    result
+                        .backed_up
+                        .push(bak_path.to_string_lossy().to_string());
+                }
+            }
             Ok(RulesResult::AlreadyPresent) => result.already.push(target.name.to_string()),
             Err(e) => result.errors.push(format!("{}: {e}", target.name)),
         }
@@ -160,29 +183,37 @@ pub fn inject_rules_for_agent(home: &std::path::Path, agent_key: &str) -> Inject
     if crate::core::config::Config::load().rules_scope_effective()
         == crate::core::config::RulesScope::Project
     {
-        return InjectResult {
-            injected: Vec::new(),
-            updated: Vec::new(),
-            already: Vec::new(),
-            errors: Vec::new(),
-        };
+        return InjectResult::default();
     }
 
     let targets = build_rules_targets(home);
-    let mut result = InjectResult {
-        injected: Vec::new(),
-        updated: Vec::new(),
-        already: Vec::new(),
-        errors: Vec::new(),
-    };
+    let mut result = InjectResult::default();
 
     for target in &targets {
         if !match_agent_name(agent_key, target.name) {
             continue;
         }
+
+        let bak_path = target.path.with_extension(format!(
+            "{}.bak",
+            target
+                .path
+                .extension()
+                .and_then(|e| e.to_str())
+                .unwrap_or("")
+        ));
+        let bak_existed_before = bak_path.exists();
+
         match inject_rules(target) {
             Ok(RulesResult::Injected) => result.injected.push(target.name.to_string()),
-            Ok(RulesResult::Updated) => result.updated.push(target.name.to_string()),
+            Ok(RulesResult::Updated) => {
+                result.updated.push(target.name.to_string());
+                if !bak_existed_before && bak_path.exists() {
+                    result
+                        .backed_up
+                        .push(bak_path.to_string_lossy().to_string());
+                }
+            }
             Ok(RulesResult::AlreadyPresent) => result.already.push(target.name.to_string()),
             Err(e) => result.errors.push(format!("{}: {e}", target.name)),
         }
@@ -401,18 +432,57 @@ fn replace_markdown_section(path: &std::path::Path, content: &str) -> Result<Rul
 }
 
 fn write_dedicated(path: &std::path::Path, content: &'static str) -> Result<RulesResult, String> {
-    let is_update = path.exists() && {
-        let existing = std::fs::read_to_string(path).unwrap_or_default();
-        existing.contains(MARKER)
+    if !path.exists() {
+        crate::config_io::write_atomic_with_backup(path, content)?;
+        return Ok(RulesResult::Injected);
+    }
+
+    let existing = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
+    if !existing.contains(MARKER) {
+        crate::config_io::write_atomic_with_backup(path, content)?;
+        return Ok(RulesResult::Injected);
+    }
+
+    let start = existing.find(MARKER);
+    let end = existing.find(END_MARKER);
+
+    let (before, after) = match (start, end) {
+        (Some(s), Some(e)) => {
+            let before = &existing[..s];
+            let after_end = e + END_MARKER.len();
+            let after = existing[after_end..].trim_start_matches('\n');
+            (before.to_string(), after.to_string())
+        }
+        (Some(s), None) => (existing[..s].to_string(), String::new()),
+        _ => (String::new(), String::new()),
     };
 
-    crate::config_io::write_atomic_with_backup(path, content)?;
+    let has_user_content = !before.trim().is_empty() || !after.trim().is_empty();
 
-    if is_update {
-        Ok(RulesResult::Updated)
+    if has_user_content {
+        let new_section = if let Some(marker_pos) = content.find(MARKER) {
+            &content[marker_pos..]
+        } else {
+            content
+        };
+
+        let mut result = before.clone();
+        result.push_str(new_section);
+        if !after.is_empty() {
+            if !result.ends_with('\n') {
+                result.push('\n');
+            }
+            result.push_str(&after);
+        }
+        if !result.ends_with('\n') {
+            result.push('\n');
+        }
+        crate::config_io::write_atomic_with_backup(path, &result)?;
     } else {
-        Ok(RulesResult::Injected)
+        crate::config_io::write_atomic_with_backup(path, content)?;
     }
+
+    Ok(RulesResult::Updated)
 }
 
 // ---------------------------------------------------------------------------
@@ -1133,5 +1203,144 @@ mod tests {
         assert!(result.updated.is_empty());
         assert!(result.already.is_empty());
         assert!(result.errors.is_empty());
+    }
+
+    #[test]
+    fn write_dedicated_preserves_user_content_before_marker() {
+        ensure_temp_dir();
+        let path = std::env::temp_dir().join("test_dedicated_preserve_before.md");
+        let old = format!(
+            "# My custom rules\nDo not delete this!\n\n{MARKER}\n<!-- lean-ctx-rules-v2 -->\nold content\n{END_MARKER}"
+        );
+        std::fs::write(&path, &old).unwrap();
+
+        let result = write_dedicated(&path, RULES_DEDICATED).unwrap();
+        assert!(matches!(result, RulesResult::Updated));
+
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            content.contains("My custom rules"),
+            "user content before marker must be preserved"
+        );
+        assert!(
+            content.contains("Do not delete this!"),
+            "user content before marker must be preserved"
+        );
+        assert!(
+            content.contains(RULES_VERSION),
+            "new rules version must be present"
+        );
+        assert!(
+            !content.contains("lean-ctx-rules-v2"),
+            "old version must be replaced"
+        );
+
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn write_dedicated_preserves_user_content_after_marker() {
+        ensure_temp_dir();
+        let path = std::env::temp_dir().join("test_dedicated_preserve_after.md");
+        let old = format!(
+            "{MARKER}\n<!-- lean-ctx-rules-v2 -->\nold content\n{END_MARKER}\n\n# User's extra notes\nKeep this too!\n"
+        );
+        std::fs::write(&path, &old).unwrap();
+
+        let result = write_dedicated(&path, RULES_DEDICATED).unwrap();
+        assert!(matches!(result, RulesResult::Updated));
+
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            content.contains("User's extra notes"),
+            "user content after marker must be preserved"
+        );
+        assert!(
+            content.contains("Keep this too!"),
+            "user content after marker must be preserved"
+        );
+        assert!(
+            content.contains(RULES_VERSION),
+            "new rules version must be present"
+        );
+
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn write_dedicated_preserves_content_both_sides() {
+        ensure_temp_dir();
+        let path = std::env::temp_dir().join("test_dedicated_preserve_both.md");
+        let old = format!(
+            "BEFORE CONTENT\n\n{MARKER}\n<!-- lean-ctx-rules-v2 -->\nold\n{END_MARKER}\n\nAFTER CONTENT\n"
+        );
+        std::fs::write(&path, &old).unwrap();
+
+        let result = write_dedicated(&path, RULES_DEDICATED).unwrap();
+        assert!(matches!(result, RulesResult::Updated));
+
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(content.contains("BEFORE CONTENT"));
+        assert!(content.contains("AFTER CONTENT"));
+        assert!(content.contains(RULES_VERSION));
+
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn write_dedicated_no_user_content_uses_template_directly() {
+        ensure_temp_dir();
+        let path = std::env::temp_dir().join("test_dedicated_no_user.md");
+        let old = format!("{MARKER}\n<!-- lean-ctx-rules-v2 -->\nold content\n{END_MARKER}");
+        std::fs::write(&path, &old).unwrap();
+
+        let result = write_dedicated(&path, RULES_DEDICATED).unwrap();
+        assert!(matches!(result, RulesResult::Updated));
+
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(
+            content, RULES_DEDICATED,
+            "without user content, template should be written as-is"
+        );
+
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn write_dedicated_preserves_mdc_frontmatter() {
+        ensure_temp_dir();
+        let path = std::env::temp_dir().join("test_dedicated_mdc_frontmatter.mdc");
+        let old = format!(
+            "---\ndescription: custom\nglobs: **/*\nalwaysApply: true\n---\n\nUser preamble here\n\n{MARKER}\n<!-- lean-ctx-rules-v2 -->\nold\n{END_MARKER}\n"
+        );
+        std::fs::write(&path, &old).unwrap();
+
+        let result = write_dedicated(&path, RULES_CURSOR_MDC).unwrap();
+        assert!(matches!(result, RulesResult::Updated));
+
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            content.contains("User preamble here"),
+            "user preamble must be preserved"
+        );
+        assert!(
+            content.contains("custom"),
+            "user frontmatter description must be preserved"
+        );
+        assert!(content.contains(RULES_VERSION));
+
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn inject_result_tracks_backed_up_files() {
+        let result = InjectResult {
+            backed_up: vec!["/tmp/test.md.bak".to_string()],
+            ..Default::default()
+        };
+        assert_eq!(result.backed_up.len(), 1);
+        assert!(std::path::Path::new(&result.backed_up[0])
+            .extension()
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("bak")));
     }
 }

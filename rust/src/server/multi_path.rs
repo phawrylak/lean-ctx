@@ -1,6 +1,6 @@
 use serde_json::{Map, Value};
 
-use crate::server::tool_trait::{get_str_array, ToolContext};
+use crate::server::tool_trait::{get_str, get_str_array, ToolContext};
 
 pub struct ResolvedPaths {
     pub roots: Vec<String>,
@@ -10,11 +10,21 @@ pub struct ResolvedPaths {
 /// Resolve tool paths with multi-root support.
 ///
 /// Priority:
+/// 0. `repo` argument (multi-repo alias → specific root)
 /// 1. `paths` array argument (explicit multi-root)
 /// 2. `path` string argument (single root, pre-resolved by dispatch)
 /// 3. Session `extra_roots` (default multi-root from config/MCP)
 /// 4. Fallback to `"."` (project root)
 pub fn resolve_tool_paths(args: &Map<String, Value>, ctx: &ToolContext) -> ResolvedPaths {
+    if let Some(repo) = get_str(args, "repo") {
+        if let Some(root) = crate::core::multi_repo::resolve_repo_root(&repo) {
+            return ResolvedPaths {
+                roots: vec![root],
+                is_multi: false,
+            };
+        }
+    }
+
     if let Some(paths) = get_str_array(args, "paths") {
         if !paths.is_empty() {
             let resolved = resolve_paths_sync(ctx, &paths);

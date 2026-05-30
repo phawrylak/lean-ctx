@@ -203,21 +203,89 @@ fn check_unconditional_blocked_only(command: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Tokenize a shell command segment respecting single/double quotes and backslash escapes.
+/// Returns tokens with outer quotes stripped, matching how the shell would parse them.
+/// E.g. `git -C "Program Files" status` → `["git", "-C", "Program Files", "status"]`
+pub fn shell_tokenize(input: &str) -> Vec<String> {
+    let mut tokens = Vec::new();
+    let mut current = String::new();
+    let mut chars = input.chars().peekable();
+    let mut in_single = false;
+    let mut in_double = false;
+
+    while let Some(c) = chars.next() {
+        match c {
+            '\'' if !in_double => in_single = !in_single,
+            '"' if !in_single => in_double = !in_double,
+            '\\' if !in_single => {
+                if let Some(next) = chars.next() {
+                    current.push(next);
+                }
+            }
+            c if c.is_whitespace() && !in_single && !in_double => {
+                if !current.is_empty() {
+                    tokens.push(std::mem::take(&mut current));
+                }
+            }
+            _ => current.push(c),
+        }
+    }
+    if !current.is_empty() {
+        tokens.push(current);
+    }
+    tokens
+}
+
+/// Returns the byte length of the first shell token in `input`, respecting quotes.
+/// Used by `skip_env_assignments` to advance past env assignments with quoted values
+/// like `FOO="bar baz"`.
+fn quote_aware_token_end(input: &str) -> usize {
+    let bytes = input.as_bytes();
+    let len = bytes.len();
+    let mut i = 0;
+    let mut in_single = false;
+    let mut in_double = false;
+
+    while i < len {
+        let ch = bytes[i];
+        match ch {
+            b'\'' if !in_double => {
+                in_single = !in_single;
+                i += 1;
+            }
+            b'"' if !in_single => {
+                in_double = !in_double;
+                i += 1;
+            }
+            b'\\' if !in_single => {
+                i = (i + 2).min(len);
+            }
+            b if b.is_ascii_whitespace() && !in_single && !in_double => return i,
+            _ => i += 1,
+        }
+    }
+    len
+}
+
 /// Like `check_interpreter_abuse` but only checks for eval flags on interpreters.
 /// Skips delegation-command checks (which require an allowlist for membership test).
 /// Used in blocklist-only mode where there is no allowlist.
 fn check_interpreter_eval_only(segment: &str) -> Result<(), String> {
     let trimmed = skip_env_assignments(segment.trim());
-    let tokens: Vec<&str> = trimmed.split_whitespace().collect();
+    let tokens = shell_tokenize(trimmed);
     if tokens.is_empty() {
         return Ok(());
     }
-    let base = tokens[0].rsplit('/').next().unwrap_or(tokens[0]);
-    if !INTERPRETER_COMMANDS.contains(&base) {
+    let base = tokens[0]
+        .rsplit('/')
+        .next()
+        .unwrap_or(&tokens[0])
+        .to_string();
+    if !INTERPRETER_COMMANDS.contains(&base.as_str()) {
         return Ok(());
     }
-    for &tok in &tokens[1..] {
-        if EVAL_FLAGS.contains(&tok) {
+    for tok in &tokens[1..] {
+        if EVAL_FLAGS.contains(&tok.as_str()) {
             return Err(format!(
                 "[BLOCKED — DO NOT RETRY] Interpreter '{base}' with inline code execution \
                  flag '{tok}' is blocked. Use a script file instead.\n\
@@ -281,16 +349,20 @@ fn check_interpreter_abuse_inner(
         return Ok(());
     }
     let trimmed = skip_env_assignments(segment.trim());
-    let tokens: Vec<&str> = trimmed.split_whitespace().collect();
+    let tokens = shell_tokenize(trimmed);
     if tokens.is_empty() {
         return Ok(());
     }
 
-    let base = tokens[0].rsplit('/').next().unwrap_or(tokens[0]);
+    let base = tokens[0]
+        .rsplit('/')
+        .next()
+        .unwrap_or(&tokens[0])
+        .to_string();
 
-    if INTERPRETER_COMMANDS.contains(&base) {
-        for &tok in &tokens[1..] {
-            if EVAL_FLAGS.contains(&tok) {
+    if INTERPRETER_COMMANDS.contains(&base.as_str()) {
+        for tok in &tokens[1..] {
+            if EVAL_FLAGS.contains(&tok.as_str()) {
                 return Err(format!(
                     "[BLOCKED — DO NOT RETRY] Interpreter '{base}' with inline code execution \
                      flag '{tok}' is blocked. Use a script file instead.\n\
@@ -314,11 +386,11 @@ fn check_interpreter_abuse_inner(
         }
     }
 
-    if DELEGATION_COMMANDS.contains(&base) {
+    if DELEGATION_COMMANDS.contains(&base.as_str()) {
         let rest_tokens: Vec<&str> = tokens[1..]
             .iter()
+            .map(std::string::String::as_str)
             .skip_while(|t| t.starts_with('-') || t.contains('='))
-            .copied()
             .collect();
         if let Some(&delegated_tok) = rest_tokens.first() {
             let delegated = delegated_tok.rsplit('/').next().unwrap_or(delegated_tok);
@@ -349,12 +421,16 @@ fn has_eval_flag_prefix(token: &str) -> bool {
 /// Check if a segment is a bare interpreter after a pipe (no script file argument).
 fn is_bare_interpreter_stdin(segment: &str) -> bool {
     let trimmed = skip_env_assignments(segment.trim());
-    let tokens: Vec<&str> = trimmed.split_whitespace().collect();
+    let tokens = shell_tokenize(trimmed);
     if tokens.is_empty() {
         return false;
     }
-    let base = tokens[0].rsplit('/').next().unwrap_or(tokens[0]);
-    if !INTERPRETER_COMMANDS.contains(&base) {
+    let base = tokens[0]
+        .rsplit('/')
+        .next()
+        .unwrap_or(&tokens[0])
+        .to_string();
+    if !INTERPRETER_COMMANDS.contains(&base.as_str()) {
         return false;
     }
     !tokens[1..]
@@ -387,15 +463,19 @@ const BLOCKED_INLINE_ENV: &[&str] = &[
 
 fn check_dangerous_flags(segment: &str) -> Result<(), String> {
     let trimmed = skip_env_assignments(segment.trim());
-    let tokens: Vec<&str> = trimmed.split_whitespace().collect();
+    let tokens = shell_tokenize(trimmed);
     if tokens.is_empty() {
         return Ok(());
     }
-    let base = tokens[0].rsplit('/').next().unwrap_or(tokens[0]);
+    let base = tokens[0]
+        .rsplit('/')
+        .next()
+        .unwrap_or(&tokens[0])
+        .to_string();
 
-    match base {
+    match base.as_str() {
         "git" => {
-            for &tok in &tokens[1..] {
+            for tok in &tokens[1..] {
                 for flag in DANGEROUS_GIT_FLAGS {
                     if tok.starts_with(flag) {
                         return Err(format!(
@@ -407,7 +487,7 @@ fn check_dangerous_flags(segment: &str) -> Result<(), String> {
             }
         }
         "tar" => {
-            for &tok in &tokens[1..] {
+            for tok in &tokens[1..] {
                 for flag in DANGEROUS_TAR_FLAGS {
                     if tok.starts_with(flag) {
                         return Err(format!(
@@ -419,7 +499,7 @@ fn check_dangerous_flags(segment: &str) -> Result<(), String> {
             }
         }
         "find" => {
-            for &tok in &tokens[1..] {
+            for tok in &tokens[1..] {
                 if tok == "-exec" || tok == "-execdir" {
                     return Err(format!(
                         "[BLOCKED — DO NOT RETRY] 'find' with '{tok}' is blocked. \
@@ -430,7 +510,7 @@ fn check_dangerous_flags(segment: &str) -> Result<(), String> {
             }
         }
         "awk" | "gawk" | "mawk" => {
-            for &tok in &tokens[1..] {
+            for tok in &tokens[1..] {
                 if tok.contains("system(") {
                     return Err(format!(
                         "[BLOCKED — DO NOT RETRY] '{base}' with 'system()' call is blocked.\n\
@@ -547,7 +627,8 @@ fn has_substitution_at_command_pos(command: &str) -> bool {
             return true;
         }
 
-        let first_token = cmd_start.split_whitespace().next().unwrap_or("");
+        let tokens = shell_tokenize(cmd_start);
+        let first_token = tokens.first().map_or("", std::string::String::as_str);
         if first_token.starts_with('`') || first_token == "`" {
             return true;
         }
@@ -669,10 +750,9 @@ fn extract_base_from_segment(segment: &str) -> String {
         return String::new();
     }
 
-    // Take first whitespace-delimited token as the command
-    let first_token = cmd_part.split_whitespace().next().unwrap_or("");
+    let tokens = shell_tokenize(cmd_part);
+    let first_token = tokens.first().map_or("", std::string::String::as_str);
 
-    // Strip path prefix: /usr/bin/git -> git
     first_token
         .rsplit('/')
         .next()
@@ -681,24 +761,32 @@ fn extract_base_from_segment(segment: &str) -> String {
 }
 
 /// Skip leading KEY=VALUE environment variable assignments.
+/// Uses quote-aware scanning so `FOO="bar baz" git status` correctly
+/// skips the entire `FOO="bar baz"` token.
 fn skip_env_assignments(segment: &str) -> &str {
     let mut rest = segment;
     loop {
-        let token = rest.split_whitespace().next().unwrap_or("");
-        if token.is_empty() {
-            return rest;
+        let rest_trimmed = rest.trim_start();
+        if rest_trimmed.is_empty() {
+            return rest_trimmed;
         }
-        // env var assignment: contains '=' and doesn't start with '-' or '/'
-        if token.contains('=')
-            && !token.starts_with('-')
-            && !token.starts_with('/')
-            && !token.starts_with('.')
+        let end = quote_aware_token_end(rest_trimmed);
+        if end == 0 {
+            return rest_trimmed;
+        }
+        let raw_token = &rest_trimmed[..end];
+        let unquoted: String = raw_token
+            .chars()
+            .filter(|c| *c != '"' && *c != '\'')
+            .collect();
+        if unquoted.contains('=')
+            && !unquoted.starts_with('-')
+            && !unquoted.starts_with('/')
+            && !unquoted.starts_with('.')
         {
-            // Advance past this token
-            let after = &rest[rest.find(token).unwrap_or(0) + token.len()..];
-            rest = after.trim_start();
+            rest = &rest_trimmed[end..];
         } else {
-            return rest;
+            return rest_trimmed;
         }
     }
 }
@@ -1388,13 +1476,120 @@ mod tests {
     #[test]
     fn empty_allowlist_blocks_exec() {
         let result = check_shell_allowlist("exec /bin/sh");
-        // exec is in has_dangerous_patterns or check_unconditional_blocked_only
-        // With empty allowlist, check_unconditional_blocked_only catches it
-        // Actually exec at command start is not caught by has_dangerous_patterns
-        // but by check_unconditional_blocked_only
         assert!(
             result.is_err(),
             "exec must be blocked even with empty allowlist"
         );
+    }
+
+    // --- shell_tokenize tests ---
+
+    #[test]
+    fn tokenize_simple() {
+        assert_eq!(shell_tokenize("git status"), vec!["git", "status"]);
+    }
+
+    #[test]
+    fn tokenize_double_quoted_path_with_spaces() {
+        let tokens = shell_tokenize(r#"git -C "Program Files/repo" status"#);
+        assert_eq!(tokens, vec!["git", "-C", "Program Files/repo", "status"]);
+    }
+
+    #[test]
+    fn tokenize_single_quoted_windows_path() {
+        let tokens = shell_tokenize(r"git -C 'C:\Program Files\repo' status");
+        assert_eq!(
+            tokens,
+            vec!["git", "-C", r"C:\Program Files\repo", "status"]
+        );
+    }
+
+    #[test]
+    fn tokenize_single_quoted() {
+        let tokens = shell_tokenize("echo 'hello world' done");
+        assert_eq!(tokens, vec!["echo", "hello world", "done"]);
+    }
+
+    #[test]
+    fn tokenize_backslash_escape() {
+        let tokens = shell_tokenize(r"echo hello\ world");
+        assert_eq!(tokens, vec!["echo", "hello world"]);
+    }
+
+    #[test]
+    fn tokenize_empty() {
+        assert!(shell_tokenize("").is_empty());
+        assert!(shell_tokenize("   ").is_empty());
+    }
+
+    #[test]
+    fn tokenize_mixed_quotes() {
+        let tokens = shell_tokenize(r#"cmd "arg one" 'arg two' arg3"#);
+        assert_eq!(tokens, vec!["cmd", "arg one", "arg two", "arg3"]);
+    }
+
+    // --- quote_aware_token_end tests ---
+
+    #[test]
+    fn token_end_simple() {
+        assert_eq!(quote_aware_token_end("foo bar"), 3);
+    }
+
+    #[test]
+    fn token_end_double_quoted() {
+        assert_eq!(quote_aware_token_end(r#""foo bar" baz"#), 9);
+    }
+
+    #[test]
+    fn token_end_single_quoted() {
+        assert_eq!(quote_aware_token_end("'foo bar' baz"), 9);
+    }
+
+    #[test]
+    fn token_end_entire_string() {
+        assert_eq!(quote_aware_token_end("foobar"), 6);
+    }
+
+    #[test]
+    fn token_end_env_with_quoted_value() {
+        assert_eq!(quote_aware_token_end(r#"FOO="bar baz" git"#), 13);
+    }
+
+    // --- skip_env_assignments with quoted values ---
+
+    #[test]
+    fn skip_env_quoted_value_with_spaces() {
+        let result = skip_env_assignments(r#"FOO="bar baz" git status"#);
+        assert_eq!(result.trim(), "git status");
+    }
+
+    #[test]
+    fn skip_env_multiple_assignments() {
+        let result = skip_env_assignments(r#"A=1 B="two three" cargo test"#);
+        assert_eq!(result.trim(), "cargo test");
+    }
+
+    // --- extract_base_from_segment with quoted commands ---
+
+    #[test]
+    fn extract_base_quoted_path() {
+        let r = extract_base_from_segment(r#""/usr/local/bin/git" status"#);
+        assert_eq!(r, "git");
+    }
+
+    // --- security checks with quoted paths ---
+
+    #[test]
+    fn interpreter_check_with_quoted_path() {
+        let list = allow(&["python3"]);
+        let r = check_all_segments(r#"python3 "/path/with spaces/script.py""#, &list);
+        assert!(r.is_ok(), "quoted path to script should be allowed");
+    }
+
+    #[test]
+    fn dangerous_flags_git_quoted_path() {
+        let list = allow(&["git"]);
+        let r = check_all_segments(r#"git -C "C:\Program Files\repo" status"#, &list);
+        assert!(r.is_ok(), "git -C with quoted path should be allowed");
     }
 }

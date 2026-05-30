@@ -107,6 +107,7 @@ pub async fn start_proxy_with_token(port: u16, auth_token: Option<String>) -> an
         .route("/health", get(health))
         .route("/status", get(status_handler))
         .route("/v1/messages", any(anthropic::handler))
+        .route("/v1/messages/{*rest}", any(anthropic::handler))
         .route("/v1/chat/completions", any(openai::handler))
         .route("/v1/references/{id}", get(v1_resolve_reference))
         .fallback(fallback_router)
@@ -346,6 +347,13 @@ mod auth_tests {
         assert!(is_provider_route("/v1/chat/completions"));
         assert!(is_provider_route("/v1/messages"));
         assert!(is_provider_route("/v1/completions"));
+    }
+
+    #[test]
+    fn is_provider_route_anthropic_subpaths() {
+        assert!(is_provider_route("/v1/messages/count_tokens"));
+        assert!(is_provider_route("/v1/messages/batches"));
+        assert!(is_provider_route("/v1/messages/batches/batch_123"));
     }
 
     #[test]

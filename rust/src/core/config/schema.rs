@@ -196,6 +196,22 @@ impl ConfigSchema {
             ),
         );
         root.insert(
+            "tool_profile".into(),
+            key_enum(
+                &["minimal", "standard", "power"],
+                cfg.tool_profile.as_deref().unwrap_or(""),
+                "Tool visibility profile: minimal (5 tools), standard (20), power (all). Override via LEAN_CTX_TOOL_PROFILE",
+            ),
+        );
+        root.insert(
+            "tools_enabled".into(),
+            key(
+                "string[]",
+                serde_json::json!(cfg.tools_enabled),
+                "Explicit list of enabled tool names (overrides tool_profile when non-empty)",
+            ),
+        );
+        root.insert(
             "rules_scope".into(),
             key_enum(
                 &["both", "global", "project"],
@@ -363,8 +379,8 @@ impl ConfigSchema {
             "savings_footer".into(),
             key_enum_with_env(
                 &["auto", "always", "never"],
-                "never",
-                "Controls visibility of token savings footers: never (default, suppress everywhere), always, auto (context-dependent)",
+                "always",
+                "Controls visibility of token savings footers: always (default, show on every response), never, auto (context-dependent). Also: LEAN_CTX_SHOW_SAVINGS=1|0",
                 "LEAN_CTX_SAVINGS_FOOTER",
             ),
         );
@@ -1305,6 +1321,39 @@ impl ConfigSchema {
                 ),
             );
         }
+
+        let mut setup_keys = BTreeMap::new();
+        setup_keys.insert(
+            "auto_inject_rules".into(),
+            key(
+                "bool?",
+                serde_json::json!(null),
+                "Inject agent rule files during setup/update. null=auto (inject if already present), true=always, false=never",
+            ),
+        );
+        setup_keys.insert(
+            "auto_inject_skills".into(),
+            key(
+                "bool?",
+                serde_json::json!(null),
+                "Install SKILL.md files during setup/update. null=auto (install if rules present), true=always, false=never",
+            ),
+        );
+        setup_keys.insert(
+            "auto_update_mcp".into(),
+            key(
+                "bool",
+                serde_json::json!(true),
+                "Register lean-ctx MCP server in editor configs during setup/update",
+            ),
+        );
+        sections.insert(
+            "setup".into(),
+            SectionSchema {
+                description: "Controls what lean-ctx injects during setup and updates. Fresh installs default to non-invasive (rules/skills off, MCP on).".into(),
+                keys: setup_keys,
+            },
+        );
 
         let mut llm_keys = BTreeMap::new();
         llm_keys.insert(

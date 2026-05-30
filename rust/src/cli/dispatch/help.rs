@@ -12,10 +12,10 @@ With no arguments, lean-ctx speaks the MCP protocol on stdin/stdout — that is
 for your AI editor, not for interactive use, so it is waiting silently. You
 probably want one of these:
 
-  lean-ctx setup     Connect lean-ctx to your AI tools (start here)
+  lean-ctx onboard   Connect lean-ctx to your AI tools (start here)
   lean-ctx doctor    Check that everything is wired up correctly
   lean-ctx gain      See how many tokens you have saved
-  lean-ctx --help    Full command reference
+  lean-ctx help      Common commands (or `help all` for everything)
 
 Docs: https://leanctx.com
 ",
@@ -37,6 +37,51 @@ pub(super) fn capability_banner() -> String {
     )
 }
 
+/// Concise, tiered help shown by default for `lean-ctx help` and `--help`.
+/// Covers the ~12 commands a user actually needs day to day. The exhaustive
+/// reference (every subcommand, env var, read mode) lives behind
+/// `lean-ctx help all` so a newcomer is never confronted with 250 lines.
+pub(super) fn print_help_concise() {
+    print!("{}", concise_help_text());
+}
+
+pub(super) fn concise_help_text() -> String {
+    format!(
+        "lean-ctx {version} — Context Runtime for AI Agents
+
+{banner}
+
+GETTING STARTED:
+    lean-ctx onboard               Connect your AI tools with one command (recommended)
+    lean-ctx setup                 Guided setup with full control over every option
+    lean-ctx doctor                Check that everything is wired up correctly
+    lean-ctx gain                  See how many tokens you have saved
+
+EVERYDAY COMMANDS:
+    lean-ctx -c \"command\"          Run a shell command with compressed output
+    lean-ctx read <file>           Read a file with compression
+    lean-ctx grep <pattern>        Search with compressed output
+    lean-ctx dashboard             Open the web dashboard (localhost:3333)
+    lean-ctx tools <profile>       Choose how many MCP tools your agent sees
+                                   (minimal · standard · power)
+
+MANAGE:
+    lean-ctx status                Am I connected? (quick check)
+    lean-ctx update                Update to the latest version
+    lean-ctx uninstall             Remove lean-ctx cleanly
+
+MORE:
+    lean-ctx help all              Full command reference (every subcommand)
+    lean-ctx cheatsheet            Workflow cheat sheet for AI agents
+
+WEBSITE: https://leanctx.com
+GITHUB:  https://github.com/yvgude/lean-ctx
+",
+        version = env!("CARGO_PKG_VERSION"),
+        banner = capability_banner(),
+    )
+}
+
 pub(super) fn print_help() {
     println!(
         "lean-ctx {version} — Context Runtime for AI Agents
@@ -44,10 +89,11 @@ pub(super) fn print_help() {
 {banner}
 
 GETTING STARTED:
-    lean-ctx setup                 Connect lean-ctx to your AI tools (start here)
+    lean-ctx onboard               Connect your AI tools with one command (recommended)
+    lean-ctx setup                 Guided setup with full control (start here for options)
     lean-ctx doctor                Check that everything is wired up correctly
     lean-ctx gain                  See how many tokens you have saved
-    (everything below is reference — you rarely need it day to day)
+    (everything below is reference — run `lean-ctx help` for the short version)
 
 USAGE:
     lean-ctx                       Start MCP server (stdio)
@@ -80,12 +126,14 @@ COMMANDS:
     daemon enable|disable          Auto-start daemon on login (systemd/LaunchAgent)
     cache [list|clear|stats]       Show/manage file read cache
     wrapped [--week|--month|--all] Deprecated alias for gain --wrapped
-    sessions [list|show|cleanup]   Manage CCP sessions (~/.lean-ctx/sessions/)
+    sessions [list|show|cleanup]   Manage saved CCP session snapshots (alias: session-store)
     benchmark run [path] [--json]  Run real benchmark on project files
     benchmark report [path]        Generate shareable Markdown report
+    benchmark compare [--output F] Head-to-head comparison vs competitors
     cheatsheet                     Command cheat sheet & workflow quick reference
-    setup                          One-command setup: shell + editor + verify
-    install --repair [--json]      Premium repair: merge-based setup refresh (no deletes)
+    onboard                        Zero-prompt golden path: connect tools + sensible defaults
+    setup                          Guided setup: shell + editor + verify (full control)
+    install                        Alias for setup; install --repair = non-interactive refresh
     bootstrap                      Non-interactive setup + fix (zero-config)
     status [--json]                Show setup + MCP + rules status
     init [--global]                Install shell aliases (zsh/bash/fish/PowerShell)
@@ -114,10 +162,11 @@ COMMANDS:
     overview [task]                Project overview (task-contextualized if given)
     compress [--signatures]        Context compression checkpoint
     config                         Show/edit configuration (~/.lean-ctx/config.toml)
-    profile [list|show|diff|create|set]  Manage context profiles
+    tools [minimal|standard|power|show|list]  How many MCP tools your agent sees
+    profile [list|show|diff|create|set]  Manage context profiles (compression/read modes)
     theme [list|set|export|import] Customize terminal colors and themes
     tee [list|clear|show <file>|last] Manage output tee files (~/.lean-ctx/tee/)
-    terse [off|lite|full|ultra]    Set agent output verbosity (saves 25-65% output tokens)
+    compression [off|lite|standard|max]  Set compression level (saves 25-65% tokens; alias: terse)
     slow-log [list|clear]          Show/clear slow command log (~/.lean-ctx/slow-commands.log)
     update [--check]               Self-update lean-ctx binary from GitHub Releases
     stop                           Stop ALL lean-ctx processes (daemon, proxy, orphans)
@@ -132,6 +181,11 @@ COMMANDS:
     control <action> [--target=<t>] Context field manipulation (exclude/pin/priority)
     plan <task> [--budget=N]       Context planning (optimal Phi-scored context plan)
     compile [--mode=<m>] [--budget=N] Context compilation (knapsack + Boltzmann)
+    visualize [--output F] [--open] Generate interactive HTML report (D3.js graph)
+    plugin list|enable|disable|info|init|hooks
+                                   Manage lean-ctx plugins
+    rules sync|diff|lint|status|init
+                                   ContextOps: cross-agent rules governance
     uninstall [--keep-config]       Remove all lean-ctx artifacts (--keep-config preserves MCP/rules)
 
 SHELL HOOK PATTERNS (95+):
@@ -236,7 +290,7 @@ CLOUD:
 TROUBLESHOOTING:
     Commands broken?     lean-ctx-off             (fixes current session)
     Permanent fix?       lean-ctx uninstall       (removes all hooks)
-    Manual fix?          Edit ~/.zshrc, remove the \"lean-ctx shell hook\" block
+    Manual fix?          Edit {rc_file}, remove the \"lean-ctx shell hook\" block
     Binary missing?      Aliases auto-fallback to original commands (safe)
     Preview init?        lean-ctx init --global --dry-run
 
@@ -245,5 +299,6 @@ GITHUB:  https://github.com/yvgude/lean-ctx
 ",
         version = env!("CARGO_PKG_VERSION"),
         banner = capability_banner(),
+        rc_file = crate::shell_hook::shell_rc_file(),
     );
 }

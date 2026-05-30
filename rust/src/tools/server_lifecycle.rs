@@ -170,6 +170,7 @@ impl LeanCtxServer {
                 crate::server::registry::build_registry(),
             )),
             rules_stale_checked: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            rules_tip_shown: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             last_seen_event_id: Arc::new(std::sync::atomic::AtomicI64::new(0)),
             startup_project_root: startup.project_root,
             startup_shell_cwd: startup.shell_cwd,

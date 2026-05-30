@@ -130,6 +130,28 @@ fn sanitize_intent(raw: &str) -> String {
         .collect()
 }
 
+/// Escape a path for safe embedding inside a Python raw double-quoted string.
+/// Handles embedded double-quotes which would break `r"..."`.
+fn escape_for_python_raw(path: &str) -> String {
+    path.replace('"', r#"\" + '"' + r""#)
+}
+
+/// Escape a path for safe embedding inside a shell double-quoted string.
+/// Handles `$`, backtick, `\`, and `"` which are special inside double quotes.
+fn escape_for_shell_dq(path: &str) -> String {
+    let mut out = String::with_capacity(path.len());
+    for ch in path.chars() {
+        match ch {
+            '$' | '`' | '"' | '\\' => {
+                out.push('\\');
+                out.push(ch);
+            }
+            _ => out.push(ch),
+        }
+    }
+    out
+}
+
 fn build_file_processing_script(language: &str, content: &str, intent: Option<&str>) -> String {
     let Ok(tmp) = tempfile::Builder::new()
         .prefix("lean-ctx-exec-")
@@ -143,46 +165,45 @@ fn build_file_processing_script(language: &str, content: &str, intent: Option<&s
     let _keep = tmp.into_temp_path();
     let intent_str = sanitize_intent(intent.unwrap_or("summarize the content"));
 
-    match language {
-        "python" => {
-            format!(
-                r#"
-import os
+    if language == "python" {
+        let py_path = escape_for_python_raw(&tmp_path);
+        format!(
+            r#"
+    import os
 
-with open(r"{tmp_path}", "r", encoding="utf-8") as f:
-    data = f.read()
-os.remove(r"{tmp_path}")
+    with open(r"{py_path}", "r", encoding="utf-8") as f:
+        data = f.read()
+    os.remove(r"{py_path}")
 
-lines = data.strip().split('\n')
-total_lines = len(lines)
-total_bytes = len(data.encode('utf-8'))
+    lines = data.strip().split('\n')
+    total_lines = len(lines)
+    total_bytes = len(data.encode('utf-8'))
 
-word_count = sum(len(line.split()) for line in lines)
+    word_count = sum(len(line.split()) for line in lines)
 
-print(f"{{total_lines}} lines, {{total_bytes}} bytes, {{word_count}} words")
-print("Intent: {intent_str}")
+    print(f"{{total_lines}} lines, {{total_bytes}} bytes, {{word_count}} words")
+    print("Intent: {intent_str}")
 
-if total_lines > 10:
-    print(f"First 3: {{lines[:3]}}")
-    print(f"Last 3: {{lines[-3:]}}")
-"#
-            )
-        }
-        _ => {
-            format!(
-                r#"
-data=$(cat "{tmp_path}")
-rm -f "{tmp_path}"
-lines=$(echo "$data" | wc -l | tr -d ' ')
-bytes=$(echo "$data" | wc -c | tr -d ' ')
-echo "$lines lines, $bytes bytes"
-echo 'Intent: {intent_str}'
-echo "$data" | head -3
-echo "..."
-echo "$data" | tail -3
-"#
-            )
-        }
+    if total_lines > 10:
+        print(f"First 3: {{lines[:3]}}")
+        print(f"Last 3: {{lines[-3:]}}")
+    "#
+        )
+    } else {
+        let sh_path = escape_for_shell_dq(&tmp_path);
+        format!(
+            r#"
+    data=$(cat "{sh_path}")
+    rm -f "{sh_path}"
+    lines=$(echo "$data" | wc -l | tr -d ' ')
+    bytes=$(echo "$data" | wc -c | tr -d ' ')
+    echo "$lines lines, $bytes bytes"
+    echo 'Intent: {intent_str}'
+    echo "$data" | head -3
+    echo "..."
+    echo "$data" | tail -3
+    "#
+        )
     }
 }
 
@@ -222,6 +243,35 @@ mod tests {
         assert_eq!(detect_language_from_extension("test.rs"), "rust");
         assert_eq!(detect_language_from_extension("test.csv"), "python");
         assert_eq!(detect_language_from_extension("test.log"), "python");
+    }
+
+    #[test]
+    fn escape_shell_dq_handles_special_chars() {
+        assert_eq!(escape_for_shell_dq(r"C:\tmp\file"), r"C:\\tmp\\file");
+        assert_eq!(escape_for_shell_dq("/tmp/normal"), "/tmp/normal");
+        assert_eq!(escape_for_shell_dq("path with $VAR"), r"path with \$VAR");
+        assert_eq!(escape_for_shell_dq(r#"path"quote"#), r#"path\"quote"#);
+        assert_eq!(escape_for_shell_dq("has `backtick`"), r"has \`backtick\`");
+    }
+
+    #[test]
+    fn escape_python_raw_handles_quotes() {
+        assert_eq!(escape_for_python_raw("/tmp/normal"), "/tmp/normal");
+        assert_eq!(escape_for_python_raw(r"C:\Users\test"), r"C:\Users\test");
+    }
+
+    #[test]
+    fn script_with_spaces_in_path() {
+        let script = build_file_processing_script("shell", "test data", None);
+        let lines: Vec<&str> = script.lines().collect();
+        for line in &lines {
+            if line.contains("cat ") || line.contains("rm -f") {
+                assert!(
+                    line.contains('"'),
+                    "path must be double-quoted in shell script: {line}"
+                );
+            }
+        }
     }
 
     #[test]

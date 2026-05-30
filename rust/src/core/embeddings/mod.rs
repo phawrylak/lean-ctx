@@ -1,79 +1,106 @@
 //! Embedding engine for semantic code search.
 //!
-//! Provides dense vector embeddings for code chunks using a local ONNX model
-//! (all-MiniLM-L6-v2). Feature-gated under `embeddings` — falls back gracefully
-//! to BM25-only search when the feature or model is not available.
+//! Provides dense vector embeddings for code chunks using a local ONNX model.
+//! Supports multiple models via `EmbeddingModel` registry — selected via
+//! `LEAN_CTX_EMBEDDING_MODEL` env var (default: all-MiniLM-L6-v2).
+//!
+//! Feature-gated under `embeddings` — falls back gracefully to BM25-only
+//! search when the feature or model is not available.
 //!
 //! Architecture:
-//!   WordPieceTokenizer → ONNX Model (rten) → Mean Pooling → L2 Normalize → `Vec<f32>`
+//!   Tokenizer → ONNX Model (rten) → Mean Pooling → L2 Normalize → `Vec<f32>`
 
 pub mod download;
+pub mod model_registry;
 pub mod pooling;
 pub mod tokenizer;
 
 use std::path::{Path, PathBuf};
 
+use model_registry::{EmbeddingModel, ModelConfig, VocabSource};
+use tokenizer::{TokenizedInput, WordPieceTokenizer};
+
 #[cfg(feature = "embeddings")]
 use std::sync::Arc;
-
-use tokenizer::{TokenizedInput, WordPieceTokenizer};
 
 #[cfg(feature = "embeddings")]
 use rten::Model;
 
-#[cfg(feature = "embeddings")]
-const DEFAULT_DIMENSIONS: usize = 384;
-#[cfg(feature = "embeddings")]
-const DEFAULT_MAX_SEQ_LEN: usize = 256;
-
 pub struct EmbeddingEngine {
     #[cfg(feature = "embeddings")]
     model: Arc<Model>,
-    tokenizer: WordPieceTokenizer,
+    tokenizer: TokenizerKind,
     dimensions: usize,
     max_seq_len: usize,
+    model_id: EmbeddingModel,
+    model_config: ModelConfig,
     #[cfg(feature = "embeddings")]
     input_names: InputNodeIds,
     #[cfg(feature = "embeddings")]
     output_id: rten::NodeId,
 }
 
+/// Abstraction over different tokenizer backends.
+enum TokenizerKind {
+    WordPiece(WordPieceTokenizer),
+    HfTokenizer(tokenizer::HfTokenizerWrapper),
+}
+
 #[cfg(feature = "embeddings")]
 struct InputNodeIds {
     input_ids: rten::NodeId,
     attention_mask: rten::NodeId,
-    token_type_ids: rten::NodeId,
+    token_type_ids: Option<rten::NodeId>,
 }
 
 impl EmbeddingEngine {
     /// Load embedding model and vocabulary from a directory.
     /// Downloads model automatically from HuggingFace if not present.
-    ///
-    /// Expected files (auto-downloaded):
-    /// - `model.onnx` — all-MiniLM-L6-v2 ONNX embedding model
-    /// - `vocab.txt` — WordPiece vocabulary (one token per line)
     #[cfg(feature = "embeddings")]
     pub fn load(model_dir: &Path) -> anyhow::Result<Self> {
-        download::ensure_model(model_dir)?;
+        let selected = model_registry::resolve_model();
+        Self::load_model(model_dir, selected)
+    }
 
-        let vocab_path = model_dir.join("vocab.txt");
+    /// Load a specific embedding model from a directory.
+    #[cfg(feature = "embeddings")]
+    pub fn load_model(base_dir: &Path, model_id: EmbeddingModel) -> anyhow::Result<Self> {
+        let config = model_id.config();
+        let model_dir = base_dir.join(model_id.storage_dir_name());
+
+        download::ensure_model(&model_dir, &config)?;
+
+        let tokenizer = load_tokenizer(&model_dir, &config)?;
         let model_path = model_dir.join("model.onnx");
-
-        let tokenizer = WordPieceTokenizer::from_file(&vocab_path)?;
         let model = Model::load_file(&model_path)?;
 
         let model_inputs = model.input_ids();
-        if model_inputs.len() < 3 {
+        if model_inputs.len() < 2 {
             anyhow::bail!(
-                "Expected BERT-style model with 3 inputs, got {}",
+                "Expected model with at least 2 inputs (input_ids, attention_mask), got {}",
                 model_inputs.len()
             );
         }
 
+        let token_type_ids = if config.needs_token_type_ids {
+            if model_inputs.len() < 3 {
+                anyhow::bail!(
+                    "Model {} requires token_type_ids but only has {} inputs",
+                    config.name,
+                    model_inputs.len()
+                );
+            }
+            Some(model_inputs[2])
+        } else if model_inputs.len() >= 3 {
+            Some(model_inputs[2])
+        } else {
+            None
+        };
+
         let input_names = InputNodeIds {
             input_ids: model_inputs[0],
             attention_mask: model_inputs[1],
-            token_type_ids: model_inputs[2],
+            token_type_ids,
         };
 
         let output_id = *model
@@ -81,20 +108,29 @@ impl EmbeddingEngine {
             .first()
             .ok_or_else(|| anyhow::anyhow!("Model has no outputs"))?;
 
-        let dimensions = Self::detect_dimensions(&model, &tokenizer, &input_names, output_id)
-            .unwrap_or(DEFAULT_DIMENSIONS);
+        let dimensions = detect_dimensions(
+            &model,
+            &tokenizer,
+            &input_names,
+            output_id,
+            config.max_seq_len,
+        )
+        .unwrap_or(config.dimensions);
 
         tracing::info!(
-            "Embedding engine loaded: {}d, max_seq_len={}",
+            "Embedding engine loaded: model={}, {}d, max_seq_len={}",
+            config.name,
             dimensions,
-            DEFAULT_MAX_SEQ_LEN
+            config.max_seq_len,
         );
 
         Ok(Self {
             model: Arc::new(model),
             tokenizer,
             dimensions,
-            max_seq_len: DEFAULT_MAX_SEQ_LEN,
+            max_seq_len: config.max_seq_len,
+            model_id,
+            model_config: config,
             input_names,
             output_id,
         })
@@ -110,19 +146,48 @@ impl EmbeddingEngine {
         Self::load(&Self::model_directory())
     }
 
-    /// Generate an embedding vector for a single text.
+    /// Generate an embedding vector for a single text (document/code).
     pub fn embed(&self, text: &str) -> anyhow::Result<Vec<f32>> {
-        let input = self.tokenizer.encode(text, self.max_seq_len);
+        let prefixed;
+        let input_text = if let Some(prefix) = self.model_config.document_prefix {
+            prefixed = format!("{prefix}{text}");
+            &prefixed
+        } else {
+            text
+        };
+        let input = tokenize(&self.tokenizer, input_text, self.max_seq_len);
         self.run_inference(&input)
     }
 
-    /// Generate embedding vectors for multiple texts.
+    /// Generate an embedding vector for a query string.
+    /// Applies query-specific prefix if the model requires one.
+    pub fn embed_query(&self, query: &str) -> anyhow::Result<Vec<f32>> {
+        let prefixed;
+        let input_text = if let Some(prefix) = self.model_config.query_prefix {
+            prefixed = format!("{prefix}{query}");
+            &prefixed
+        } else {
+            query
+        };
+        let input = tokenize(&self.tokenizer, input_text, self.max_seq_len);
+        self.run_inference(&input)
+    }
+
+    /// Generate embedding vectors for multiple texts (documents/code).
     pub fn embed_batch(&self, texts: &[&str]) -> anyhow::Result<Vec<Vec<f32>>> {
         texts.iter().map(|t| self.embed(t)).collect()
     }
 
     pub fn dimensions(&self) -> usize {
         self.dimensions
+    }
+
+    pub fn model_id(&self) -> EmbeddingModel {
+        self.model_id
+    }
+
+    pub fn model_name(&self) -> &str {
+        self.model_config.name
     }
 
     /// Resolve the model directory (respects LEAN_CTX_MODELS_DIR env).
@@ -138,8 +203,12 @@ impl EmbeddingEngine {
 
     /// Check if the model files are present and loadable.
     pub fn is_available() -> bool {
-        let dir = Self::model_directory();
-        dir.join("model.onnx").exists() && dir.join("vocab.txt").exists()
+        let base_dir = Self::model_directory();
+        let selected = model_registry::resolve_model();
+        let config = selected.config();
+        let model_dir = base_dir.join(selected.storage_dir_name());
+        model_dir.join("model.onnx").exists()
+            && model_dir.join(config.vocab_file.filename()).exists()
     }
 
     #[cfg(feature = "embeddings")]
@@ -150,13 +219,16 @@ impl EmbeddingEngine {
 
         let ids_tensor = NdTensor::from_data([1, seq_len], input.input_ids.clone());
         let mask_tensor = NdTensor::from_data([1, seq_len], input.attention_mask.clone());
-        let type_tensor = NdTensor::from_data([1, seq_len], input.token_type_ids.clone());
 
-        let inputs = vec![
+        let mut inputs = vec![
             (self.input_names.input_ids, ids_tensor.into()),
             (self.input_names.attention_mask, mask_tensor.into()),
-            (self.input_names.token_type_ids, type_tensor.into()),
         ];
+
+        if let Some(type_id) = self.input_names.token_type_ids {
+            let type_tensor = NdTensor::from_data([1, seq_len], input.token_type_ids.clone());
+            inputs.push((type_id, type_tensor.into()));
+        }
 
         let outputs = self.model.run(inputs, &[self.output_id], None)?;
 
@@ -179,37 +251,65 @@ impl EmbeddingEngine {
     fn run_inference(&self, _input: &TokenizedInput) -> anyhow::Result<Vec<f32>> {
         anyhow::bail!("Embeddings feature not enabled")
     }
+}
 
-    /// Detect embedding dimensions by running a dummy inference.
-    #[cfg(feature = "embeddings")]
-    fn detect_dimensions(
-        model: &Model,
-        tokenizer: &WordPieceTokenizer,
-        input_names: &InputNodeIds,
-        output_id: rten::NodeId,
-    ) -> Option<usize> {
-        use rten_tensor::{Layout, NdTensor};
-
-        let dummy = tokenizer.encode("test", 8);
-        let seq_len = dummy.input_ids.len();
-
-        let ids = NdTensor::from_data([1, seq_len], dummy.input_ids);
-        let mask = NdTensor::from_data([1, seq_len], dummy.attention_mask);
-        let types = NdTensor::from_data([1, seq_len], dummy.token_type_ids);
-
-        let inputs = vec![
-            (input_names.input_ids, ids.into()),
-            (input_names.attention_mask, mask.into()),
-            (input_names.token_type_ids, types.into()),
-        ];
-
-        let outputs = model.run(inputs, &[output_id], None).ok()?;
-        let tensor = outputs.into_iter().next()?.into_tensor::<f32>()?;
-        let shape = tensor.shape();
-
-        // Shape is [batch=1, seq_len, dim]
-        shape.last().copied()
+/// Load the appropriate tokenizer for the model config.
+fn load_tokenizer(model_dir: &Path, config: &ModelConfig) -> anyhow::Result<TokenizerKind> {
+    match config.vocab_file {
+        VocabSource::VocabTxt(filename) => {
+            let path = model_dir.join(filename);
+            let tok = WordPieceTokenizer::from_file(&path)?;
+            Ok(TokenizerKind::WordPiece(tok))
+        }
+        VocabSource::TokenizerJson(filename) => {
+            let path = model_dir.join(filename);
+            let tok = tokenizer::HfTokenizerWrapper::from_file(&path)?;
+            Ok(TokenizerKind::HfTokenizer(tok))
+        }
     }
+}
+
+/// Tokenize text using whatever tokenizer backend is loaded.
+fn tokenize(tokenizer: &TokenizerKind, text: &str, max_len: usize) -> TokenizedInput {
+    match tokenizer {
+        TokenizerKind::WordPiece(wp) => wp.encode(text, max_len),
+        TokenizerKind::HfTokenizer(hf) => hf.encode(text, max_len),
+    }
+}
+
+/// Detect embedding dimensions by running a dummy inference.
+#[cfg(feature = "embeddings")]
+fn detect_dimensions(
+    model: &Model,
+    tokenizer: &TokenizerKind,
+    input_names: &InputNodeIds,
+    output_id: rten::NodeId,
+    max_seq_len: usize,
+) -> Option<usize> {
+    use rten_tensor::{Layout, NdTensor};
+
+    let dummy = tokenize(tokenizer, "test", max_seq_len.min(8));
+    let seq_len = dummy.input_ids.len();
+
+    let ids = NdTensor::from_data([1, seq_len], dummy.input_ids);
+    let mask = NdTensor::from_data([1, seq_len], dummy.attention_mask);
+
+    let mut inputs = vec![
+        (input_names.input_ids, ids.into()),
+        (input_names.attention_mask, mask.into()),
+    ];
+
+    if let Some(type_id) = input_names.token_type_ids {
+        let types = NdTensor::from_data([1, seq_len], dummy.token_type_ids);
+        inputs.push((type_id, types.into()));
+    }
+
+    let outputs = model.run(inputs, &[output_id], None).ok()?;
+    let tensor = outputs.into_iter().next()?.into_tensor::<f32>()?;
+    let shape = tensor.shape();
+
+    // Shape is [batch=1, seq_len, dim]
+    shape.last().copied()
 }
 
 /// Compute cosine similarity between two L2-normalized vectors.
@@ -237,7 +337,7 @@ static SHARED_ENGINE: std::sync::OnceLock<anyhow::Result<EmbeddingEngine>> =
 
 /// Global singleton embedding engine. Loaded once, shared across all consumers.
 /// Returns None if the embeddings feature is disabled or the model fails to load.
-/// NOTE: This function BLOCKS on first call while loading the ONNX model (~25MB).
+/// NOTE: This function BLOCKS on first call while loading the ONNX model.
 /// For non-blocking access, use `try_shared_engine()` instead.
 #[cfg(feature = "embeddings")]
 pub fn shared_engine() -> Option<&'static EmbeddingEngine> {
@@ -306,12 +406,7 @@ mod tests {
     #[test]
     #[cfg(feature = "embeddings")]
     fn try_shared_engine_returns_none_when_not_initialized() {
-        // try_shared_engine must never block and should return None
-        // if the engine hasn't been loaded yet (no model files available).
-        // This test runs in an env where model.onnx is absent.
         let result = try_shared_engine();
-        // The engine should NOT have been initialized in the test environment
-        // (no model files), so this should return None without blocking.
         assert!(
             result.is_none(),
             "try_shared_engine should return None without triggering load"

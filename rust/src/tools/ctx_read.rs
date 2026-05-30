@@ -665,6 +665,7 @@ fn handle_full_with_auto_delta(
     ext: &str,
     task: Option<&str>,
 ) -> (String, usize) {
+    let _mode_guard = crate::core::savings_footer::ModeGuard::new("full");
     let Ok(disk_content) = read_file_lossy(path) else {
         cache.record_cache_hit(path);
         if let Some(existing) = cache.get(path) {
@@ -792,6 +793,7 @@ fn format_full_output(
     line_count: usize,
     _task: Option<&str>,
 ) -> (String, usize) {
+    let _mode_guard = crate::core::savings_footer::ModeGuard::new("full");
     let tokens = original_tokens;
     let metadata = build_header(file_ref, short, ext, content, line_count, true);
 
@@ -851,6 +853,7 @@ fn process_mode(
     file_path: &str,
     task: Option<&str>,
 ) -> (String, usize) {
+    let _mode_guard = crate::core::savings_footer::ModeGuard::new(mode);
     let line_count = content.lines().count();
 
     match mode {
@@ -1270,6 +1273,7 @@ fn extract_line_range(content: &str, range_str: &str) -> String {
 }
 
 fn handle_diff(cache: &mut SessionCache, path: &str, file_ref: &str) -> (String, usize) {
+    let _mode_guard = crate::core::savings_footer::ModeGuard::new("diff");
     let short = protocol::shorten_path(path);
     let old_content = cache
         .get(path)

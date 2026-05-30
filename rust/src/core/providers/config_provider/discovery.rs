@@ -1,8 +1,9 @@
 //! Auto-discovery of provider config files from well-known directories.
 //!
 //! Scans:
-//! 1. `~/.config/lean-ctx/providers/` — user-global providers
-//! 2. `.lean-ctx/providers/` — project-local providers
+//! 1. `~/.config/lean-ctx/providers.toml` — single-file multi-provider config
+//! 2. `~/.config/lean-ctx/providers/` — user-global per-file providers
+//! 3. `.lean-ctx/providers/` — project-local providers
 //!
 //! Supports `.toml` and `.json` files.
 
@@ -10,10 +11,24 @@ use std::path::{Path, PathBuf};
 
 use super::schema::ProviderConfig;
 
+/// A `providers.toml` file containing multiple `[[providers]]` entries.
+#[derive(Debug, Clone, serde::Deserialize)]
+struct ProvidersFile {
+    #[serde(default)]
+    providers: Vec<ProviderConfig>,
+}
+
 /// Discover all provider config files from standard directories.
+/// Also loads `providers.toml` single-file configs from well-known locations.
 pub fn discover_configs(project_root: Option<&Path>) -> Vec<DiscoveredConfig> {
     let mut configs = Vec::new();
 
+    // Phase 1: Load `providers.toml` single-file configs
+    for path in providers_toml_paths(project_root) {
+        configs.extend(load_providers_toml(&path));
+    }
+
+    // Phase 2: Load individual config files from directories
     for dir in config_directories(project_root) {
         if !dir.is_dir() {
             continue;
@@ -33,7 +48,7 @@ pub fn discover_configs(project_root: Option<&Path>) -> Vec<DiscoveredConfig> {
         }
     }
 
-    // Deduplicate: project-local configs override global ones (last wins).
+    // Deduplicate: later entries override earlier ones (project-local > global).
     let mut seen = std::collections::HashMap::new();
     for cfg in configs {
         if let Some(prev) = seen.insert(cfg.config.id.clone(), cfg.clone()) {
@@ -55,6 +70,65 @@ pub fn discover_configs(project_root: Option<&Path>) -> Vec<DiscoveredConfig> {
 pub struct DiscoveredConfig {
     pub source_path: PathBuf,
     pub config: ProviderConfig,
+}
+
+/// Paths to look for `providers.toml` single-file configs (priority order).
+fn providers_toml_paths(project_root: Option<&Path>) -> Vec<PathBuf> {
+    let mut paths = Vec::new();
+
+    // 1. Global: ~/.config/lean-ctx/providers.toml
+    if let Some(config_dir) = dirs::config_dir() {
+        paths.push(config_dir.join("lean-ctx").join("providers.toml"));
+    }
+
+    // 2. Global alt: ~/.lean-ctx/providers.toml
+    if let Some(home) = dirs::home_dir() {
+        paths.push(home.join(".lean-ctx").join("providers.toml"));
+    }
+
+    // 3. Project-local: <project>/.lean-ctx/providers.toml
+    if let Some(root) = project_root {
+        paths.push(root.join(".lean-ctx").join("providers.toml"));
+    }
+
+    paths
+}
+
+/// Load all providers from a single `providers.toml` file.
+fn load_providers_toml(path: &Path) -> Vec<DiscoveredConfig> {
+    let Ok(content) = std::fs::read_to_string(path) else {
+        return Vec::new();
+    };
+
+    let file: ProvidersFile = match toml::from_str(&content) {
+        Ok(f) => f,
+        Err(e) => {
+            tracing::warn!("[config_provider] failed to parse {}: {e}", path.display());
+            return Vec::new();
+        }
+    };
+
+    let mut configs = Vec::new();
+    for config in file.providers {
+        if let Err(e) = config.validate() {
+            tracing::warn!(
+                "[config_provider] invalid provider '{}' in {}: {e}",
+                config.id,
+                path.display()
+            );
+            continue;
+        }
+        tracing::info!(
+            "[config_provider] loaded '{}' from {}",
+            config.id,
+            path.display()
+        );
+        configs.push(DiscoveredConfig {
+            source_path: path.to_path_buf(),
+            config,
+        });
+    }
+    configs
 }
 
 /// Returns the list of directories to scan, in priority order.
@@ -246,6 +320,99 @@ title = "title"
 
         let configs = discover_configs(Some(dir.path()));
         assert_eq!(configs.len(), 1);
+    }
+
+    #[test]
+    fn discover_providers_toml_single_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let lctx_dir = dir.path().join(".lean-ctx");
+        fs::create_dir_all(&lctx_dir).unwrap();
+
+        fs::write(
+            lctx_dir.join("providers.toml"),
+            r#"
+[[providers]]
+id = "linear"
+name = "Linear"
+base_url = "https://api.linear.app"
+[providers.auth]
+type = "none"
+[providers.resources.issues]
+path = "/issues"
+[providers.resources.issues.response.mapping]
+id = "id"
+title = "title"
+
+[[providers]]
+id = "sentry"
+name = "Sentry"
+base_url = "https://sentry.io/api/0"
+[providers.auth]
+type = "none"
+[providers.resources.events]
+path = "/events/"
+[providers.resources.events.response.mapping]
+id = "eventID"
+title = "title"
+"#,
+        )
+        .unwrap();
+
+        let configs = discover_configs(Some(dir.path()));
+        assert_eq!(configs.len(), 2);
+        let ids: Vec<_> = configs.iter().map(|c| c.config.id.as_str()).collect();
+        assert!(ids.contains(&"linear"));
+        assert!(ids.contains(&"sentry"));
+    }
+
+    #[test]
+    fn providers_toml_skips_invalid_entries() {
+        let dir = tempfile::tempdir().unwrap();
+        let lctx_dir = dir.path().join(".lean-ctx");
+        fs::create_dir_all(&lctx_dir).unwrap();
+
+        fs::write(
+            lctx_dir.join("providers.toml"),
+            r#"
+[[providers]]
+id = ""
+name = "Bad"
+base_url = "https://example.com"
+[providers.auth]
+type = "none"
+[providers.resources.x]
+path = "/x"
+[providers.resources.x.response.mapping]
+id = "id"
+title = "t"
+
+[[providers]]
+id = "good"
+name = "Good"
+base_url = "https://example.com"
+[providers.auth]
+type = "none"
+[providers.resources.y]
+path = "/y"
+[providers.resources.y.response.mapping]
+id = "id"
+title = "t"
+"#,
+        )
+        .unwrap();
+
+        let configs = discover_configs(Some(dir.path()));
+        assert_eq!(configs.len(), 1);
+        assert_eq!(configs[0].config.id, "good");
+    }
+
+    #[test]
+    fn providers_toml_paths_includes_project_root() {
+        let root = Path::new("/tmp/myproject");
+        let paths = providers_toml_paths(Some(root));
+        assert!(paths
+            .iter()
+            .any(|p| p.ends_with("myproject/.lean-ctx/providers.toml")));
     }
 
     #[test]

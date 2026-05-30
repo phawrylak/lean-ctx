@@ -15,11 +15,13 @@ impl McpTool for CtxProviderTool {
     fn tool_def(&self) -> Tool {
         tool_def(
             "ctx_provider",
-            "External context providers (GitHub, GitLab, more). \
-             Use action=discover to list available providers. \
-             Use action=query with provider+resource for registry-based access. \
-             Legacy GitLab actions still supported. \
-             Set GITHUB_TOKEN or GITLAB_TOKEN to enable providers.",
+            "External context providers (GitHub, GitLab, Jira, Postgres, custom). \
+             action=discover|list: list registered providers. \
+             action=status: provider health + cache metrics. \
+             action=refresh: invalidate cache + re-fetch (provider= optional). \
+             action=configure: show config (resource=paths|template for details). \
+             action=query: provider+resource for data access. \
+             Legacy GitLab actions still supported.",
             json!({
                 "type": "object",
                 "properties": {
@@ -27,6 +29,10 @@ impl McpTool for CtxProviderTool {
                         "type": "string",
                         "enum": [
                             "discover",
+                            "list",
+                            "status",
+                            "refresh",
+                            "configure",
                             "query",
                             "mcp_resources",
                             "gitlab_issues",
@@ -34,20 +40,20 @@ impl McpTool for CtxProviderTool {
                             "gitlab_mrs",
                             "gitlab_pipelines"
                         ],
-                        "description": "Provider action. 'discover' lists all. 'query' uses registry routing. 'mcp_resources' lists MCP bridge resources."
+                        "description": "Provider action. 'discover'/'list' lists all. 'status' shows health+cache. 'refresh' invalidates+re-fetches. 'configure' shows config. 'query' uses registry routing."
                     },
                     "provider": {
                         "type": "string",
-                        "description": "Provider ID (e.g. 'github', 'mcp:my-kb'). For action=query requires provider+resource."
+                        "description": "Provider ID (e.g. 'github', 'gitlab', 'jira', 'mcp:my-kb'). Required for query, optional for refresh (omit to refresh all)."
                     },
                     "resource": {
                         "type": "string",
-                        "description": "Resource type for action=query (e.g. 'issues', 'pull_requests', 'read_resource')"
+                        "description": "Resource type for action=query (e.g. 'issues', 'pull_requests'). For configure: 'paths'|'template'|'show'."
                     },
                     "mode": {
                         "type": "string",
                         "enum": ["compact", "chunks"],
-                        "description": "Output mode for action=query. 'compact' (default) returns formatted text. 'chunks' returns ContentChunk metadata for BM25/embedding ingest."
+                        "description": "Output mode for action=query. 'compact' (default) or 'chunks' for BM25/embedding ingest."
                     },
                     "state": {
                         "type": "string",

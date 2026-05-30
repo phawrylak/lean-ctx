@@ -14,7 +14,7 @@
 Your AI coding agent wastes thousands of tokens rereading files,
 parsing noisy shell output, and losing context between sessions.
 
-**LeanCTX fixes that.** One binary. Zero config. Local-first.
+**LeanCTX fixes that.** One binary. Zero config required. Local-first.
 
 | Problem | With LeanCTX |
 |---------|-------------|
@@ -41,7 +41,7 @@ parsing noisy shell output, and losing context between sessions.
 </p>
 
 <p>
-  <a href="https://leanctx.com">Website</a>&nbsp;&nbsp;·&nbsp;&nbsp;<a href="https://leanctx.com/docs/getting-started">Docs</a>&nbsp;&nbsp;·&nbsp;&nbsp;<a href="#get-started-60-seconds">Install</a>&nbsp;&nbsp;·&nbsp;&nbsp;<a href="#demo">Demo</a>&nbsp;&nbsp;·&nbsp;&nbsp;<a href="#benchmarks">Benchmarks</a>&nbsp;&nbsp;·&nbsp;&nbsp;<a href="cookbook/README.md">Cookbook</a>&nbsp;&nbsp;·&nbsp;&nbsp;<a href="SECURITY.md">Security</a>&nbsp;&nbsp;·&nbsp;&nbsp;<a href="CHANGELOG.md">Changelog</a>&nbsp;&nbsp;·&nbsp;&nbsp;<a href="https://discord.gg/pTHkG9Hew9">Discord</a>
+  <a href="https://leanctx.com">Website</a>&nbsp;&nbsp;·&nbsp;&nbsp;<a href="https://leanctx.com/docs/getting-started">Docs</a>&nbsp;&nbsp;·&nbsp;&nbsp;<a href="#get-started-60-seconds">Install</a>&nbsp;&nbsp;·&nbsp;&nbsp;<a href="#real-world-scenarios">Scenarios</a>&nbsp;&nbsp;·&nbsp;&nbsp;<a href="#demo">Demo</a>&nbsp;&nbsp;·&nbsp;&nbsp;<a href="#benchmarks">Benchmarks</a>&nbsp;&nbsp;·&nbsp;&nbsp;<a href="cookbook/README.md">Cookbook</a>&nbsp;&nbsp;·&nbsp;&nbsp;<a href="SECURITY.md">Security</a>&nbsp;&nbsp;·&nbsp;&nbsp;<a href="CHANGELOG.md">Changelog</a>
 </p>
 
 </div>
@@ -127,7 +127,7 @@ Know exactly where your context budget goes. Control it.
 - **Context Proof** (`ctx_proof`, `ctx_verify`): cryptographic proofs with 4-layer verification engine
 
 <details>
-<summary><strong>Full feature list (63 MCP tools)</strong></summary>
+<summary><strong>Full feature list (67 MCP tools)</strong></summary>
 
 - **Graph-Powered Intelligence**: hybrid search (BM25 + embeddings + graph proximity via RRF), incremental git-diff updates
 - **LSP Refactoring** (`ctx_refactor`): language-server-powered rename, references, go-to-definition via rust-analyzer, typescript-language-server, pylsp, gopls
@@ -162,18 +162,17 @@ npm install -g lean-ctx-bin                          # Node.js
 cargo install lean-ctx                               # Rust
 pi install npm:pi-lean-ctx                           # Pi Coding Agent
 
-# 2) Setup (shell + auto-detected AI tools)
-lean-ctx setup
+# 2) Connect your AI tools (zero prompts, sensible defaults)
+lean-ctx onboard          # or: lean-ctx setup  (guided, full control)
 
 # 3) Verify
 lean-ctx doctor
 
-# 4) See the payoff
-lean-ctx gain --live
-lean-ctx wrapped --week
+# 4) Restart your shell + AI tool, use it normally, then see the payoff
+lean-ctx gain             # savings appear after your AI's first lean-ctx call
 ```
 
-After `setup`, restart your shell and your editor/AI tool once so the MCP + hooks are active.
+After onboarding, restart your shell and your editor/AI tool once so the MCP + hooks are active. `lean-ctx gain` is empty until your AI tool makes its first lean-ctx call — that's expected, not a misconfiguration.
 
 <details>
 <summary><strong>Troubleshooting / Safety</strong></summary>
@@ -188,6 +187,183 @@ After `setup`, restart your shell and your editor/AI tool once so the MCP + hook
 
 </details>
 
+## Real-world scenarios
+
+LeanCTX grows with you. Below are the journeys most people actually take — each
+links to a complete, function-by-function walkthrough in the
+**[Reference](docs/reference/README.md)** (every CLI command and all 67 MCP
+tools are documented there).
+
+<table>
+<tr>
+<td width="50%" valign="top">
+
+### 🟢 Your first 60 seconds
+*"I just installed it — now what?"*
+
+```bash
+lean-ctx onboard      # connect every detected AI tool
+lean-ctx doctor       # confirm you're wired up
+```
+One command auto-detects Cursor/Claude/Codex/… and configures MCP + hooks.
+→ **[Journey 1 — Setup & Onboarding](docs/reference/01-setup-and-onboarding.md)**
+
+</td>
+<td width="50%" valign="top">
+
+### 📖 Coding every day
+*"Stop re-reading the same files."*
+
+```bash
+lean-ctx read src/server.rs -m map   # API surface, ~13 tok on re-read
+lean-ctx -c "git status"             # compressed shell output
+```
+Your agent reads less and searches smarter — automatically.
+→ **[Journey 2 — Daily Use](docs/reference/02-daily-use.md)**
+
+</td>
+</tr>
+<tr>
+<td width="50%" valign="top">
+
+### 🧠 Resume where you left off
+*"My new chat forgot everything."*
+
+```bash
+lean-ctx overview                    # task-aware project recap
+lean-ctx knowledge recall "auth"     # facts that survive resets
+```
+Session memory + a project knowledge graph persist across chats.
+→ **[Journey 3 — Memory & Knowledge](docs/reference/03-memory-and-knowledge.md)**
+
+</td>
+<td width="50%" valign="top">
+
+### 🗺️ Understand a new codebase
+*"Where does this function ripple to?"*
+
+```bash
+lean-ctx graph impact src/auth.rs    # blast radius
+lean-ctx smells scan                 # code-smell hotspots
+```
+A multi-edge property graph powers impact analysis + ranked search.
+→ **[Journey 4 — Code Intelligence](docs/reference/04-code-intelligence.md)**
+
+</td>
+</tr>
+<tr>
+<td width="50%" valign="top">
+
+### 🔌 Wire in proxy, providers, plugins
+*"Pull in GitHub issues and our Postgres schema."*
+
+```bash
+lean-ctx provider list
+lean-ctx serve --root ./api --root ./web   # multi-repo
+```
+External data flows through the same consolidation pipeline.
+→ **[Journey 5 — Advanced & Integrations](docs/reference/05-advanced.md)**
+
+</td>
+<td width="50%" valign="top">
+
+### 🛠️ Keep it healthy
+*"Update, fix, or cleanly remove."*
+
+```bash
+lean-ctx doctor --fix
+lean-ctx update
+```
+Self-healing diagnostics; surgical uninstall that only removes its own blocks.
+→ **[Journey 6 — Lifecycle & Troubleshooting](docs/reference/06-lifecycle.md)**
+
+</td>
+</tr>
+<tr>
+<td width="50%" valign="top">
+
+### 🎛️ Take control of the window
+*"Budget my context like a pro."*
+
+```bash
+lean-ctx plan "refactor billing" --budget 8000
+lean-ctx compile --mode balanced
+```
+Phi-scored planning + knapsack compilation + a context ledger.
+→ **[Journey 7 — Context Engineering](docs/reference/07-context-engineering.md)**
+
+</td>
+<td width="50%" valign="top">
+
+### 🤝 Run a team of agents
+*"Planner + coder + reviewer on one repo."*
+
+```text
+ctx_agent action=register role=dev
+ctx_handoff action=create        # baton-pass with full context
+```
+Shared message bus, diaries, knowledge, and deterministic handoffs.
+→ **[Journey 8 — Multi-Agent Collaboration](docs/reference/08-multi-agent.md)**
+
+</td>
+</tr>
+<tr>
+<td width="50%" valign="top">
+
+### 🏢 Share across a team / CI
+*"One shared index, headless in pipelines."*
+
+```bash
+lean-ctx team serve --config team.toml
+lean-ctx bootstrap            # zero-prompt CI setup
+```
+Scoped tokens, optional cloud sync, verifiable context gates.
+→ **[Journey 9 — Team, Cloud & CI](docs/reference/09-team-cloud-ci.md)**
+
+</td>
+<td width="50%" valign="top">
+
+### 🎚️ Tune & govern
+*"Make it behave exactly how we want."*
+
+```bash
+lean-ctx compression standard
+lean-ctx harden               # enforce token discipline
+```
+Compression levels, tool profiles, themes, and rules governance.
+→ **[Journey 10 — Customization & Governance](docs/reference/10-customization-and-governance.md)**
+
+</td>
+</tr>
+<tr>
+<td width="50%" valign="top">
+
+### 📊 Prove the payoff
+*"Show me the numbers."*
+
+```bash
+lean-ctx gain --deep          # savings, cost, per-agent, heatmap
+lean-ctx wrapped              # shareable recap
+```
+All analytics live in the CLI/dashboard — never burning agent tokens.
+→ **[Journey 11 — Analytics & Insights](docs/reference/11-analytics-and-insights.md)**
+
+</td>
+<td width="50%" valign="top">
+
+### 📚 The full reference
+*"I want to read everything."*
+
+Every command and all 67 MCP tools, organized as user journeys, plus
+appendices for the [CLI map](docs/reference/appendix-cli-map.md),
+[MCP tools](docs/reference/appendix-mcp-tools.md), and
+[paths & config](docs/reference/appendix-paths-and-config.md).
+→ **[Reference index](docs/reference/README.md)**
+
+</td>
+</tr>
+</table>
+
 ## Supported IDEs & AI tools
 
 lean-ctx is a standard **MCP server**, so it works with any MCP-compatible client. Two integration modes are auto-selected per agent:
@@ -195,7 +371,7 @@ lean-ctx is a standard **MCP server**, so it works with any MCP-compatible clien
 | Mode | How it works | Best for |
 |---|---|---|
 | **Hybrid** | MCP for cached reads (~13 tokens) + shell hooks for command compression | Agents with shell access (Cursor, Claude Code, Codex, ...) |
-| **MCP** | All 63 tools via MCP protocol, no shell hooks | Protocol-only agents (JetBrains, VS Code, Zed, ...) |
+| **MCP** | All 67 tools via MCP protocol, no shell hooks | Protocol-only agents (JetBrains, VS Code, Zed, ...) |
 
 ### Agent compatibility matrix
 
@@ -286,11 +462,12 @@ lean-ctx benchmark report .
 - **190+ forks** — active community contributions
 - **181 releases** — shipped daily since launch
 - **28 supported AI coding agents** — broadest MCP compatibility
-- **63 MCP tools** — from simple file reads to multi-agent orchestration
+- **67 MCP tools** — from simple file reads to multi-agent orchestration
 - Used in production by teams running Claude Code, Cursor, and Codex daily
 
 ## Docs
 
+- **Reference (every function, by user journey)**: [docs/reference/](docs/reference/README.md) — 11 journeys + CLI/MCP/config appendices
 - Getting started: https://leanctx.com/docs/getting-started
 - Tools reference: https://leanctx.com/docs/tools/
 - CLI reference: https://leanctx.com/docs/cli-reference/

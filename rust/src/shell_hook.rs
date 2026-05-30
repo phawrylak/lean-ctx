@@ -50,6 +50,26 @@ pub fn shell_source_command() -> Option<&'static str> {
     source_command_for_shell(&std::env::var("SHELL").unwrap_or_default())
 }
 
+/// The rc file path for a given login-shell path (pure, testable).
+fn rc_file_for_shell(shell: &str) -> &'static str {
+    if shell.contains("zsh") {
+        "~/.zshrc"
+    } else if shell.contains("fish") {
+        "~/.config/fish/config.fish"
+    } else if shell.contains("bash") {
+        "~/.bashrc"
+    } else {
+        "your shell config"
+    }
+}
+
+/// The rc file path for the user's current login shell (`$SHELL`), or a
+/// generic fallback when it cannot be determined. Used in help text and
+/// troubleshooting hints so they never hardcode a single shell's rc file.
+pub fn shell_rc_file() -> &'static str {
+    rc_file_for_shell(&std::env::var("SHELL").unwrap_or_default())
+}
+
 /// Human-facing one-liner telling the user how to load the refreshed aliases,
 /// tailored to their login shell. Used after `lean-ctx update`.
 pub fn reload_aliases_hint() -> String {
@@ -522,6 +542,19 @@ mod tests {
         // Unknown / unset shell → no rc suggestion (caller falls back).
         assert_eq!(source_command_for_shell(""), None);
         assert_eq!(source_command_for_shell("/bin/false"), None);
+    }
+
+    #[test]
+    fn rc_file_matches_login_shell() {
+        // #321: hints must name the right rc file for the user's shell.
+        assert_eq!(rc_file_for_shell("/usr/bin/bash"), "~/.bashrc");
+        assert_eq!(rc_file_for_shell("/bin/zsh"), "~/.zshrc");
+        assert_eq!(
+            rc_file_for_shell("/usr/local/bin/fish"),
+            "~/.config/fish/config.fish"
+        );
+        assert_eq!(rc_file_for_shell(""), "your shell config");
+        assert_eq!(rc_file_for_shell("/bin/false"), "your shell config");
     }
 
     #[test]

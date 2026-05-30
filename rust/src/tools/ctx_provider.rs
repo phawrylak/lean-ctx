@@ -1,4 +1,5 @@
 use crate::core::consolidation;
+use crate::core::providers::cache as provider_cache;
 use crate::core::providers::config::GitLabConfig;
 use crate::core::providers::provider_trait::ProviderParams;
 use crate::core::providers::registry::global_registry;
@@ -9,8 +10,11 @@ pub fn handle(args: &serde_json::Map<String, serde_json::Value>, ctx: &ToolConte
     let action = args.get("action").and_then(|v| v.as_str()).unwrap_or("");
 
     match action {
-        // -- Discovery --
-        "discover" => handle_discover(ctx),
+        // -- Discovery & Management --
+        "discover" | "list" => handle_discover(ctx),
+        "status" => handle_status(ctx),
+        "refresh" => handle_refresh(args, ctx),
+        "configure" => handle_configure(args, ctx),
 
         // -- Registry-based routing (provider_id + resource) --
         "query" => handle_registry_query(args, ctx),
@@ -25,8 +29,8 @@ pub fn handle(args: &serde_json::Map<String, serde_json::Value>, ctx: &ToolConte
         "gitlab_pipelines" => handle_gitlab_pipelines(args),
 
         _ => {
-            let available =
-                "discover, query, mcp_resources, gitlab_issues, gitlab_issue, gitlab_mrs, gitlab_pipelines";
+            let available = "discover, list, status, refresh, configure, query, mcp_resources, \
+                 gitlab_issues, gitlab_issue, gitlab_mrs, gitlab_pipelines";
             format!("Unknown action: {action}. Available: {available}")
         }
     }
@@ -61,6 +65,280 @@ fn handle_discover(ctx: &ToolContext) -> String {
         ));
     }
     out
+}
+
+// ---------------------------------------------------------------------------
+// Status — provider health + cache metrics
+// ---------------------------------------------------------------------------
+
+fn handle_status(ctx: &ToolContext) -> String {
+    crate::core::providers::init::init_with_project_root(Some(std::path::Path::new(
+        &ctx.project_root,
+    )));
+
+    let infos = global_registry().discover();
+    let metrics = provider_cache::cache_metrics();
+
+    let mut out = String::new();
+
+    // Provider health
+    out.push_str(&format!("Provider Status ({} registered):\n", infos.len()));
+    for info in &infos {
+        let status = if info.available { "✓" } else { "✗" };
+        let auth = if info.requires_auth { " (auth)" } else { "" };
+        out.push_str(&format!(
+            "  {status} {} — {} [ttl:{}s]{auth}\n",
+            info.id, info.display_name, info.cache_ttl_secs,
+        ));
+    }
+
+    // Cache metrics
+    out.push_str(&format!(
+        "\nCache: {} entries, {:.0}% hit rate ({} hits / {} misses)\n",
+        metrics.total_entries,
+        metrics.total_hit_rate() * 100.0,
+        metrics.total_hits,
+        metrics.total_misses,
+    ));
+
+    if !metrics.provider_stats.is_empty() {
+        out.push_str("Per-provider:\n");
+        for ps in &metrics.provider_stats {
+            let last = ps
+                .last_fetch
+                .and_then(|t| t.elapsed().ok())
+                .map_or_else(|| "never".into(), |d| format!("{}s ago", d.as_secs()));
+            out.push_str(&format!(
+                "  {} — {} cached, {:.0}% hit rate, last fetch: {}\n",
+                ps.provider_id,
+                ps.entry_count,
+                ps.hit_rate() * 100.0,
+                last,
+            ));
+        }
+    }
+
+    out
+}
+
+// ---------------------------------------------------------------------------
+// Refresh — invalidate cache + re-fetch + re-consolidate
+// ---------------------------------------------------------------------------
+
+fn handle_refresh(args: &serde_json::Map<String, serde_json::Value>, ctx: &ToolContext) -> String {
+    crate::core::providers::init::init_with_project_root(Some(std::path::Path::new(
+        &ctx.project_root,
+    )));
+
+    let provider_id = args.get("provider").and_then(|v| v.as_str());
+    let resource = args.get("resource").and_then(|v| v.as_str());
+
+    // Invalidate cache
+    let invalidated = if let Some(pid) = provider_id {
+        let count = provider_cache::invalidate_provider(pid);
+        format!("Invalidated {count} cached entries for '{pid}'")
+    } else {
+        let count = provider_cache::invalidate_all();
+        format!("Invalidated {count} cached entries (all providers)")
+    };
+
+    let mut out = format!("{invalidated}\n");
+
+    // Re-fetch if provider + resource specified
+    if let (Some(pid), Some(res)) = (provider_id, resource) {
+        let params = ProviderParams {
+            state: args.get("state").and_then(|v| v.as_str()).map(String::from),
+            limit: args
+                .get("limit")
+                .and_then(serde_json::Value::as_u64)
+                .map(|n| n as usize),
+            ..Default::default()
+        };
+
+        match global_registry().execute_as_chunks(pid, res, &params) {
+            Ok(chunks) => {
+                consolidate_to_session(&chunks, ctx);
+                out.push_str(&format!(
+                    "Re-fetched {pid}/{res}: {} items, consolidated to BM25+Graph+Knowledge\n",
+                    chunks.len()
+                ));
+            }
+            Err(e) => out.push_str(&format!("Re-fetch failed: {e}\n")),
+        }
+    } else if let Some(pid) = provider_id {
+        // Refresh all actions for a single provider
+        let registry = global_registry();
+        if let Some(provider) = registry.get(pid) {
+            let mut total = 0;
+            for action in provider.supported_actions() {
+                let params = ProviderParams {
+                    limit: Some(20),
+                    ..Default::default()
+                };
+                match registry.execute_as_chunks(pid, action, &params) {
+                    Ok(chunks) => {
+                        consolidate_to_session(&chunks, ctx);
+                        total += chunks.len();
+                    }
+                    Err(e) => {
+                        tracing::debug!("[ctx_provider] refresh {pid}/{action} failed: {e}");
+                    }
+                }
+            }
+            out.push_str(&format!(
+                "Re-fetched all actions for '{pid}': {total} items consolidated\n"
+            ));
+        } else {
+            out.push_str(&format!("Provider '{pid}' not found\n"));
+        }
+    } else {
+        out.push_str("Specify provider= to also re-fetch data after cache invalidation\n");
+    }
+
+    out
+}
+
+// ---------------------------------------------------------------------------
+// Configure — show config paths + available config providers
+// ---------------------------------------------------------------------------
+
+fn handle_configure(
+    args: &serde_json::Map<String, serde_json::Value>,
+    ctx: &ToolContext,
+) -> String {
+    let sub = args
+        .get("resource")
+        .and_then(|v| v.as_str())
+        .unwrap_or("show");
+
+    match sub {
+        "paths" => {
+            let mut out = String::from("Provider config locations (checked in order):\n");
+            out.push_str("  Single-file (providers.toml):\n");
+            if let Some(config_dir) = dirs::config_dir() {
+                let p = config_dir.join("lean-ctx").join("providers.toml");
+                let exists = if p.exists() { " ✓" } else { "" };
+                out.push_str(&format!("    {}{exists}\n", p.display()));
+            }
+            if let Some(home) = dirs::home_dir() {
+                let p = home.join(".lean-ctx").join("providers.toml");
+                let exists = if p.exists() { " ✓" } else { "" };
+                out.push_str(&format!("    {}{exists}\n", p.display()));
+            }
+            let p = std::path::Path::new(&ctx.project_root)
+                .join(".lean-ctx")
+                .join("providers.toml");
+            let exists = if p.exists() { " ✓" } else { "" };
+            out.push_str(&format!("    {}{exists}\n", p.display()));
+
+            out.push_str("  Per-file (one provider per file):\n");
+            if let Some(config_dir) = dirs::config_dir() {
+                let p = config_dir.join("lean-ctx").join("providers");
+                let exists = if p.exists() { " ✓" } else { "" };
+                out.push_str(&format!("    {}/{exists}\n", p.display()));
+            }
+            let p = std::path::Path::new(&ctx.project_root)
+                .join(".lean-ctx")
+                .join("providers");
+            let exists = if p.exists() { " ✓" } else { "" };
+            out.push_str(&format!("    {}/{exists}\n", p.display()));
+
+            out.push_str("\nEnvironment variables:\n");
+            for (var, label) in [
+                ("GITHUB_TOKEN", "GitHub"),
+                ("GITLAB_TOKEN", "GitLab"),
+                ("JIRA_URL", "Jira"),
+                ("DATABASE_URL", "PostgreSQL"),
+            ] {
+                let set = if std::env::var(var).is_ok() {
+                    "✓ set"
+                } else {
+                    "✗ not set"
+                };
+                out.push_str(&format!("  {var} ({label}): {set}\n"));
+            }
+            out
+        }
+        "template" => String::from(
+            r#"# providers.toml — drop in ~/.config/lean-ctx/ or .lean-ctx/
+# Each [[providers]] entry registers a custom REST API as a context source.
+
+[[providers]]
+id = "linear"
+name = "Linear"
+base_url = "https://api.linear.app"
+cache_ttl_secs = 120
+
+[providers.auth]
+type = "bearer"
+token_env = "LINEAR_API_KEY"
+
+[providers.resources.issues]
+method = "POST"
+path = "/graphql"
+
+[providers.resources.issues.response]
+root = "data.issues.nodes"
+
+[providers.resources.issues.response.mapping]
+id = "id"
+title = "title"
+body = "description"
+state = "state.name"
+labels = "labels.nodes[].name"
+
+# --- Built-in providers (env vars only) ---
+# GitHub: set GITHUB_TOKEN
+# GitLab: set GITLAB_TOKEN
+# Jira:   set JIRA_URL + JIRA_EMAIL + JIRA_TOKEN
+# Postgres: set DATABASE_URL or PGDATABASE
+"#,
+        ),
+        _ => {
+            let cfg = crate::core::config::Config::load();
+            let mut out = String::from("Provider configuration:\n");
+            out.push_str(&format!("  enabled: {}\n", cfg.providers.enabled));
+            out.push_str(&format!("  auto_index: {}\n", cfg.providers.auto_index));
+            out.push_str(&format!(
+                "  github.enabled: {}\n",
+                cfg.providers.github.enabled
+            ));
+            out.push_str(&format!(
+                "  gitlab.enabled: {}\n",
+                cfg.providers.gitlab.enabled
+            ));
+
+            if !cfg.providers.mcp_bridges.is_empty() {
+                out.push_str(&format!(
+                    "  mcp_bridges: {} configured\n",
+                    cfg.providers.mcp_bridges.len()
+                ));
+            }
+
+            let discovered = crate::core::providers::config_provider::discovery::discover_configs(
+                Some(std::path::Path::new(&ctx.project_root)),
+            );
+            if !discovered.is_empty() {
+                out.push_str(&format!(
+                    "  config providers: {} discovered\n",
+                    discovered.len()
+                ));
+                for d in &discovered {
+                    out.push_str(&format!(
+                        "    {} — {}\n",
+                        d.config.id,
+                        d.source_path.display()
+                    ));
+                }
+            }
+
+            out.push_str(
+                "\nUse resource=\"paths\" to see config file locations.\n\
+                 Use resource=\"template\" to get a providers.toml template.\n",
+            );
+            out
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------

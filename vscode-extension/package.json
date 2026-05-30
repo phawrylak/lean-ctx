@@ -1,0 +1,104 @@
+{
+  "name": "lean-ctx",
+  "displayName": "lean-ctx — Context Engineering",
+  "description": "AI context optimization with knowledge graph, repo-map, and token savings",
+  "version": "0.1.0",
+  "publisher": "leanctx",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/yvgude/lean-ctx"
+  },
+  "engines": {
+    "vscode": "^1.80.0"
+  },
+  "categories": [
+    "AI",
+    "Programming Languages",
+    "Other"
+  ],
+  "keywords": [
+    "ai",
+    "context",
+    "llm",
+    "token",
+    "optimization",
+    "mcp"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "lean-ctx",
+          "title": "lean-ctx",
+          "icon": "resources/icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "lean-ctx": [
+        {
+          "type": "webview",
+          "id": "leanctx.sidebar",
+          "name": "Dashboard"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "leanctx.search",
+        "title": "lean-ctx: Semantic Search"
+      },
+      {
+        "command": "leanctx.repomap",
+        "title": "lean-ctx: Show Repo Map"
+      },
+      {
+        "command": "leanctx.knowledge",
+        "title": "lean-ctx: Knowledge Panel"
+      },
+      {
+        "command": "leanctx.visualize",
+        "title": "lean-ctx: Open Visualizer"
+      },
+      {
+        "command": "leanctx.refresh",
+        "title": "lean-ctx: Refresh Dashboard"
+      }
+    ],
+    "configuration": {
+      "title": "lean-ctx",
+      "properties": {
+        "leanctx.binaryPath": {
+          "type": "string",
+          "default": "lean-ctx",
+          "description": "Path to the lean-ctx binary"
+        },
+        "leanctx.refreshInterval": {
+          "type": "number",
+          "default": 30,
+          "minimum": 5,
+          "description": "Status bar refresh interval in seconds"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "lint": "eslint src --ext ts",
+    "package": "npx @vscode/vsce package --no-dependencies"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/vscode": "^1.80.0",
+    "@vscode/vsce": "^3.0.0",
+    "eslint": "^9.0.0",
+    "typescript": "^5.5.0"
+  }
+}

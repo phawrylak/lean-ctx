@@ -1,8 +1,11 @@
 //! Output sanitizer: detects and cleans degenerate model artifacts from compressed output.
 //!
-//! Catches CJK runs, repeated-symbol floods, and other non-informational sequences
-//! that downstream summarizer models can produce when they fail to parse dense
-//! symbolic/compressed input (see GitHub #257).
+//! Catches repeated-symbol floods and CJK+garbage combinations that downstream
+//! summarizer models can produce when they fail to parse dense symbolic/compressed
+//! input (see GitHub #257).
+//!
+//! IMPORTANT: Legitimate mixed CJK/English content (multilingual docs, paths with
+//! CJK filenames, status messages) must NOT be dropped (see GitHub #323).
 
 /// Returns true if the character belongs to CJK Unified Ideographs or common CJK ranges.
 fn is_cjk(c: char) -> bool {
@@ -21,49 +24,33 @@ fn is_cjk(c: char) -> bool {
 }
 
 /// Returns true if a line contains degenerate CJK content:
-/// - 3+ consecutive CJK chars in a predominantly non-CJK line, OR
-/// - Any CJK chars combined with a symbol flood (classic degenerate pattern)
+/// - CJK chars combined with a symbol flood (10+ repeated symbols), OR
+/// - CJK chars combined with repeated non-alphanumeric sequences (5+)
+///
+/// Lines with legitimate mixed CJK/English content are NOT flagged.
+/// The mere presence of consecutive CJK characters is not degenerate —
+/// only CJK paired with garbage indicators (symbol floods/repeats) is.
 fn has_degenerate_cjk_run(line: &str) -> bool {
     let chars: Vec<char> = line.chars().collect();
-    let total = chars.len();
-    if total == 0 {
+    if chars.is_empty() {
         return false;
     }
 
-    let cjk_count = chars.iter().filter(|c| is_cjk(**c)).count();
-    if cjk_count == 0 {
+    let has_cjk = chars.iter().any(|c| is_cjk(*c));
+    if !has_cjk {
         return false;
     }
 
-    let cjk_ratio = cjk_count as f64 / total as f64;
-
-    // If the line is >60% CJK, assume it's genuine CJK content (e.g. Chinese docs).
-    if cjk_ratio > 0.6 {
-        return false;
-    }
-
-    // CJK chars + symbol flood = degenerate output (e.g. "肛裂!!!!!!")
-    if cjk_count >= 1 && is_symbol_flood(line) {
+    // CJK chars + symbol flood = degenerate output (e.g. "肛裂!!!!!!!!!!!!!!!!!!")
+    if is_symbol_flood(line) {
         return true;
     }
 
     // CJK + repeated non-alphanumeric (5+) = degenerate even below flood threshold
-    if cjk_count >= 1 && has_repeated_symbol(line, 5) {
+    if has_repeated_symbol(line, 5) {
         return true;
     }
 
-    // 3+ consecutive CJK chars in a predominantly non-CJK line
-    let mut consecutive = 0u32;
-    for &c in &chars {
-        if is_cjk(c) {
-            consecutive += 1;
-            if consecutive >= 3 {
-                return true;
-            }
-        } else {
-            consecutive = 0;
-        }
-    }
     false
 }
 
@@ -143,7 +130,7 @@ pub fn sanitize(output: &str) -> String {
 /// Used to produce output that is friendly to lightweight downstream models
 /// (e.g. Cursor's Thought summarizer) which may degenerate on dense Unicode.
 pub fn ascii_safe_symbols(text: &str) -> String {
-    text.replace('→', "->")
+    text.replace('\u{2192}', "->")
         .replace('←', "<-")
         .replace('∴', ":.")
         .replace('≈', "~=")
@@ -156,7 +143,6 @@ pub fn ascii_safe_symbols(text: &str) -> String {
         .replace('✓', "ok")
         .replace('✗', "FAIL")
         .replace('⚠', "WARN")
-        .replace('\u{2192}', "->") // → as used in savings footer
 }
 
 #[cfg(test)]
@@ -170,7 +156,7 @@ mod tests {
     }
 
     #[test]
-    fn clean_removes_degenerate_cjk_in_english() {
+    fn clean_removes_degenerate_cjk_with_symbol_flood() {
         let input = "Explored 22 files, 14 searches\n肛裂!!!!!!!!!!!!!!!!!!\nExploring >";
         let cleaned = sanitize(input);
         assert!(!cleaned.contains("肛裂"));
@@ -185,9 +171,51 @@ mod tests {
     }
 
     #[test]
+    fn clean_preserves_mixed_cjk_english_header() {
+        let input = "## 配置说明 (Configuration)";
+        assert_eq!(sanitize(input), input);
+    }
+
+    #[test]
+    fn clean_preserves_path_with_cjk() {
+        let input = "path/to/文件.md";
+        assert_eq!(sanitize(input), input);
+    }
+
+    #[test]
+    fn clean_preserves_status_message_with_cjk() {
+        let input = "Build: 编译完成 ✓";
+        assert_eq!(sanitize(input), input);
+    }
+
+    #[test]
     fn clean_preserves_mixed_cjk_english_docs() {
         let input = "The function 関数 is documented in 文档 for reference.";
-        // Only 2 CJK chars per run, should not be flagged
+        assert_eq!(sanitize(input), input);
+    }
+
+    #[test]
+    fn clean_preserves_multilingual_paragraph() {
+        let input =
+            "This module handles 数据处理 (data processing) and 文件管理 (file management).";
+        assert_eq!(sanitize(input), input);
+    }
+
+    #[test]
+    fn clean_preserves_cjk_in_code_comments() {
+        let input = "// 初始化配置 — initialize configuration";
+        assert_eq!(sanitize(input), input);
+    }
+
+    #[test]
+    fn clean_preserves_korean_mixed_content() {
+        let input = "Build status: 빌드 성공 (success)";
+        assert_eq!(sanitize(input), input);
+    }
+
+    #[test]
+    fn clean_preserves_japanese_mixed_content() {
+        let input = "Error in モジュール module: connection timeout";
         assert_eq!(sanitize(input), input);
     }
 
@@ -208,7 +236,7 @@ mod tests {
 
     #[test]
     fn ascii_safe_replaces_unicode_symbols() {
-        let out = ascii_safe_symbols("fn → result ✓ or ✗");
+        let out = ascii_safe_symbols("fn -> result ok or FAIL");
         assert_eq!(out, "fn -> result ok or FAIL");
     }
 
@@ -219,9 +247,21 @@ mod tests {
     }
 
     #[test]
-    fn degenerate_cjk_mixed_with_exclamation() {
-        assert!(has_degenerate_cjk_run("肛裂!!!!!!"));
-        assert!(has_degenerate_cjk_run("result: 乱码输 garbled"));
+    fn degenerate_cjk_with_symbol_flood() {
+        assert!(has_degenerate_cjk_run("肛裂!!!!!!!!!!"));
+    }
+
+    #[test]
+    fn degenerate_cjk_with_repeated_symbols() {
+        assert!(has_degenerate_cjk_run("乱码!!!!!garbled"));
+    }
+
+    #[test]
+    fn legitimate_mixed_cjk_not_flagged() {
+        assert!(!has_degenerate_cjk_run("result: 乱码输 garbled"));
+        assert!(!has_degenerate_cjk_run("## 配置说明 (Configuration)"));
+        assert!(!has_degenerate_cjk_run("Build: 编译完成 ✓"));
+        assert!(!has_degenerate_cjk_run("path/to/文件.md"));
     }
 
     #[test]
@@ -243,5 +283,18 @@ mod tests {
     fn symbol_flood_exact_threshold() {
         assert!(!is_symbol_flood("!!!!!!!!!")); // 9 — below threshold
         assert!(is_symbol_flood("!!!!!!!!!!")); // 10 — at threshold
+    }
+
+    #[test]
+    fn multiline_mixed_cjk_preserved() {
+        let input =
+            "# 项目文档\nThis is the 配置 section.\n## 安装步骤 (Installation)\nRun: cargo build";
+        assert_eq!(sanitize(input), input);
+    }
+
+    #[test]
+    fn cjk_filename_in_output_preserved() {
+        let input = "Modified: src/核心/处理器.rs\nCompiled: 3 files";
+        assert_eq!(sanitize(input), input);
     }
 }

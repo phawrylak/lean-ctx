@@ -48,8 +48,408 @@ pub fn handle(
 ) -> String {
     match action {
         "pr" => handle_pr(project_root, base, format, depth, diff),
-        _ => "Unknown action. Use: pr".to_string(),
+        _ => "Unknown action. Use: pr, create, list, info, remove, install, export, import, auto_load, summary".to_string(),
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn handle_create(
+    project_root: &str,
+    name: &str,
+    version: Option<&str>,
+    description: Option<&str>,
+    author: Option<&str>,
+    tags: Option<&[String]>,
+    layers: Option<&[String]>,
+    level: Option<u32>,
+    scope: Option<&str>,
+) -> String {
+    let version = version.unwrap_or("1.0.0");
+    let description = description.unwrap_or("");
+    let level = level.unwrap_or(1).clamp(1, 3);
+
+    let requested_layers: Vec<&str> = layers.map_or_else(
+        || vec!["knowledge", "graph", "session", "gotchas"],
+        |l| l.iter().map(String::as_str).collect(),
+    );
+
+    let mut builder = crate::core::context_package::PackageBuilder::new(name, version)
+        .description(description)
+        .tags(tags.unwrap_or(&[]).to_vec())
+        .level(level);
+
+    if let Some(a) = author {
+        builder = builder.author(a);
+    }
+    if let Some(s) = scope {
+        builder = builder.scope(s);
+    }
+
+    let phash = crate::core::project_hash::hash_project_root(project_root);
+    builder = builder.project_hash(&phash);
+
+    if level >= 2 {
+        builder.build_context_graph(project_root);
+    }
+
+    if requested_layers.contains(&"knowledge") || requested_layers.contains(&"patterns") {
+        builder = builder.add_knowledge_from_project(project_root);
+    }
+    if requested_layers.contains(&"patterns") {
+        builder = builder.add_patterns_from_project(project_root);
+    }
+    if requested_layers.contains(&"graph") {
+        builder = builder.add_graph_from_project(project_root);
+    }
+    if requested_layers.contains(&"session") {
+        if let Some(session) = crate::core::session::SessionState::load_latest() {
+            builder = builder.add_session(&session);
+        }
+    }
+    if requested_layers.contains(&"gotchas") {
+        builder = builder.add_gotchas_from_project(project_root);
+    }
+
+    match builder.build() {
+        Ok((manifest, content)) => {
+            let registry = match crate::core::context_package::LocalRegistry::open() {
+                Ok(r) => r,
+                Err(e) => return format!("ERROR: cannot open registry: {e}"),
+            };
+
+            match registry.install(&manifest, &content) {
+                Ok(dir) => {
+                    let layers_str = manifest
+                        .layers
+                        .iter()
+                        .map(crate::core::context_package::PackageLayer::as_str)
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    format!(
+                        "Package created:\n  Name: {}\n  Version: {}\n  Level: {}\n  Layers: {}\n  Knowledge facts: {}\n  Graph nodes: {}\n  Patterns: {}\n  Gotchas: {}\n  Size: {} bytes\n  Stored: {}",
+                        manifest.name,
+                        manifest.version,
+                        manifest.conformance_level.unwrap_or(1),
+                        layers_str,
+                        manifest.stats.knowledge_facts,
+                        manifest.stats.graph_nodes,
+                        manifest.stats.pattern_count,
+                        manifest.stats.gotcha_count,
+                        manifest.integrity.byte_size,
+                        dir.display()
+                    )
+                }
+                Err(e) => format!("ERROR: install failed: {e}"),
+            }
+        }
+        Err(e) => format!("ERROR: build failed: {e}"),
+    }
+}
+
+pub fn handle_list() -> String {
+    let registry = match crate::core::context_package::LocalRegistry::open() {
+        Ok(r) => r,
+        Err(e) => return format!("ERROR: {e}"),
+    };
+
+    match registry.list() {
+        Ok(entries) => {
+            if entries.is_empty() {
+                return "No packages installed.".to_string();
+            }
+            let mut out = String::new();
+            out.push_str(&format!("{} package(s):\n", entries.len()));
+            for e in &entries {
+                out.push_str(&format!(
+                    "- {} v{} [{}] ({} bytes){}\n",
+                    e.name,
+                    e.version,
+                    e.layers.join(", "),
+                    e.byte_size,
+                    if e.auto_load { " [auto-load]" } else { "" }
+                ));
+            }
+            out
+        }
+        Err(e) => format!("ERROR: {e}"),
+    }
+}
+
+pub fn handle_info(name: &str, version: Option<&str>) -> String {
+    let registry = match crate::core::context_package::LocalRegistry::open() {
+        Ok(r) => r,
+        Err(e) => return format!("ERROR: {e}"),
+    };
+
+    let resolved_ver;
+    let ver = if let Some(v) = version {
+        v
+    } else {
+        resolved_ver = registry
+            .list()
+            .ok()
+            .and_then(|entries| {
+                entries
+                    .iter()
+                    .filter(|e| e.name == name)
+                    .max_by(|a, b| a.installed_at.cmp(&b.installed_at))
+                    .map(|e| e.version.clone())
+            })
+            .unwrap_or_default();
+        &resolved_ver
+    };
+
+    match registry.load_package(name, ver) {
+        Ok((manifest, content)) => {
+            let layers_str = manifest
+                .layers
+                .iter()
+                .map(crate::core::context_package::PackageLayer::as_str)
+                .collect::<Vec<_>>()
+                .join(", ");
+            let mut out = format!(
+                "Package: {} v{}\nSchema: v{}\nLevel: {}\nLayers: {}\nDescription: {}\n",
+                manifest.name,
+                manifest.version,
+                manifest.schema_version,
+                manifest.conformance_level.unwrap_or(1),
+                layers_str,
+                manifest.description,
+            );
+            if let Some(ref a) = manifest.author {
+                out.push_str(&format!("Author: {a}\n"));
+            }
+            if let Some(ref s) = manifest.scope {
+                out.push_str(&format!("Scope: {s}\n"));
+            }
+            if !manifest.tags.is_empty() {
+                out.push_str(&format!("Tags: {}\n", manifest.tags.join(", ")));
+            }
+            out.push_str(&format!(
+                "Created: {}\nStats:\n  Knowledge facts: {}\n  Graph nodes: {}\n  Graph edges: {}\n  Patterns: {}\n  Gotchas: {}\n  Compression: {:.1}%\n  Est. tokens: ~{}\nIntegrity:\n  SHA256: {}\n  Size: {} bytes\n",
+                manifest.created_at.format("%Y-%m-%d %H:%M UTC"),
+                manifest.stats.knowledge_facts,
+                manifest.stats.graph_nodes,
+                manifest.stats.graph_edges,
+                manifest.stats.pattern_count,
+                manifest.stats.gotcha_count,
+                manifest.stats.compression_ratio * 100.0,
+                content.estimated_token_count(),
+                manifest.integrity.sha256,
+                manifest.integrity.byte_size,
+            ));
+            out
+        }
+        Err(e) => format!("ERROR: {e}"),
+    }
+}
+
+pub fn handle_remove(name: &str, version: Option<&str>) -> String {
+    let registry = match crate::core::context_package::LocalRegistry::open() {
+        Ok(r) => r,
+        Err(e) => return format!("ERROR: {e}"),
+    };
+
+    match registry.remove(name, version) {
+        Ok(0) => format!("No matching package found: {name}"),
+        Ok(n) => format!("Removed {n} package(s)."),
+        Err(e) => format!("ERROR: {e}"),
+    }
+}
+
+pub fn handle_install(name: &str, version: Option<&str>, project_root: &str) -> String {
+    let registry = match crate::core::context_package::LocalRegistry::open() {
+        Ok(r) => r,
+        Err(e) => return format!("ERROR: {e}"),
+    };
+
+    let resolved_ver;
+    let ver = if let Some(v) = version {
+        v
+    } else {
+        resolved_ver = registry
+            .list()
+            .ok()
+            .and_then(|entries| {
+                entries
+                    .iter()
+                    .filter(|e| e.name == name)
+                    .max_by(|a, b| a.installed_at.cmp(&b.installed_at))
+                    .map(|e| e.version.clone())
+            })
+            .unwrap_or_default();
+        &resolved_ver
+    };
+
+    match registry.load_package(name, ver) {
+        Ok((manifest, content)) => {
+            match crate::core::context_package::load_package(&manifest, &content, project_root) {
+                Ok(report) => format!("{report}\nPackage applied successfully."),
+                Err(e) => format!("ERROR: load failed: {e}"),
+            }
+        }
+        Err(e) => format!("ERROR: {e}"),
+    }
+}
+
+pub fn handle_export(name: &str, version: Option<&str>, output: Option<&str>) -> String {
+    let registry = match crate::core::context_package::LocalRegistry::open() {
+        Ok(r) => r,
+        Err(e) => return format!("ERROR: {e}"),
+    };
+
+    let resolved_ver;
+    let ver = if let Some(v) = version {
+        v
+    } else {
+        resolved_ver = registry
+            .list()
+            .ok()
+            .and_then(|entries| {
+                entries
+                    .iter()
+                    .filter(|e| e.name == name)
+                    .max_by(|a, b| a.installed_at.cmp(&b.installed_at))
+                    .map(|e| e.version.clone())
+            })
+            .unwrap_or_default();
+        &resolved_ver
+    };
+
+    let out_path = output.map_or_else(
+        || crate::core::contracts::default_package_filename(name, ver),
+        ToString::to_string,
+    );
+
+    match registry.export_to_file(name, ver, &std::path::PathBuf::from(&out_path)) {
+        Ok(bytes) => format!("Exported: {out_path} ({bytes} bytes)"),
+        Err(e) => format!("ERROR: {e}"),
+    }
+}
+
+pub fn handle_import(file_path: &str, apply: bool, project_root: &str) -> String {
+    let registry = match crate::core::context_package::LocalRegistry::open() {
+        Ok(r) => r,
+        Err(e) => return format!("ERROR: {e}"),
+    };
+
+    match registry.import_from_file(std::path::Path::new(file_path)) {
+        Ok(manifest) => {
+            let layers_str = manifest
+                .layers
+                .iter()
+                .map(crate::core::context_package::PackageLayer::as_str)
+                .collect::<Vec<_>>()
+                .join(", ");
+            let mut out = format!(
+                "Imported: {} v{}\n  Layers: {}\n  Size: {} bytes\n",
+                manifest.name, manifest.version, layers_str, manifest.integrity.byte_size,
+            );
+            if apply {
+                match crate::core::context_package::LocalRegistry::open() {
+                    Ok(reg) => match reg.load_package(&manifest.name, &manifest.version) {
+                        Ok((m, c)) => {
+                            match crate::core::context_package::load_package(&m, &c, project_root) {
+                                Ok(report) => {
+                                    out.push_str(&format!("{report}\nPackage applied."));
+                                }
+                                Err(e) => out.push_str(&format!("ERROR applying: {e}")),
+                            }
+                        }
+                        Err(e) => out.push_str(&format!("ERROR loading: {e}")),
+                    },
+                    Err(e) => out.push_str(&format!("ERROR: {e}")),
+                }
+            }
+            out
+        }
+        Err(e) => format!("ERROR: import failed: {e}"),
+    }
+}
+
+pub fn handle_auto_load(name: Option<&str>, version: Option<&str>, enable: bool) -> String {
+    let registry = match crate::core::context_package::LocalRegistry::open() {
+        Ok(r) => r,
+        Err(e) => return format!("ERROR: {e}"),
+    };
+
+    let Some(name) = name else {
+        return match registry.auto_load_packages() {
+            Ok(entries) => {
+                if entries.is_empty() {
+                    "No packages set for auto-load.".to_string()
+                } else {
+                    let mut out = "Auto-load packages:\n".to_string();
+                    for e in &entries {
+                        out.push_str(&format!("- {} v{}\n", e.name, e.version));
+                    }
+                    out
+                }
+            }
+            Err(e) => format!("ERROR: {e}"),
+        };
+    };
+
+    let resolved_ver;
+    let ver = if let Some(v) = version {
+        v
+    } else {
+        resolved_ver = registry
+            .list()
+            .ok()
+            .and_then(|entries| {
+                entries
+                    .iter()
+                    .filter(|e| e.name == name)
+                    .max_by(|a, b| a.installed_at.cmp(&b.installed_at))
+                    .map(|e| e.version.clone())
+            })
+            .unwrap_or_default();
+        &resolved_ver
+    };
+
+    match registry.set_auto_load(name, ver, enable) {
+        Ok(()) => {
+            if enable {
+                format!("Auto-load enabled for {name}@{ver}")
+            } else {
+                format!("Auto-load disabled for {name}@{ver}")
+            }
+        }
+        Err(e) => format!("ERROR: {e}"),
+    }
+}
+
+pub fn handle_summary(project_root: &str) -> String {
+    let phash = crate::core::project_hash::hash_project_root(project_root);
+
+    let registry = match crate::core::context_package::LocalRegistry::open() {
+        Ok(r) => r,
+        Err(e) => return format!("ERROR: {e}"),
+    };
+
+    let entries = registry.list().unwrap_or_default();
+    let matching: Vec<_> = entries.iter().filter(|_| true).collect();
+
+    let mut out = format!("Project: {project_root}\nProject hash: {phash}\n");
+    out.push_str(&format!("Installed packages: {}\n", matching.len()));
+
+    if !matching.is_empty() {
+        out.push_str("\nPackages:\n");
+        for e in &matching {
+            out.push_str(&format!(
+                "- {} v{} [{}]{}\n",
+                e.name,
+                e.version,
+                e.layers.join(", "),
+                if e.auto_load { " [auto-load]" } else { "" }
+            ));
+        }
+    }
+
+    let auto_count = matching.iter().filter(|e| e.auto_load).count();
+    out.push_str(&format!("Auto-load: {auto_count} package(s)\n"));
+    out
 }
 
 fn handle_pr(

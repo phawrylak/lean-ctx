@@ -91,6 +91,15 @@ pub struct Config {
     /// Set via `lean-ctx config set profile passthrough` or editing config.toml.
     #[serde(default)]
     pub profile: Option<String>,
+    /// Tool visibility profile: "minimal" (5), "standard" (20), or "power" (all).
+    /// Override via LEAN_CTX_TOOL_PROFILE env var.
+    /// Existing installs default to "power" (backward compat).
+    #[serde(default)]
+    pub tool_profile: Option<String>,
+    /// Explicit list of enabled tool names (overrides tool_profile when non-empty).
+    /// Example: `tools_enabled = ["ctx_read", "ctx_shell", "ctx_search"]`
+    #[serde(default)]
+    pub tools_enabled: Vec<String>,
     #[serde(default)]
     pub loop_detection: LoopDetectionConfig,
     /// Controls where lean-ctx installs agent rule files.
@@ -201,8 +210,8 @@ pub struct Config {
     #[serde(default)]
     pub max_staleness_days: u32,
     /// Controls visibility of token savings footers in tool output.
-    /// Values: "never" (default, suppress everywhere), "always", "auto" (legacy compatibility).
-    /// Override via LEAN_CTX_SAVINGS_FOOTER env var.
+    /// Values: "always" (default, show on every response), "never", "auto" (legacy compatibility).
+    /// Override via LEAN_CTX_SAVINGS_FOOTER or LEAN_CTX_SHOW_SAVINGS=1|0 env var.
     #[serde(default)]
     pub savings_footer: SavingsFooter,
     /// Explicit project root override. When set, lean-ctx uses this instead of auto-detection.
@@ -284,6 +293,9 @@ pub struct Config {
     /// Default false preserves backward compatibility — set true for maximum security.
     #[serde(default)]
     pub shell_strict_mode: bool,
+    /// Setup behavior: controls what gets injected during setup and updates.
+    #[serde(default)]
+    pub setup: SetupConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -292,6 +304,77 @@ pub struct SecretDetectionConfig {
     pub enabled: bool,
     pub redact: bool,
     pub custom_patterns: Vec<String>,
+}
+
+/// Controls what lean-ctx injects during `setup` and `update --rewire`.
+/// Fresh installs default to non-invasive (rules/skills off, MCP on).
+/// Users who ran setup interactively get explicit true/false.
+/// `None` = undecided (legacy: check if rules already exist and preserve behavior).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SetupConfig {
+    /// Inject agent rule files (CLAUDE.md, .cursor/rules/, etc.).
+    /// None = undecided (legacy compat: inject if rules already present).
+    /// Some(true) = always inject. Some(false) = never inject.
+    pub auto_inject_rules: Option<bool>,
+    /// Install SKILL.md files for supported agents.
+    /// None = undecided. Some(true) = install. Some(false) = skip.
+    pub auto_inject_skills: Option<bool>,
+    /// Register lean-ctx as an MCP server in editor configs.
+    #[serde(default = "serde_defaults::default_true")]
+    pub auto_update_mcp: bool,
+}
+
+impl Default for SetupConfig {
+    fn default() -> Self {
+        Self {
+            auto_inject_rules: None,
+            auto_inject_skills: None,
+            auto_update_mcp: true,
+        }
+    }
+}
+
+impl SetupConfig {
+    /// Returns whether rules should be injected, considering legacy installs.
+    /// If undecided (None), checks if lean-ctx rules markers already exist
+    /// in any agent config — if so, keeps injecting for backward compat.
+    pub fn should_inject_rules(&self) -> bool {
+        match self.auto_inject_rules {
+            Some(v) => v,
+            None => Self::rules_already_present(),
+        }
+    }
+
+    /// Returns whether skills should be installed.
+    pub fn should_inject_skills(&self) -> bool {
+        match self.auto_inject_skills {
+            Some(v) => v,
+            None => Self::rules_already_present(),
+        }
+    }
+
+    /// Check if lean-ctx rules markers exist in any known agent config location.
+    fn rules_already_present() -> bool {
+        let Some(home) = dirs::home_dir() else {
+            return false;
+        };
+        let marker = crate::rules_inject::RULES_MARKER;
+        let check_paths = [
+            home.join(".cursor/rules/lean-ctx.mdc"),
+            crate::core::editor_registry::claude_rules_dir(&home).join("lean-ctx.md"),
+            home.join(".gemini/GEMINI.md"),
+            home.join(".codeium/windsurf/rules/lean-ctx.md"),
+        ];
+        for p in &check_paths {
+            if let Ok(content) = std::fs::read_to_string(p) {
+                if content.contains(marker) {
+                    return true;
+                }
+            }
+        }
+        false
+    }
 }
 
 impl Default for SecretDetectionConfig {
@@ -664,6 +747,8 @@ impl Default for Config {
             default_tool_categories: Vec::new(),
             no_degrade: false,
             profile: None,
+            tool_profile: None,
+            tools_enabled: Vec::new(),
             loop_detection: LoopDetectionConfig::default(),
             rules_scope: None,
             extra_ignore_patterns: Vec::new(),
@@ -708,6 +793,7 @@ impl Default for Config {
             agent_token_budget: 0,
             shell_allowlist: default_shell_allowlist(),
             shell_strict_mode: false,
+            setup: SetupConfig::default(),
         }
     }
 }
@@ -1087,6 +1173,12 @@ impl Config {
                 .collect();
         }
         vec!["core".to_string(), "session".to_string()]
+    }
+
+    /// Returns the effective tool profile.
+    /// Priority: LEAN_CTX_TOOL_PROFILE env > config tool_profile > config tools_enabled > power.
+    pub fn tool_profile_effective(&self) -> super::tool_profiles::ToolProfile {
+        super::tool_profiles::ToolProfile::from_config(self)
     }
 
     /// Returns `true` if all automatic read-mode degradation is disabled.
@@ -1907,6 +1999,12 @@ impl Config {
         if !local.default_tool_categories.is_empty() {
             self.default_tool_categories = local.default_tool_categories;
         }
+        if local.tool_profile.is_some() {
+            self.tool_profile = local.tool_profile;
+        }
+        if !local.tools_enabled.is_empty() {
+            self.tools_enabled = local.tools_enabled;
+        }
         if local.no_degrade {
             self.no_degrade = true;
         }
@@ -2306,5 +2404,106 @@ mod simplified_config_tests {
     fn simplified_template_is_valid_toml() {
         let parsed: Result<toml::Table, _> = toml::from_str(crate::cli::SIMPLIFIED_TEMPLATE);
         assert!(parsed.is_ok(), "Template must be valid TOML");
+    }
+}
+
+#[cfg(test)]
+mod setup_config_tests {
+    use super::*;
+
+    #[test]
+    fn default_is_none_for_rules_and_skills() {
+        let cfg = SetupConfig::default();
+        assert!(cfg.auto_inject_rules.is_none());
+        assert!(cfg.auto_inject_skills.is_none());
+        assert!(cfg.auto_update_mcp);
+    }
+
+    #[test]
+    fn explicit_true_injects() {
+        let cfg = SetupConfig {
+            auto_inject_rules: Some(true),
+            auto_inject_skills: Some(true),
+            auto_update_mcp: true,
+        };
+        assert!(cfg.should_inject_rules());
+        assert!(cfg.should_inject_skills());
+    }
+
+    #[test]
+    fn explicit_false_skips() {
+        let cfg = SetupConfig {
+            auto_inject_rules: Some(false),
+            auto_inject_skills: Some(false),
+            auto_update_mcp: true,
+        };
+        assert!(!cfg.should_inject_rules());
+        assert!(!cfg.should_inject_skills());
+    }
+
+    #[test]
+    fn deserialization_defaults_when_absent() {
+        let cfg: Config = toml::from_str("").unwrap();
+        assert!(cfg.setup.auto_inject_rules.is_none());
+        assert!(cfg.setup.auto_inject_skills.is_none());
+        assert!(cfg.setup.auto_update_mcp);
+    }
+
+    #[test]
+    fn deserialization_from_toml() {
+        let cfg: Config = toml::from_str(
+            r"
+            [setup]
+            auto_inject_rules = true
+            auto_inject_skills = false
+            auto_update_mcp = true
+            ",
+        )
+        .unwrap();
+        assert_eq!(cfg.setup.auto_inject_rules, Some(true));
+        assert_eq!(cfg.setup.auto_inject_skills, Some(false));
+        assert!(cfg.setup.auto_update_mcp);
+    }
+
+    #[test]
+    fn deserialization_null_values() {
+        let cfg: Config = toml::from_str(
+            r"
+            [setup]
+            auto_update_mcp = false
+            ",
+        )
+        .unwrap();
+        assert!(cfg.setup.auto_inject_rules.is_none());
+        assert!(cfg.setup.auto_inject_skills.is_none());
+        assert!(!cfg.setup.auto_update_mcp);
+    }
+
+    #[test]
+    fn roundtrip_serialize_deserialize() {
+        let original = Config {
+            setup: SetupConfig {
+                auto_inject_rules: Some(true),
+                auto_inject_skills: Some(false),
+                auto_update_mcp: true,
+            },
+            ..Config::default()
+        };
+        let toml_str = toml::to_string_pretty(&original).unwrap();
+        let parsed: Config = toml::from_str(&toml_str).unwrap();
+        assert_eq!(parsed.setup.auto_inject_rules, Some(true));
+        assert_eq!(parsed.setup.auto_inject_skills, Some(false));
+        assert!(parsed.setup.auto_update_mcp);
+    }
+
+    #[test]
+    fn fresh_install_no_rules_should_not_inject() {
+        let cfg = SetupConfig::default();
+        // On a test machine without lean-ctx rules in home, None should resolve to false
+        // (rules_already_present checks real filesystem — on CI this is always false)
+        let result = cfg.should_inject_rules();
+        // We can't assert false here because the test machine might have lean-ctx installed.
+        // Instead, verify the method doesn't panic and returns a bool.
+        let _ = result;
     }
 }

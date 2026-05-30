@@ -39,6 +39,7 @@ pub fn handle(
         return (format!("{path}/ (empty directory, depth={depth})"), 0);
     }
 
+    let _mode_guard = crate::core::savings_footer::ModeGuard::new("tree");
     let raw_tokens = count_tokens(&raw_output);
     let compact_tokens = count_tokens(&compact_output);
     let savings = protocol::format_savings(raw_tokens, compact_tokens);

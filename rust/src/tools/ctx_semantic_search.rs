@@ -1034,11 +1034,28 @@ fn load_engine_and_index(
     let engine = crate::core::embeddings::shared_engine()
         .ok_or_else(|| "embedding engine load failed".to_string())?;
 
-    let mut idx =
-        EmbeddingIndex::load(root).unwrap_or_else(|| EmbeddingIndex::new(engine.dimensions()));
-    if idx.dimensions != engine.dimensions() {
-        idx = EmbeddingIndex::new(engine.dimensions());
+    let model_name = engine.model_name();
+    let mut idx = EmbeddingIndex::load(root)
+        .unwrap_or_else(|| EmbeddingIndex::new_with_model(engine.dimensions(), model_name));
+
+    if let Some((stored, current)) = idx.model_mismatch(model_name) {
+        tracing::warn!(
+            "[embeddings] model changed: {stored} → {current}. Re-indexing all embeddings."
+        );
+        idx = EmbeddingIndex::new_with_model(engine.dimensions(), model_name);
+    } else if idx.dimension_mismatch(engine.dimensions()) {
+        tracing::warn!(
+            "[embeddings] dimension mismatch: index={}d, engine={}d. Re-indexing.",
+            idx.dimensions,
+            engine.dimensions()
+        );
+        idx = EmbeddingIndex::new_with_model(engine.dimensions(), model_name);
     }
+
+    if idx.model_id.is_none() {
+        idx.model_id = Some(model_name.to_string());
+    }
+
     Ok((engine, idx))
 }
 

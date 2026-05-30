@@ -47,6 +47,9 @@ deploy_checklist.md
 lean-ctx-chrome-extension.zip
 /docs/_local/
 test-results/
+lean-ctx-report.html
+rust/lean-ctx-report.html
+*.bak
 
 # ── IDE local config (may contain tokens/env) ──
 **/.cursor/

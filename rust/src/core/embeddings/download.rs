@@ -1,51 +1,41 @@
 //! Automatic model download from HuggingFace Hub.
 //!
-//! Downloads the all-MiniLM-L6-v2 ONNX model and vocabulary on first use.
-//! Files are cached in `~/.lean-ctx/models/` and only downloaded once.
+//! Downloads the selected ONNX embedding model and its vocabulary/tokenizer
+//! files on first use. Files are cached per-model in subdirectories under
+//! `~/.lean-ctx/models/<model-name>/` and only downloaded once.
 
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
-const HF_BASE: &str = "https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/main";
+use super::model_registry::{ModelConfig, VocabSource};
+
 const USER_AGENT: &str = concat!("lean-ctx/", env!("CARGO_PKG_VERSION"));
 
-struct ModelFile {
-    relative_url: &'static str,
+struct DownloadFile {
+    url: String,
     local_name: &'static str,
     min_bytes: u64,
 }
 
-const MODEL_FILES: &[ModelFile] = &[
-    ModelFile {
-        relative_url: "/onnx/model.onnx",
-        local_name: "model.onnx",
-        min_bytes: 1_000_000,
-    },
-    ModelFile {
-        relative_url: "/vocab.txt",
-        local_name: "vocab.txt",
-        min_bytes: 100_000,
-    },
-];
-
 /// Ensure all required model files are present, downloading if necessary.
 /// Returns the model directory path on success.
-pub fn ensure_model(model_dir: &Path) -> anyhow::Result<PathBuf> {
-    let all_present = MODEL_FILES
-        .iter()
-        .all(|f| model_dir.join(f.local_name).exists());
+pub fn ensure_model(model_dir: &Path, config: &ModelConfig) -> anyhow::Result<PathBuf> {
+    let files = download_files(config);
+
+    let all_present = files.iter().all(|f| model_dir.join(f.local_name).exists());
 
     if all_present {
         return Ok(model_dir.to_path_buf());
     }
 
     tracing::info!(
-        "Embedding model not found, downloading to {}",
+        "Embedding model '{}' not found, downloading to {}",
+        config.name,
         model_dir.display()
     );
     std::fs::create_dir_all(model_dir)?;
 
-    for file in MODEL_FILES {
+    for file in &files {
         let local_path = model_dir.join(file.local_name);
         if local_path.exists() {
             let meta = std::fs::metadata(&local_path)?;
@@ -61,30 +51,53 @@ pub fn ensure_model(model_dir: &Path) -> anyhow::Result<PathBuf> {
             );
         }
 
-        download_file(file, model_dir)?;
+        download_file(&file.url, file.local_name, file.min_bytes, model_dir)?;
     }
 
-    verify_model_files(model_dir)?;
+    verify_model_files(model_dir, config)?;
 
-    tracing::info!("Embedding model ready at {}", model_dir.display());
+    tracing::info!(
+        "Embedding model '{}' ready at {}",
+        config.name,
+        model_dir.display()
+    );
     Ok(model_dir.to_path_buf())
 }
 
-fn download_file(file: &ModelFile, model_dir: &Path) -> anyhow::Result<()> {
-    let url = format!("{}{}", HF_BASE, file.relative_url);
-    let local_path = model_dir.join(file.local_name);
-    let tmp_path = model_dir.join(format!("{}.tmp", file.local_name));
+fn download_files(config: &ModelConfig) -> Vec<DownloadFile> {
+    vec![
+        DownloadFile {
+            url: config.model_url(),
+            local_name: "model.onnx",
+            min_bytes: config.model_min_bytes,
+        },
+        DownloadFile {
+            url: config.vocab_url(),
+            local_name: config.vocab_file.filename(),
+            min_bytes: config.vocab_min_bytes,
+        },
+    ]
+}
 
-    tracing::info!("Downloading {} ...", file.local_name);
+fn download_file(
+    url: &str,
+    local_name: &str,
+    min_bytes: u64,
+    model_dir: &Path,
+) -> anyhow::Result<()> {
+    let local_path = model_dir.join(local_name);
+    let tmp_path = model_dir.join(format!("{local_name}.tmp"));
 
-    let response = ureq::get(&url)
+    tracing::info!("Downloading {local_name} ...");
+
+    let response = ureq::get(url)
         .header("User-Agent", USER_AGENT)
         .call()
         .map_err(|e| anyhow::anyhow!("Failed to download {url}: {e}"))?;
 
     let status = response.status();
     if status != 200 {
-        anyhow::bail!("Download of {} returned HTTP {}", file.local_name, status);
+        anyhow::bail!("Download of {local_name} returned HTTP {status}");
     }
 
     let content_length = response
@@ -111,16 +124,13 @@ fn download_file(file: &ModelFile, model_dir: &Path) -> anyhow::Result<()> {
             if let Some(cl) = content_length {
                 let pct = (total as f64 / cl as f64 * 100.0) as u32;
                 tracing::info!(
-                    "  {} — {:.1}MB / {:.1}MB ({}%)",
-                    file.local_name,
+                    "  {local_name} — {:.1}MB / {:.1}MB ({pct}%)",
                     total as f64 / 1_048_576.0,
                     cl as f64 / 1_048_576.0,
-                    pct
                 );
             } else {
                 tracing::info!(
-                    "  {} — {:.1}MB downloaded",
-                    file.local_name,
+                    "  {local_name} — {:.1}MB downloaded",
                     total as f64 / 1_048_576.0
                 );
             }
@@ -129,48 +139,54 @@ fn download_file(file: &ModelFile, model_dir: &Path) -> anyhow::Result<()> {
     }
     drop(out);
 
-    if total < file.min_bytes {
+    if total < min_bytes {
         let _ = std::fs::remove_file(&tmp_path);
         anyhow::bail!(
-            "Downloaded {} is too small ({} bytes, expected >= {})",
-            file.local_name,
-            total,
-            file.min_bytes
+            "Downloaded {local_name} is too small ({total} bytes, expected >= {min_bytes})",
         );
     }
 
     std::fs::rename(&tmp_path, &local_path)?;
-    tracing::info!(
-        "  {} — {:.1}MB saved",
-        file.local_name,
-        total as f64 / 1_048_576.0
-    );
+    tracing::info!("  {local_name} — {:.1}MB saved", total as f64 / 1_048_576.0);
 
     Ok(())
 }
 
-fn verify_model_files(model_dir: &Path) -> anyhow::Result<()> {
-    for file in MODEL_FILES {
-        let path = model_dir.join(file.local_name);
-        if !path.exists() {
-            anyhow::bail!("Model file {} missing after download", file.local_name);
-        }
-        let meta = std::fs::metadata(&path)?;
-        if meta.len() < file.min_bytes {
-            anyhow::bail!(
-                "Model file {} is corrupt ({} bytes, expected >= {})",
-                file.local_name,
-                meta.len(),
-                file.min_bytes
-            );
-        }
+fn verify_model_files(model_dir: &Path, config: &ModelConfig) -> anyhow::Result<()> {
+    let model_path = model_dir.join("model.onnx");
+    if !model_path.exists() {
+        anyhow::bail!("Model file model.onnx missing after download");
+    }
+    let meta = std::fs::metadata(&model_path)?;
+    if meta.len() < config.model_min_bytes {
+        anyhow::bail!(
+            "Model file model.onnx is corrupt ({} bytes, expected >= {})",
+            meta.len(),
+            config.model_min_bytes
+        );
     }
 
-    if model_dir.join("vocab.txt").exists() {
-        let content = std::fs::read_to_string(model_dir.join("vocab.txt"))?;
+    let vocab_name = config.vocab_file.filename();
+    let vocab_path = model_dir.join(vocab_name);
+    if !vocab_path.exists() {
+        anyhow::bail!("Vocab file {vocab_name} missing after download");
+    }
+    let vmeta = std::fs::metadata(&vocab_path)?;
+    if vmeta.len() < config.vocab_min_bytes {
+        anyhow::bail!(
+            "Vocab file {vocab_name} is corrupt ({} bytes, expected >= {})",
+            vmeta.len(),
+            config.vocab_min_bytes
+        );
+    }
+
+    if let VocabSource::VocabTxt(_) = config.vocab_file {
+        let content = std::fs::read_to_string(&vocab_path)?;
         let line_count = content.lines().count();
         if line_count < 20_000 {
-            anyhow::bail!("vocab.txt appears corrupt ({line_count} lines, expected ~30K for BERT)");
+            anyhow::bail!(
+                "{vocab_name} appears corrupt ({line_count} lines, expected ~30K for BERT)"
+            );
         }
     }
 
@@ -179,13 +195,13 @@ fn verify_model_files(model_dir: &Path) -> anyhow::Result<()> {
 
 /// Remove all downloaded model files (for cleanup/re-download).
 pub fn clean_model(model_dir: &Path) -> anyhow::Result<()> {
-    for file in MODEL_FILES {
-        let path = model_dir.join(file.local_name);
+    for name in ["model.onnx", "vocab.txt", "tokenizer.json"] {
+        let path = model_dir.join(name);
         if path.exists() {
             std::fs::remove_file(&path)?;
             tracing::info!("Removed {}", path.display());
         }
-        let tmp_path = model_dir.join(format!("{}.tmp", file.local_name));
+        let tmp_path = model_dir.join(format!("{name}.tmp"));
         if tmp_path.exists() {
             std::fs::remove_file(&tmp_path)?;
         }
@@ -196,28 +212,46 @@ pub fn clean_model(model_dir: &Path) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::embeddings::model_registry::EmbeddingModel;
 
     #[test]
-    fn model_files_have_valid_urls() {
-        for file in MODEL_FILES {
-            let url = format!("{}{}", HF_BASE, file.relative_url);
-            assert!(url.starts_with("https://"));
-            assert!(url.contains("huggingface.co"));
+    fn download_files_all_models() {
+        for model in EmbeddingModel::ALL {
+            let cfg = model.config();
+            let files = download_files(&cfg);
+            assert_eq!(
+                files.len(),
+                2,
+                "model={} should have 2 download files",
+                cfg.name
+            );
+            assert!(files[0].url.contains("model.onnx"));
+            assert!(files[0].min_bytes > 0);
         }
     }
 
     #[test]
-    fn model_files_have_minimum_sizes() {
-        for file in MODEL_FILES {
-            assert!(file.min_bytes > 0);
+    fn model_urls_are_https() {
+        for model in EmbeddingModel::ALL {
+            let cfg = model.config();
+            let files = download_files(&cfg);
+            for f in &files {
+                assert!(
+                    f.url.starts_with("https://"),
+                    "URL for {} must be HTTPS: {}",
+                    cfg.name,
+                    f.url
+                );
+            }
         }
     }
 
     #[test]
     fn verify_fails_on_empty_dir() {
-        let dir = std::env::temp_dir().join("lean_ctx_test_verify_empty");
+        let dir = std::env::temp_dir().join("lean_ctx_test_verify_empty_v2");
         let _ = std::fs::create_dir_all(&dir);
-        assert!(verify_model_files(&dir).is_err());
+        let cfg = EmbeddingModel::AllMiniLmL6V2.config();
+        assert!(verify_model_files(&dir, &cfg).is_err());
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -210,7 +210,7 @@ fn dense_results_local(
     use crate::core::embeddings::cosine_similarity;
 
     let query_embedding = engine
-        .embed(query)
+        .embed_query(query)
         .map_err(|e| format!("embedding failed: {e}"))?;
 
     let top = top_k_by_similarity(
@@ -320,7 +320,7 @@ fn dense_results_qdrant(
     )?;
 
     let query_vec = engine
-        .embed(query)
+        .embed_query(query)
         .map_err(|e| format!("embedding failed: {e}"))?;
 
     let hits = store.search(&collection, &query_vec, top_k)?;

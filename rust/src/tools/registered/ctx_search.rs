@@ -70,6 +70,7 @@ impl McpTool for CtxSearchTool {
             );
         }
 
+        let _mode_guard = crate::core::savings_footer::ModeGuard::new("search");
         let per_root_max = (max / resolved.roots.len()).max(5);
         let mut combined = String::new();
         let mut total_original: usize = 0;
@@ -140,6 +141,7 @@ fn search_single(
     respect_gitignore: bool,
     allow_secret_paths: bool,
 ) -> Result<ToolOutput, ErrorData> {
+    let _mode_guard = crate::core::savings_footer::ModeGuard::new("search");
     let pattern_clone = pattern.to_string();
     let path_clone = path.to_string();
 

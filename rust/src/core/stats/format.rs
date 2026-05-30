@@ -496,9 +496,13 @@ pub fn format_gain_themed_at(t: &Theme, tick: Option<u64>) -> String {
             String::new()
         };
         return format!(
-            "{dim}No commands recorded yet.{rst}\
-             \n\n  MCP tools are tracked automatically when agents use lean-ctx.\
-             \n  Shell commands: use {cmd}lean-ctx -c \"command\"{rst} to track.\
+            "{bold}No savings recorded yet — and that's expected.{rst}\
+             \n\n  {dim}Savings appear after your AI tool uses lean-ctx for the first time.{rst}\
+             \n\n  Next:\
+             \n    1. Make sure your AI tool is connected:  {cmd}lean-ctx doctor{rst}\
+             \n    2. Fully restart your AI tool so it reconnects to lean-ctx.\
+             \n    3. Ask it to read a file or run a command — then check back here.\
+             \n\n  {dim}Tip: track a shell command yourself with {rst}{cmd}lean-ctx -c \"git status\"{rst}\
              \n\n  {dim}Stats path: {data_dir}{rst}{mcp_hint}{split_hint}",
             cmd = t.secondary.fg(),
         );

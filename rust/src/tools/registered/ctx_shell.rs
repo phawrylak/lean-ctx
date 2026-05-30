@@ -132,6 +132,7 @@ impl McpTool for CtxShellTool {
                 let tokens = crate::core::tokens::count_tokens(&output);
                 (output, tokens, 0, String::new())
             } else {
+                let _mode_guard = crate::core::savings_footer::ModeGuard::new("shell");
                 let result = crate::tools::ctx_shell::handle(&cmd_clone, &output, crp_mode);
                 let original = crate::core::tokens::count_tokens(&output);
                 let sent = crate::core::tokens::count_tokens(&result);
@@ -332,19 +333,23 @@ fn warn_shell_secret_paths(command: &str) {
     let segments = crate::core::shell_allowlist::extract_all_commands_pub(command);
     for seg in &segments {
         let trimmed = seg.trim();
-        let tokens: Vec<&str> = trimmed.split_whitespace().collect();
+        let tokens = crate::core::shell_allowlist::shell_tokenize(trimmed);
         if tokens.is_empty() {
             continue;
         }
-        let base = tokens[0].rsplit('/').next().unwrap_or(tokens[0]);
-        if !READ_CMDS.contains(&base) {
+        let base = tokens[0]
+            .rsplit('/')
+            .next()
+            .unwrap_or(&tokens[0])
+            .to_string();
+        if !READ_CMDS.contains(&base.as_str()) {
             continue;
         }
-        for &tok in &tokens[1..] {
+        for tok in &tokens[1..] {
             if tok.starts_with('-') {
                 continue;
             }
-            let path = std::path::Path::new(tok);
+            let path = std::path::Path::new(tok.as_str());
             if crate::core::io_boundary::is_secret_like(path).is_some() {
                 tracing::warn!(
                     "[SECURITY] Shell reading secret-like path: {tok} (command: {base})"

@@ -18,6 +18,10 @@ use super::bm25_index::CodeChunk;
 pub struct EmbeddingIndex {
     pub version: u32,
     pub dimensions: usize,
+    /// Model identifier that generated these embeddings.
+    /// Used for mismatch detection when the user switches models.
+    #[serde(default)]
+    pub model_id: Option<String>,
     pub entries: Vec<EmbeddingEntry>,
     pub file_hashes: HashMap<String, String>,
 }
@@ -32,16 +36,42 @@ pub struct EmbeddingEntry {
     pub content_hash: String,
 }
 
-const CURRENT_VERSION: u32 = 1;
+const CURRENT_VERSION: u32 = 2;
 
 impl EmbeddingIndex {
     pub fn new(dimensions: usize) -> Self {
         Self {
             version: CURRENT_VERSION,
             dimensions,
+            model_id: None,
             entries: Vec::new(),
             file_hashes: HashMap::new(),
         }
+    }
+
+    /// Create a new index tagged with a specific model identity.
+    pub fn new_with_model(dimensions: usize, model_id: &str) -> Self {
+        Self {
+            version: CURRENT_VERSION,
+            dimensions,
+            model_id: Some(model_id.to_string()),
+            entries: Vec::new(),
+            file_hashes: HashMap::new(),
+        }
+    }
+
+    /// Check if the index was built with a different model than currently selected.
+    /// Returns `Some((stored_model, current_model))` on mismatch, `None` if compatible.
+    pub fn model_mismatch<'a>(&'a self, current_model: &'a str) -> Option<(&'a str, &'a str)> {
+        match &self.model_id {
+            Some(stored) if stored != current_model => Some((stored, current_model)),
+            _ => None,
+        }
+    }
+
+    /// Check if index dimensions are incompatible with the current engine.
+    pub fn dimension_mismatch(&self, engine_dimensions: usize) -> bool {
+        self.dimensions != engine_dimensions && !self.entries.is_empty()
     }
 
     /// Approximate heap memory used by this index in bytes.
@@ -191,10 +221,22 @@ impl EmbeddingIndex {
             })
             .ok()?;
         let idx: Self = serde_json::from_str(&data).ok()?;
-        if idx.version != CURRENT_VERSION {
-            return None;
+        match idx.version {
+            CURRENT_VERSION => Some(idx),
+            1 => {
+                tracing::info!(
+                    "[embeddings] migrating index v1 → v{CURRENT_VERSION} (adding model_id field)"
+                );
+                Some(Self {
+                    version: CURRENT_VERSION,
+                    dimensions: idx.dimensions,
+                    model_id: None,
+                    entries: idx.entries,
+                    file_hashes: idx.file_hashes,
+                })
+            }
+            _ => None,
         }
-        Some(idx)
     }
 }
 
@@ -464,6 +506,68 @@ mod tests {
         assert_eq!(loaded.dimensions, 3);
         assert_eq!(loaded.entries.len(), 1);
         assert!((loaded.entries[0].embedding[0] - 1.0).abs() < 1e-6);
+
+        std::env::remove_var("LEAN_CTX_DATA_DIR");
+    }
+
+    #[test]
+    fn new_with_model_sets_model_id() {
+        let idx = EmbeddingIndex::new_with_model(768, "jina-code-v2");
+        assert_eq!(idx.model_id, Some("jina-code-v2".to_string()));
+        assert_eq!(idx.dimensions, 768);
+    }
+
+    #[test]
+    fn model_mismatch_detection() {
+        let idx = EmbeddingIndex::new_with_model(768, "all-MiniLM-L6-v2");
+        assert!(idx.model_mismatch("all-MiniLM-L6-v2").is_none());
+        assert!(idx.model_mismatch("jina-code-v2").is_some());
+
+        let (stored, current) = idx.model_mismatch("jina-code-v2").unwrap();
+        assert_eq!(stored, "all-MiniLM-L6-v2");
+        assert_eq!(current, "jina-code-v2");
+    }
+
+    #[test]
+    fn model_mismatch_none_when_no_model_id() {
+        let idx = EmbeddingIndex::new(384);
+        assert!(idx.model_mismatch("anything").is_none());
+    }
+
+    #[test]
+    fn dimension_mismatch_detection() {
+        let mut idx = EmbeddingIndex::new(384);
+        assert!(!idx.dimension_mismatch(384));
+        assert!(!idx.dimension_mismatch(768)); // no entries = no mismatch
+
+        let chunks = vec![make_chunk("a.rs", "fn_a", "fn a() {}", 1, 3)];
+        idx.update(&chunks, &[(0, dummy_embedding(384))], &["a.rs".to_string()]);
+        assert!(!idx.dimension_mismatch(384));
+        assert!(idx.dimension_mismatch(768));
+    }
+
+    #[test]
+    fn v1_index_migration() {
+        let _lock = crate::core::data_dir::test_env_lock();
+        let data_dir = tempfile::tempdir().unwrap();
+        std::env::set_var("LEAN_CTX_DATA_DIR", data_dir.path());
+        let project_dir = tempfile::tempdir().unwrap();
+
+        let v1_json = serde_json::json!({
+            "version": 1,
+            "dimensions": 384,
+            "entries": [],
+            "file_hashes": {}
+        });
+
+        let dir = crate::core::index_namespace::vectors_dir(project_dir.path());
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("embeddings.json"), v1_json.to_string()).unwrap();
+
+        let loaded = EmbeddingIndex::load(project_dir.path()).unwrap();
+        assert_eq!(loaded.version, CURRENT_VERSION);
+        assert_eq!(loaded.dimensions, 384);
+        assert!(loaded.model_id.is_none());
 
         std::env::remove_var("LEAN_CTX_DATA_DIR");
     }

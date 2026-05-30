@@ -98,12 +98,24 @@ pub fn run() {
                 crate::cli::cmd_pack(&rest);
                 return;
             }
+            "plugin" | "plugins" => {
+                crate::cli::plugin_cmd::cmd_plugin(&rest);
+                return;
+            }
+            "rules" => {
+                crate::cli::rules_cmd::cmd_rules(&rest);
+                return;
+            }
             "proof" => {
                 crate::cli::cmd_proof(&rest);
                 return;
             }
             "verify" => {
                 crate::cli::cmd_verify(&rest);
+                return;
+            }
+            "visualize" => {
+                super::cmd_visualize(&rest);
                 return;
             }
             "audit" => {
@@ -160,6 +172,7 @@ pub fn run() {
                 let fix = rest.iter().any(|a| a == "--fix");
                 let json = rest.iter().any(|a| a == "--json");
                 let no_auto_approve = rest.iter().any(|a| a == "--no-auto-approve");
+                let skip_rules = rest.iter().any(|a| a == "--skip-rules");
 
                 if non_interactive || fix || json || yes {
                     let opts = setup::SetupOptions {
@@ -168,6 +181,7 @@ pub fn run() {
                         fix,
                         json,
                         no_auto_approve,
+                        skip_rules,
                         ..Default::default()
                     };
                     match setup::run_setup_with_options(opts) {
@@ -193,12 +207,20 @@ pub fn run() {
                 }
                 return;
             }
+            "onboard" => {
+                setup::run_onboard();
+                return;
+            }
             "install" => {
+                // Plain `lean-ctx install` is a natural thing to type after
+                // installing the binary — treat it as the guided setup rather
+                // than failing with a usage error. `--repair`/`--fix` keeps the
+                // non-interactive, merge-based repair path.
                 let repair = rest.iter().any(|a| a == "--repair" || a == "--fix");
                 let json = rest.iter().any(|a| a == "--json");
                 if !repair {
-                    eprintln!("Usage: lean-ctx install --repair [--json]");
-                    std::process::exit(1);
+                    setup::run_setup();
+                    return;
                 }
                 let opts = setup::SetupOptions {
                     non_interactive: true,
@@ -353,7 +375,7 @@ pub fn run() {
                 super::cmd_wrapped(&rest);
                 return;
             }
-            "sessions" => {
+            "sessions" | "session-store" => {
                 super::cmd_sessions(&rest);
                 return;
             }
@@ -367,6 +389,15 @@ pub fn run() {
             }
             "profile" => {
                 super::cmd_profile(&rest);
+                return;
+            }
+            "tools" => {
+                // Canonical, unambiguous entry point for MCP *tool* profiles
+                // (how many tools the agent sees). Disambiguates from
+                // `lean-ctx profile`, which manages *context* profiles.
+                let mut forwarded = vec!["tools".to_string()];
+                forwarded.extend(rest.iter().cloned());
+                super::cmd_profile(&forwarded);
                 return;
             }
             "config" => {
@@ -525,14 +556,32 @@ pub fn run() {
                 println!("{}", core::integrity::origin_line());
                 return;
             }
+            "help" => {
+                let want_all = rest
+                    .iter()
+                    .any(|a| matches!(a.as_str(), "all" | "full" | "--all" | "-a"));
+                if want_all {
+                    print_help();
+                } else {
+                    print_help_concise();
+                }
+                return;
+            }
             "--help" | "-h" => {
-                print_help();
+                if rest
+                    .iter()
+                    .any(|a| matches!(a.as_str(), "all" | "full" | "--all" | "-a"))
+                {
+                    print_help();
+                } else {
+                    print_help_concise();
+                }
                 return;
             }
             "mcp" => {}
             _ => {
                 tracing::error!("lean-ctx: unknown command '{}'", args[1]);
-                print_help();
+                print_help_concise();
                 std::process::exit(1);
             }
         }
@@ -578,10 +627,10 @@ mod tests {
     fn quickstart_is_short_and_points_to_setup() {
         let q = quickstart_text();
         assert!(
-            q.contains("lean-ctx setup"),
-            "quickstart must point to setup"
+            q.contains("lean-ctx onboard"),
+            "quickstart must point to onboard"
         );
-        assert!(q.contains("--help"), "quickstart must point to full help");
+        assert!(q.contains("lean-ctx help"), "quickstart must point to help");
         // Must stay a *quickstart*, not the full reference — keep it tight.
         assert!(
             q.lines().count() <= 16,
@@ -591,6 +640,30 @@ mod tests {
         assert!(
             !q.contains("COMMANDS:"),
             "quickstart must not inline the full command reference"
+        );
+    }
+
+    #[test]
+    fn concise_help_is_short_and_points_to_full() {
+        let h = concise_help_text();
+        assert!(h.contains("lean-ctx onboard"), "must lead with onboard");
+        assert!(
+            h.contains("lean-ctx help all"),
+            "must point to full reference"
+        );
+        assert!(
+            h.contains("lean-ctx tools"),
+            "must surface the tools profile command"
+        );
+        // Concise means concise — keep it well under the full reference.
+        assert!(
+            h.lines().count() <= 40,
+            "concise help should stay short; got {} lines",
+            h.lines().count()
+        );
+        assert!(
+            !h.contains("SHELL HOOK PATTERNS"),
+            "concise help must not inline the full pattern catalog"
         );
     }
 

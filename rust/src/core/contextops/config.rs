@@ -1,0 +1,204 @@
+use std::path::{Path, PathBuf};
+
+use serde::{Deserialize, Serialize};
+
+const CONFIG_FILENAME: &str = "rules.toml";
+const CONFIG_DIR: &str = ".leanctx";
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RulesConfig {
+    pub rules: RulesSection,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RulesSection {
+    #[serde(default = "default_version")]
+    pub version: String,
+    #[serde(default)]
+    pub core: CoreRules,
+    #[serde(default)]
+    pub agent: std::collections::HashMap<String, AgentRules>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct CoreRules {
+    #[serde(default)]
+    pub content: String,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct AgentRules {
+    #[serde(default)]
+    pub extra: String,
+}
+
+fn default_version() -> String {
+    "1.0".to_string()
+}
+
+impl RulesConfig {
+    pub fn config_path(project_root: &Path) -> PathBuf {
+        project_root.join(CONFIG_DIR).join(CONFIG_FILENAME)
+    }
+
+    pub fn load(project_root: &Path) -> Result<Self, String> {
+        let path = Self::config_path(project_root);
+        if !path.exists() {
+            return Err(format!(
+                "No rules config found at {}. Run `lean-ctx rules init` to create one.",
+                path.display()
+            ));
+        }
+        let content = std::fs::read_to_string(&path)
+            .map_err(|e| format!("Failed to read {}: {e}", path.display()))?;
+        toml::from_str(&content).map_err(|e| format!("Failed to parse {}: {e}", path.display()))
+    }
+
+    pub fn init_from_existing(project_root: &Path, home: &Path) -> Result<Self, String> {
+        let statuses = crate::rules_inject::collect_rules_status(home);
+
+        let mut agent_rules = std::collections::HashMap::new();
+        for status in &statuses {
+            if status.state == "up_to_date" || status.state == "outdated" {
+                let key = status.name.to_lowercase().replace(' ', "_");
+                let path = Path::new(&status.path);
+                if path.exists() {
+                    if let Ok(content) = std::fs::read_to_string(path) {
+                        let extra = extract_user_content(&content);
+                        if !extra.is_empty() {
+                            agent_rules.insert(key, AgentRules { extra });
+                        }
+                    }
+                }
+            }
+        }
+
+        let config = RulesConfig {
+            rules: RulesSection {
+                version: default_version(),
+                core: CoreRules {
+                    content: crate::rules_inject::rules_shared_content().to_string(),
+                },
+                agent: agent_rules,
+            },
+        };
+
+        let path = Self::config_path(project_root);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| format!("Failed to create {}: {e}", parent.display()))?;
+        }
+        let toml_str = toml::to_string_pretty(&config)
+            .map_err(|e| format!("Failed to serialize config: {e}"))?;
+        std::fs::write(&path, &toml_str)
+            .map_err(|e| format!("Failed to write {}: {e}", path.display()))?;
+
+        Ok(config)
+    }
+}
+
+fn extract_user_content(content: &str) -> String {
+    let marker = crate::rules_inject::RULES_MARKER;
+    let end_marker = "<!-- /lean-ctx -->";
+
+    let start = content.find(marker);
+    let end = content.find(end_marker);
+
+    match (start, end) {
+        (Some(s), Some(e)) => {
+            let before = content[..s].trim();
+            let after_end = e + end_marker.len();
+            let after = content[after_end..].trim();
+            let mut parts = Vec::new();
+            if !before.is_empty() {
+                parts.push(before.to_string());
+            }
+            if !after.is_empty() {
+                parts.push(after.to_string());
+            }
+            parts.join("\n\n")
+        }
+        _ => String::new(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_version_is_1_0() {
+        assert_eq!(default_version(), "1.0");
+    }
+
+    #[test]
+    fn config_path_is_correct() {
+        let root = PathBuf::from("/tmp/project");
+        let path = RulesConfig::config_path(&root);
+        assert_eq!(path, PathBuf::from("/tmp/project/.leanctx/rules.toml"));
+    }
+
+    #[test]
+    fn load_missing_file_returns_error() {
+        let root = PathBuf::from("/tmp/nonexistent_contextops_test");
+        let result = RulesConfig::load(&root);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("No rules config found"));
+    }
+
+    #[test]
+    fn parse_minimal_config() {
+        let toml_str = r#"
+[rules]
+version = "1.0"
+
+[rules.core]
+content = "test rules"
+"#;
+        let config: RulesConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.rules.version, "1.0");
+        assert_eq!(config.rules.core.content, "test rules");
+        assert!(config.rules.agent.is_empty());
+    }
+
+    #[test]
+    fn parse_config_with_agents() {
+        let toml_str = r#"
+[rules]
+version = "1.0"
+
+[rules.core]
+content = "core rules"
+
+[rules.agent.cursor]
+extra = "cursor specific"
+
+[rules.agent.claude]
+extra = "claude specific"
+"#;
+        let config: RulesConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.rules.agent.len(), 2);
+        assert_eq!(
+            config.rules.agent.get("cursor").unwrap().extra,
+            "cursor specific"
+        );
+    }
+
+    #[test]
+    fn extract_user_content_with_markers() {
+        let content = format!(
+            "user preamble\n\n{}\nrules here\n<!-- /lean-ctx -->\n\nuser postamble",
+            crate::rules_inject::RULES_MARKER
+        );
+        let result = extract_user_content(&content);
+        assert!(result.contains("user preamble"));
+        assert!(result.contains("user postamble"));
+        assert!(!result.contains("rules here"));
+    }
+
+    #[test]
+    fn extract_user_content_no_markers() {
+        let result = extract_user_content("just some text");
+        assert!(result.is_empty());
+    }
+}

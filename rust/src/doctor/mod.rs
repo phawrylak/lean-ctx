@@ -490,8 +490,16 @@ pub fn run() {
     if workspace_scope.is_some() {
         effective_total += 1;
     }
+    let needs_attention = effective_total.saturating_sub(passed);
     println!();
     println!("  {BOLD}{WHITE}Summary:{RST}  {GREEN}{passed}{RST}{DIM}/{effective_total}{RST} checks passed");
+    if needs_attention > 0 {
+        println!(
+            "  {YELLOW}{needs_attention} check(s) need attention.{RST}  Auto-repair what's fixable:  {BOLD}lean-ctx doctor --fix{RST}"
+        );
+    } else {
+        println!("  {GREEN}Everything looks good.{RST}");
+    }
     println!("  {DIM}LSP servers are optional enhancements (not counted in score){RST}");
     println!("  {DIM}{}{RST}", crate::core::integrity::origin_line());
 }

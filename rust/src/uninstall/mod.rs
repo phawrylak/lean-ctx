@@ -457,5 +457,6 @@ fn print_binary_removal_instructions() {
         println!("    rm {binary_path}\n");
     }
 
-    println!("  Then restart your shell.\n");
+    println!("  Then restart your shell, and verify it's gone:\n");
+    println!("    command -v lean-ctx   # should print nothing once removed\n");
 }

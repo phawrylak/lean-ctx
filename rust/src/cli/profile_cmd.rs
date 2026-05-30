@@ -1,9 +1,18 @@
 use crate::core::profiles;
+use crate::core::tool_profiles::{self, ToolProfile};
 
 pub fn cmd_profile(args: &[String]) {
     let action = args.first().map_or("list", String::as_str);
 
     match action {
+        // Tool profile subcommands
+        "tools" => cmd_tool_profile(&args[1..]),
+        "minimal" | "min" | "standard" | "std" | "power" | "full" | "all" => {
+            cmd_tool_profile_switch(action);
+            println!("  \x1b[2mTip: the canonical command is `lean-ctx tools {action}`.\x1b[0m");
+        }
+
+        // Existing compression profile subcommands
         "list" | "ls" => cmd_profile_list(),
         "show" => {
             let name = args
@@ -218,21 +227,150 @@ fn cmd_profile_set(name: &str) {
 
     println!("To activate profile '{name}', run:\n");
     println!("  export LEAN_CTX_PROFILE={name}\n");
-    println!("Or add it to your shell config (~/.zshrc, ~/.bashrc).");
+    println!(
+        "Or add it to your shell config ({}).",
+        crate::shell_hook::shell_rc_file()
+    );
+}
+
+// ─── Tool Profile Commands ───────────────────────────────────────────────
+
+fn cmd_tool_profile(args: &[String]) {
+    let action = args.first().map_or("show", String::as_str);
+
+    match action {
+        "list" | "ls" => cmd_tool_profile_list(),
+        "show" | "current" => cmd_tool_profile_show(),
+        "minimal" | "min" | "standard" | "std" | "power" | "full" | "all" => {
+            cmd_tool_profile_switch(action);
+        }
+        _ => {
+            if ToolProfile::parse(action).is_some() {
+                cmd_tool_profile_switch(action);
+            } else {
+                eprintln!("Unknown tool profile '{action}'.");
+                eprintln!("Available: minimal, standard, power");
+                std::process::exit(1);
+            }
+        }
+    }
+}
+
+fn cmd_tool_profile_show() {
+    let cfg = crate::core::config::Config::load();
+    let profile = cfg.tool_profile_effective();
+    let registry_count = crate::server::registry::tool_count();
+
+    let count_str = match &profile {
+        ToolProfile::Power => format!("{registry_count}"),
+        ToolProfile::Custom(list) => format!("{}", list.len()),
+        other => format!("{}", other.tool_count()),
+    };
+
+    println!("Tool Profile: {}", profile.as_str());
+    println!("  Tools exposed: {count_str}");
+    println!("  Description:   {}", profile.description());
+
+    if let Some(ref cfg_val) = cfg.tool_profile {
+        println!("  Source:         config.toml (tool_profile = \"{cfg_val}\")");
+    }
+    if std::env::var("LEAN_CTX_TOOL_PROFILE").is_ok() {
+        println!("  Source:         LEAN_CTX_TOOL_PROFILE env var (overrides config)");
+    }
+    if cfg.tool_profile.is_none() && std::env::var("LEAN_CTX_TOOL_PROFILE").is_err() {
+        println!("  Source:         default (backward compatible)");
+    }
+
+    if !matches!(profile, ToolProfile::Power) {
+        println!("\n  Enabled tools:");
+        let names = profile.tool_names();
+        for name in &names {
+            println!("    {name}");
+        }
+    }
+
+    println!("\n  Switch with: lean-ctx tools <minimal|standard|power>");
+}
+
+fn cmd_tool_profile_list() {
+    let cfg = crate::core::config::Config::load();
+    let active = cfg.tool_profile_effective();
+    let active_name = active.as_str();
+    let registry_count = crate::server::registry::tool_count();
+
+    println!("Tool Profiles:\n");
+    println!("  {:<12} {:<8} Description", "Name", "Tools");
+    println!("  {}", "\u{2500}".repeat(60));
+
+    for info in tool_profiles::list_profiles() {
+        let marker = if info.name == active_name { "* " } else { "  " };
+        let count = if info.name == "power" {
+            format!("{registry_count}")
+        } else {
+            info.tool_count.to_string()
+        };
+        println!(
+            "{marker}{:<12} {:<8} {}",
+            info.name, count, info.description
+        );
+    }
+
+    println!("\n  Active: {active_name}");
+    println!("  Switch: lean-ctx profile <name>");
+    println!("  Env:    LEAN_CTX_TOOL_PROFILE=<name>");
+}
+
+fn cmd_tool_profile_switch(name: &str) {
+    let Some(profile) = ToolProfile::parse(name) else {
+        eprintln!("Unknown tool profile '{name}'.");
+        eprintln!("Available: minimal, standard, power");
+        std::process::exit(1);
+    };
+
+    let canonical = profile.as_str();
+
+    if let Err(e) = tool_profiles::set_profile_in_config(canonical) {
+        eprintln!("Error saving profile: {e}");
+        std::process::exit(1);
+    }
+
+    let registry_count = crate::server::registry::tool_count();
+    let count_str = match &profile {
+        ToolProfile::Power => format!("{registry_count}"),
+        other => format!("{}", other.tool_count()),
+    };
+
+    println!("Tool profile set to: {canonical}");
+    println!("  Tools exposed: {count_str}");
+    println!("  Description:   {}", profile.description());
+
+    if !matches!(profile, ToolProfile::Power) {
+        println!("\n  Enabled tools:");
+        for name in profile.tool_names() {
+            println!("    {name}");
+        }
+    }
+
+    println!("\n  Restart your AI tool / IDE for changes to take effect.");
 }
 
 fn print_profile_help() {
     eprintln!(
-        "Usage: lean-ctx profile <command>
+        "lean-ctx has two kinds of profiles — here is which command to use:
 
-Commands:
-  list              List available profiles
-  show [name]       Show profile details (default: active)
-  active            Show the currently active profile
-  diff <a> <b>      Compare two profiles side by side
-  create <name>     Create a new profile file
-    --from <base>   Base on an existing profile
-    --global        Create in global dir instead of project
-  set <name>        Show how to activate a profile"
+TOOL PROFILES — how many MCP tools your agent sees:
+  lean-ctx tools                Show current tool profile
+  lean-ctx tools minimal        5 essential tools
+  lean-ctx tools standard       20 balanced tools (default)
+  lean-ctx tools power          All tools
+  lean-ctx tools list           List tool profiles with counts
+
+CONTEXT PROFILES — how lean-ctx compresses and reads (this command):
+  lean-ctx profile list         List available context profiles
+  lean-ctx profile show [name]  Show context profile details (default: active)
+  lean-ctx profile active       Show the currently active context profile
+  lean-ctx profile diff <a> <b> Compare two context profiles side by side
+  lean-ctx profile create <name> [--from <base>] [--global]
+  lean-ctx profile set <name>   Show how to activate a context profile"
     );
 }

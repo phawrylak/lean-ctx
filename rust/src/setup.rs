@@ -38,6 +38,54 @@ impl Drop for EnvVarGuard {
     }
 }
 
+/// Determine the setup level from a first-run interactive menu.
+/// Returns (inject_rules, inject_skills).
+fn first_run_setup_level() -> (bool, bool) {
+    use std::io::Write;
+
+    let cfg = crate::core::config::Config::load();
+    if cfg.setup.auto_inject_rules.is_some() {
+        return (
+            cfg.setup.should_inject_rules(),
+            cfg.setup.should_inject_skills(),
+        );
+    }
+
+    println!();
+    println!("  \x1b[1mWelcome to lean-ctx!\x1b[0m");
+    println!();
+    println!("  lean-ctx compresses AI context by 60-99%, saving tokens and money.");
+    println!();
+    println!("  Choose your setup level:");
+    println!("    \x1b[36m[1]\x1b[0m Minimal  \x1b[2m— Just MCP tools, no config file changes (recommended)\x1b[0m");
+    println!("    \x1b[36m[2]\x1b[0m Standard \x1b[2m— MCP tools + agent instructions for optimal mode selection\x1b[0m");
+    println!("    \x1b[36m[3]\x1b[0m Full     \x1b[2m— Everything (tools + rules + skills + shell hooks)\x1b[0m");
+    println!();
+    print!("  Your choice \x1b[1m[1]\x1b[0m: ");
+    std::io::stdout().flush().ok();
+
+    let mut input = String::new();
+    let choice = if std::io::stdin().read_line(&mut input).is_ok() {
+        input.trim().parse::<u8>().unwrap_or(1)
+    } else {
+        1
+    };
+
+    match choice {
+        3 => (true, true),
+        2 => (true, false),
+        _ => (false, false),
+    }
+}
+
+/// Persist the user's setup level choice to config.toml.
+fn persist_setup_choice(inject_rules: bool, inject_skills: bool) {
+    let mut cfg = crate::core::config::Config::load();
+    cfg.setup.auto_inject_rules = Some(inject_rules);
+    cfg.setup.auto_inject_skills = Some(inject_skills);
+    let _ = cfg.save();
+}
+
 pub fn run_setup() {
     use crate::terminal_ui;
 
@@ -74,13 +122,16 @@ pub fn run_setup() {
 
     terminal_ui::print_setup_header();
 
+    let (inject_rules, inject_skills) = first_run_setup_level();
+    persist_setup_choice(inject_rules, inject_skills);
+
     // Step 1: Shell hook (legacy aliases + universal shell hook)
-    terminal_ui::print_step_header(1, 11, "Shell Hook");
+    terminal_ui::print_step_header(1, 12, "Shell Hook");
     crate::cli::cmd_init(&["--global".to_string()]);
     crate::shell_hook::install_all(false);
 
     // Step 2: Daemon (optional acceleration for CLI routing)
-    terminal_ui::print_step_header(2, 11, "Daemon");
+    terminal_ui::print_step_header(2, 12, "Daemon");
     if crate::daemon::is_daemon_running() {
         terminal_ui::print_status_ok("Daemon running — restarting with current binary…");
         let _ = crate::daemon::stop_daemon();
@@ -93,7 +144,7 @@ pub fn run_setup() {
     }
 
     // Step 3: Editor auto-detection + configuration
-    terminal_ui::print_step_header(3, 11, "AI Tool Detection");
+    terminal_ui::print_step_header(3, 12, "AI Tool Detection");
 
     let targets = crate::core::editor_registry::build_targets(&home);
     let mut newly_configured: Vec<&str> = Vec::new();
@@ -160,28 +211,39 @@ pub fn run_setup() {
 
     configure_plan_mode_settings(&newly_configured, &already_configured);
 
-    // Step 4: Agent rules injection
-    terminal_ui::print_step_header(4, 11, "Agent Rules");
-    let rules_result = crate::rules_inject::inject_all_rules(&home);
-    for name in &rules_result.injected {
-        terminal_ui::print_status_new(&format!("{name:<20} \x1b[2mrules injected\x1b[0m"));
-    }
-    for name in &rules_result.updated {
-        terminal_ui::print_status_new(&format!("{name:<20} \x1b[2mrules updated\x1b[0m"));
-    }
-    for name in &rules_result.already {
-        terminal_ui::print_status_ok(&format!("{name:<20} \x1b[2mrules up-to-date\x1b[0m"));
-    }
-    for err in &rules_result.errors {
-        terminal_ui::print_status_warn(err);
-    }
-    if rules_result.injected.is_empty()
-        && rules_result.updated.is_empty()
-        && rules_result.already.is_empty()
-        && rules_result.errors.is_empty()
-    {
-        terminal_ui::print_status_skip("No agent rules needed");
-    }
+    // Step 4: Agent rules injection (only if user opted in)
+    terminal_ui::print_step_header(4, 12, "Agent Rules");
+    let rules_result = if inject_rules {
+        let r = crate::rules_inject::inject_all_rules(&home);
+        for name in &r.injected {
+            terminal_ui::print_status_new(&format!("{name:<20} \x1b[2mrules injected\x1b[0m"));
+        }
+        for name in &r.updated {
+            terminal_ui::print_status_new(&format!("{name:<20} \x1b[2mrules updated\x1b[0m"));
+        }
+        for name in &r.already {
+            terminal_ui::print_status_ok(&format!("{name:<20} \x1b[2mrules up-to-date\x1b[0m"));
+        }
+        for err in &r.errors {
+            terminal_ui::print_status_warn(err);
+        }
+        if !r.backed_up.is_empty() {
+            for bak in &r.backed_up {
+                println!("  \x1b[2m  ↳ backup: {bak}\x1b[0m");
+            }
+        }
+        if r.injected.is_empty()
+            && r.updated.is_empty()
+            && r.already.is_empty()
+            && r.errors.is_empty()
+        {
+            terminal_ui::print_status_skip("No agent rules needed");
+        }
+        r
+    } else {
+        terminal_ui::print_status_skip("Skipped (run `lean-ctx setup --inject-rules` to enable)");
+        crate::rules_inject::InjectResult::default()
+    };
 
     // Agent hooks (mode-aware)
     for target in &targets {
@@ -193,7 +255,7 @@ pub fn run_setup() {
     }
 
     // Step 5: API Proxy (opt-in)
-    terminal_ui::print_step_header(5, 11, "API Proxy (optional)");
+    terminal_ui::print_step_header(5, 12, "API Proxy (optional)");
     {
         let mut cfg = crate::core::config::Config::load();
         let proxy_port = crate::proxy_setup::default_port();
@@ -246,22 +308,32 @@ pub fn run_setup() {
         }
     }
 
-    // Step 6: SKILL.md installation
-    terminal_ui::print_step_header(6, 11, "Skill Files");
-    let skill_result = install_skill_files(&home);
-    for (name, installed) in &skill_result {
-        if *installed {
-            terminal_ui::print_status_new(&format!("{name:<20} \x1b[2mSKILL.md installed\x1b[0m"));
-        } else {
-            terminal_ui::print_status_ok(&format!("{name:<20} \x1b[2mSKILL.md up-to-date\x1b[0m"));
+    // Step 6: SKILL.md installation (only if user opted in)
+    terminal_ui::print_step_header(6, 12, "Skill Files");
+    if inject_skills {
+        let skill_result = install_skill_files(&home);
+        for (name, installed) in &skill_result {
+            if *installed {
+                terminal_ui::print_status_new(&format!(
+                    "{name:<20} \x1b[2mSKILL.md installed\x1b[0m"
+                ));
+            } else {
+                terminal_ui::print_status_ok(&format!(
+                    "{name:<20} \x1b[2mSKILL.md up-to-date\x1b[0m"
+                ));
+            }
         }
-    }
-    if skill_result.is_empty() {
-        terminal_ui::print_status_skip("No skill directories to install");
+        if skill_result.is_empty() {
+            terminal_ui::print_status_skip("No skill directories to install");
+        }
+    } else {
+        terminal_ui::print_status_skip(
+            "Skipped (skill files install with the rules opt-in; choose Standard/Full in `lean-ctx setup`)",
+        );
     }
 
     // Step 7: Data directory + diagnostics
-    terminal_ui::print_step_header(7, 11, "Environment Check");
+    terminal_ui::print_step_header(7, 12, "Environment Check");
     let lean_dir = crate::core::data_dir::lean_ctx_data_dir()
         .unwrap_or_else(|_| home.join(".config/lean-ctx"));
     if lean_dir.exists() {
@@ -278,7 +350,7 @@ pub fn run_setup() {
     crate::doctor::run_compact();
 
     // Step 8: Data sharing
-    terminal_ui::print_step_header(8, 11, "Help Improve lean-ctx");
+    terminal_ui::print_step_header(8, 12, "Help Improve lean-ctx");
     println!("  Share anonymous compression stats to make lean-ctx better.");
     println!("  \x1b[1mNo code, no file names, no personal data — ever.\x1b[0m");
     println!();
@@ -313,7 +385,7 @@ pub fn run_setup() {
     }
 
     // Step 9: Auto-Update opt-in
-    terminal_ui::print_step_header(9, 11, "Auto-Updates");
+    terminal_ui::print_step_header(9, 12, "Auto-Updates");
     println!("  Keep lean-ctx up to date automatically.");
     println!("  \x1b[1mChecks GitHub every 6h, installs only when a new release exists.\x1b[0m");
     println!(
@@ -349,12 +421,16 @@ pub fn run_setup() {
         terminal_ui::print_status_skip("Skipped — enable later: lean-ctx update --schedule");
     }
 
-    // Step 10: Premium Features Configuration
-    terminal_ui::print_step_header(10, 11, "Premium Features");
+    // Step 10: Tool Profile selection
+    terminal_ui::print_step_header(10, 12, "Tool Profile");
+    configure_tool_profile();
+
+    // Step 11: Advanced tuning (optional power-user options)
+    terminal_ui::print_step_header(11, 12, "Advanced Tuning (optional)");
     configure_premium_features(&home);
 
-    // Step 11: Code Intelligence — build graph in background
-    terminal_ui::print_step_header(11, 11, "Code Intelligence");
+    // Step 12: Code Intelligence — build graph in background
+    terminal_ui::print_step_header(12, 12, "Code Intelligence");
     let cwd = std::env::current_dir().ok();
     let cwd_is_home = cwd
         .as_ref()
@@ -522,6 +598,92 @@ pub fn run_setup() {
     terminal_ui::print_command_box();
 }
 
+/// Friendly, non-interactive "golden path" onboarding.
+///
+/// Unlike `run_setup` (the full 12-step interactive wizard), `onboard` makes
+/// every decision for the user with sensible defaults — connect detected AI
+/// tools, install the shell hook, set the `standard` tool profile — then prints
+/// one clear "you're all set" message with a single obvious next step. This is
+/// the recommended first-run path: time-to-value in seconds, zero prompts.
+pub fn run_onboard() {
+    use crate::terminal_ui;
+
+    let dim = "\x1b[2m";
+    let bold = "\x1b[1m";
+    let cyan = "\x1b[36m";
+    let green = "\x1b[1;32m";
+    let yellow = "\x1b[33m";
+    let rst = "\x1b[0m";
+
+    println!();
+    println!("  {bold}Connecting lean-ctx to your AI tools…{rst}");
+    println!("  {dim}No questions — using recommended defaults. Run `lean-ctx setup` for full control.{rst}");
+    println!();
+
+    let opts = SetupOptions {
+        non_interactive: true,
+        yes: true,
+        fix: true,
+        ..Default::default()
+    };
+
+    let report = match run_setup_with_options(opts) {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("  {yellow}Onboarding could not complete: {e}{rst}");
+            eprintln!("  {dim}Try the guided setup instead: lean-ctx setup{rst}");
+            std::process::exit(1);
+        }
+    };
+
+    // Which AI tools did we actually wire up?
+    let connected: Vec<String> = report
+        .steps
+        .iter()
+        .find(|s| s.name == "editors")
+        .map(|s| {
+            s.items
+                .iter()
+                .filter(|i| matches!(i.status.as_str(), "created" | "updated" | "already"))
+                .map(|i| i.name.clone())
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let data_dir = crate::core::data_dir::lean_ctx_data_dir()
+        .map_or_else(|_| "~/.lean-ctx".to_string(), |p| p.display().to_string());
+
+    println!();
+    if connected.is_empty() {
+        println!("  {yellow}No AI tools detected yet.{rst}");
+        println!(
+            "  {dim}Install Cursor, Claude Code, VS Code, etc., then re-run: lean-ctx onboard{rst}"
+        );
+    } else {
+        println!("  {green}✓ lean-ctx is connected.{rst}");
+        println!();
+        println!("  {bold}Connected:{rst} {}", connected.join(", "));
+    }
+    println!("  {dim}Data dir:{rst}  {data_dir}");
+
+    let source_cmd = crate::shell_hook::shell_source_command().unwrap_or("Restart your shell");
+    println!();
+    println!("  {bold}One last step:{rst}");
+    println!("  {cyan}1.{rst} Reload your shell:  {bold}{source_cmd}{rst}");
+    if !connected.is_empty() {
+        println!(
+            "  {cyan}2.{rst} {yellow}Fully restart your AI tool{rst} {dim}(so it reconnects to lean-ctx){rst}"
+        );
+        println!(
+            "  {cyan}3.{rst} Ask your AI to read a file — lean-ctx optimizes it automatically."
+        );
+    }
+    println!();
+    println!("  {dim}Check anytime:{rst}  {bold}lean-ctx doctor{rst}  {dim}·{rst}  {bold}lean-ctx gain{rst}");
+    println!();
+    terminal_ui::print_command_box();
+}
+
 #[derive(Debug, Clone, Copy, Default)]
 pub struct SetupOptions {
     pub non_interactive: bool,
@@ -530,6 +692,9 @@ pub struct SetupOptions {
     pub json: bool,
     pub no_auto_approve: bool,
     pub skip_proxy: bool,
+    pub skip_rules: bool,
+    /// Explicitly request rules injection (overrides config).
+    pub force_inject_rules: bool,
 }
 
 pub fn run_setup_with_options(opts: SetupOptions) -> Result<SetupReport, String> {
@@ -706,7 +871,7 @@ pub fn run_setup_with_options(opts: SetupOptions) -> Result<SetupReport, String>
     }
     steps.push(editor_step);
 
-    // Step: Agent rules
+    // Step: Agent rules — respect config unless explicitly forced or skipped
     let mut rules_step = SetupStepReport {
         name: "agent_rules".to_string(),
         ok: true,
@@ -714,38 +879,73 @@ pub fn run_setup_with_options(opts: SetupOptions) -> Result<SetupReport, String>
         warnings: Vec::new(),
         errors: Vec::new(),
     };
-    let rules_result = crate::rules_inject::inject_all_rules(&home);
-    for n in rules_result.injected {
+    let setup_cfg = crate::core::config::Config::load().setup;
+    let should_inject = if opts.skip_rules {
+        false
+    } else if opts.force_inject_rules {
+        true
+    } else if opts.yes && opts.non_interactive {
+        setup_cfg.should_inject_rules()
+    } else {
+        !opts.skip_rules
+    };
+
+    if should_inject {
+        let rules_result = crate::rules_inject::inject_all_rules(&home);
+        for n in rules_result.injected {
+            rules_step.items.push(SetupItem {
+                name: n,
+                status: "injected".to_string(),
+                path: None,
+                note: None,
+            });
+        }
+        for n in rules_result.updated {
+            rules_step.items.push(SetupItem {
+                name: n,
+                status: "updated".to_string(),
+                path: None,
+                note: None,
+            });
+        }
+        for n in rules_result.already {
+            rules_step.items.push(SetupItem {
+                name: n,
+                status: "already".to_string(),
+                path: None,
+                note: None,
+            });
+        }
+        if !rules_result.backed_up.is_empty() {
+            for bak in &rules_result.backed_up {
+                rules_step.items.push(SetupItem {
+                    name: "backup".to_string(),
+                    status: "created".to_string(),
+                    path: Some(bak.clone()),
+                    note: Some("previous version backed up".to_string()),
+                });
+            }
+        }
+        for e in rules_result.errors {
+            rules_step.ok = false;
+            rules_step.errors.push(e);
+        }
+    } else {
+        let reason = if opts.skip_rules {
+            "--skip-rules flag set"
+        } else {
+            "auto_inject_rules not enabled (run `lean-ctx setup --inject-rules`)"
+        };
         rules_step.items.push(SetupItem {
-            name: n,
-            status: "injected".to_string(),
+            name: "agent_rules".to_string(),
+            status: "skipped".to_string(),
             path: None,
-            note: None,
+            note: Some(reason.to_string()),
         });
-    }
-    for n in rules_result.updated {
-        rules_step.items.push(SetupItem {
-            name: n,
-            status: "updated".to_string(),
-            path: None,
-            note: None,
-        });
-    }
-    for n in rules_result.already {
-        rules_step.items.push(SetupItem {
-            name: n,
-            status: "already".to_string(),
-            path: None,
-            note: None,
-        });
-    }
-    for e in rules_result.errors {
-        rules_step.ok = false;
-        rules_step.errors.push(e);
     }
     steps.push(rules_step);
 
-    // Step: Skill files
+    // Step: Skill files — respect config
     let mut skill_step = SetupStepReport {
         name: "skill_files".to_string(),
         ok: true,
@@ -753,13 +953,31 @@ pub fn run_setup_with_options(opts: SetupOptions) -> Result<SetupReport, String>
         warnings: Vec::new(),
         errors: Vec::new(),
     };
-    let skill_results = crate::rules_inject::install_all_skills(&home);
-    for (name, is_new) in &skill_results {
+    let should_install_skills = if opts.skip_rules {
+        false
+    } else if opts.force_inject_rules {
+        true
+    } else if opts.yes && opts.non_interactive {
+        setup_cfg.should_inject_skills()
+    } else {
+        !opts.skip_rules
+    };
+    if should_install_skills {
+        let skill_results = crate::rules_inject::install_all_skills(&home);
+        for (name, is_new) in &skill_results {
+            skill_step.items.push(SetupItem {
+                name: name.clone(),
+                status: if *is_new { "installed" } else { "already" }.to_string(),
+                path: None,
+                note: Some("SKILL.md".to_string()),
+            });
+        }
+    } else {
         skill_step.items.push(SetupItem {
-            name: name.clone(),
-            status: if *is_new { "installed" } else { "already" }.to_string(),
+            name: "skill_files".to_string(),
+            status: "skipped".to_string(),
             path: None,
-            note: Some("SKILL.md".to_string()),
+            note: Some("auto_inject_skills not enabled".to_string()),
         });
     }
     if !skill_step.items.is_empty() {
@@ -796,6 +1014,47 @@ pub fn run_setup_with_options(opts: SetupOptions) -> Result<SetupReport, String>
     if !hooks_step.items.is_empty() {
         steps.push(hooks_step);
     }
+
+    // Step: Tool profile (set default for new installs)
+    let mut tool_profile_step = SetupStepReport {
+        name: "tool_profile".to_string(),
+        ok: true,
+        items: Vec::new(),
+        warnings: Vec::new(),
+        errors: Vec::new(),
+    };
+    {
+        let cfg = crate::core::config::Config::load();
+        if cfg.tool_profile.is_none() && std::env::var("LEAN_CTX_TOOL_PROFILE").is_err() {
+            let default_profile = "standard";
+            match crate::core::tool_profiles::set_profile_in_config(default_profile) {
+                Ok(()) => {
+                    tool_profile_step.items.push(SetupItem {
+                        name: "tool_profile".to_string(),
+                        status: "set".to_string(),
+                        path: None,
+                        note: Some(format!(
+                            "default={default_profile} (20 tools; change with: lean-ctx profile power)"
+                        )),
+                    });
+                }
+                Err(e) => {
+                    tool_profile_step
+                        .warnings
+                        .push(format!("tool_profile: {e}"));
+                }
+            }
+        } else {
+            let profile = cfg.tool_profile_effective();
+            tool_profile_step.items.push(SetupItem {
+                name: "tool_profile".to_string(),
+                status: "already".to_string(),
+                path: None,
+                note: Some(format!("profile={}", profile.as_str())),
+            });
+        }
+    }
+    steps.push(tool_profile_step);
 
     // Step: Proxy autostart + env vars (respects opt-in)
     let mut proxy_step = SetupStepReport {
@@ -1667,6 +1926,73 @@ fn remove_toml_key(content: &mut String, key: &str) {
             .find('\n')
             .map_or(content.len(), |p| start + p + 1);
         content.replace_range(start..line_end, "");
+    }
+}
+
+fn configure_tool_profile() {
+    use crate::terminal_ui;
+    use std::io::Write;
+
+    let cfg = crate::core::config::Config::load();
+    let current = cfg.tool_profile_effective();
+
+    if !matches!(current, crate::core::tool_profiles::ToolProfile::Power)
+        && cfg.tool_profile.is_some()
+    {
+        terminal_ui::print_status_ok(&format!(
+            "Tool profile: {} ({} tools)",
+            current.as_str(),
+            current.tool_count()
+        ));
+        return;
+    }
+
+    let dim = "\x1b[2m";
+    let bold = "\x1b[1m";
+    let cyan = "\x1b[36m";
+    let rst = "\x1b[0m";
+
+    let registry_count = crate::server::registry::tool_count();
+
+    println!("  {dim}Control how many MCP tools your AI agent sees.{rst}");
+    println!("  {dim}Fewer tools = less context overhead, faster agent responses.{rst}");
+    println!();
+    println!(
+        "  {cyan}minimal{rst}   — 5 tools   {dim}(ctx_read, ctx_shell, ctx_search, ctx_tree, ctx_session){rst}"
+    );
+    println!("  {cyan}standard{rst}  — 20 tools  {dim}(balanced set for most workflows){rst}");
+    println!(
+        "  {cyan}power{rst}     — {registry_count} tools  {dim}(everything, for power users){rst}"
+    );
+    println!();
+    print!("  Tool profile? {bold}[minimal/standard/power]{rst} {dim}(default: standard){rst} ");
+    std::io::stdout().flush().ok();
+
+    let mut profile_input = String::new();
+    let profile_name = if std::io::stdin().read_line(&mut profile_input).is_ok() {
+        let trimmed = profile_input.trim().to_lowercase();
+        match trimmed.as_str() {
+            "minimal" | "min" => "minimal",
+            "power" | "full" | "all" => "power",
+            _ => "standard",
+        }
+    } else {
+        "standard"
+    };
+
+    match crate::core::tool_profiles::set_profile_in_config(profile_name) {
+        Ok(()) => {
+            let profile = crate::core::tool_profiles::ToolProfile::parse(profile_name)
+                .unwrap_or(crate::core::tool_profiles::ToolProfile::Standard);
+            let count = match &profile {
+                crate::core::tool_profiles::ToolProfile::Power => registry_count,
+                other => other.tool_count(),
+            };
+            terminal_ui::print_status_ok(&format!("Tool profile: {profile_name} ({count} tools)"));
+        }
+        Err(e) => {
+            terminal_ui::print_status_warn(&format!("Could not save tool profile: {e}"));
+        }
     }
 }
 

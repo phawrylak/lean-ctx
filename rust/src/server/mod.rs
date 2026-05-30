@@ -275,7 +275,9 @@ impl ServerHandler for LeanCtxServer {
             crate::tool_defs::lazy_tool_defs()
         };
 
-        let disabled = crate::core::config::Config::load().disabled_tools_effective();
+        let cfg = crate::core::config::Config::load();
+        let disabled = cfg.disabled_tools_effective();
+        let tool_profile = cfg.tool_profile_effective();
         let client = self.client_name.read().await.clone();
         let is_zed = !client.is_empty() && client.to_lowercase().contains("zed");
 
@@ -284,6 +286,9 @@ impl ServerHandler for LeanCtxServer {
             .into_iter()
             .filter(|t| {
                 let name = t.name.as_ref();
+                if !tool_profile.is_tool_enabled(name) {
+                    return false;
+                }
                 if !disabled.is_empty() && disabled.iter().any(|d| d.as_str() == name) {
                     return false;
                 }
@@ -963,6 +968,17 @@ impl LeanCtxServer {
                      an older version and have been refreshed on disk. Start a new session to \
                      load them for full compatibility."
                 );
+            } else if !self
+                .rules_tip_shown
+                .swap(true, std::sync::atomic::Ordering::Relaxed)
+            {
+                let cfg = crate::core::config::Config::load();
+                if !cfg.setup.should_inject_rules() {
+                    result_text = format!(
+                        "{result_text}\n\n\
+                         --- tip: run 'lean-ctx setup --inject-rules' for optimal AI integration ---"
+                    );
+                }
             }
         }
 
@@ -1795,7 +1811,7 @@ mod tests {
         let registry = crate::server::registry::build_registry();
         assert_eq!(
             registry.len(),
-            63,
+            67,
             "Registry tool count drift! Update this test AND all docs when adding/removing tools."
         );
     }

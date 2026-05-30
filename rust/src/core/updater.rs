@@ -7,6 +7,7 @@ pub fn run(args: &[String]) {
     let check_only = args.iter().any(|a| a == "--check");
     let insecure = args.iter().any(|a| a == "--insecure");
     let quiet = args.iter().any(|a| a == "--quiet");
+    let skip_rules = args.iter().any(|a| a == "--skip-rules");
 
     // Handle --schedule subcommand
     if let Some(pos) = args.iter().position(|a| a == "--schedule") {
@@ -101,8 +102,14 @@ pub fn run(args: &[String]) {
         println!("  \x1b[2mIf your IDE still uses an older version, restart it to reconnect the MCP server.\x1b[0m");
         println!();
         if !check_only {
-            println!("  \x1b[36m\x1b[1mRefreshing setup (shell hook, MCP configs, rules)…\x1b[0m");
-            post_update_rewire();
+            if skip_rules {
+                println!("  \x1b[36m\x1b[1mRefreshing setup (shell hook, MCP configs — rules skipped)…\x1b[0m");
+            } else {
+                println!(
+                    "  \x1b[36m\x1b[1mRefreshing setup (shell hook, MCP configs, rules)…\x1b[0m"
+                );
+            }
+            post_update_rewire(skip_rules);
             println!();
         }
         return;
@@ -157,7 +164,7 @@ pub fn run(args: &[String]) {
     if let Err(e) = replace_binary(&bytes, &asset_name, &current_exe) {
         tracing::error!("Failed to replace binary: {e}");
         tracing::warn!("Continuing with a setup refresh so your wiring stays correct");
-        post_update_rewire();
+        post_update_rewire(skip_rules);
         std::process::exit(1);
     }
 
@@ -171,9 +178,13 @@ pub fn run(args: &[String]) {
 
     if !quiet {
         println!();
-        println!("  \x1b[36m\x1b[1mRefreshing setup (shell hook, MCP configs, rules)…\x1b[0m");
+        if skip_rules {
+            println!("  \x1b[36m\x1b[1mRefreshing setup (shell hook, MCP configs — rules skipped)…\x1b[0m");
+        } else {
+            println!("  \x1b[36m\x1b[1mRefreshing setup (shell hook, MCP configs, rules)…\x1b[0m");
+        }
     }
-    post_update_rewire();
+    post_update_rewire(skip_rules);
 
     if !quiet {
         println!();
@@ -351,7 +362,7 @@ fn hex_lower(bytes: &[u8]) -> String {
     out
 }
 
-fn post_update_rewire() {
+fn post_update_rewire(skip_rules: bool) {
     let mut cfg = crate::core::config::Config::load();
 
     if cfg.proxy_enabled.is_none() && crate::proxy_autostart::is_installed() {
@@ -363,21 +374,27 @@ fn post_update_rewire() {
 
     let proxy_active = cfg.proxy_enabled == Some(true);
 
+    // Determine whether rules should be injected during rewire.
+    // CLI --skip-rules always wins. Otherwise, respect the config setting.
+    let effective_skip_rules = if skip_rules {
+        true
+    } else {
+        !cfg.setup.should_inject_rules()
+    };
+
     // PHASE 1: Restart proxy BEFORE writing env vars.
-    // This eliminates the race window where ANTHROPIC_BASE_URL points to a
-    // proxy that hasn't started yet (reported by khhaliil in PR #234).
     if proxy_active {
         restart_proxy_if_running();
         wait_for_proxy_health(crate::proxy_setup::default_port());
     }
 
-    // PHASE 2: Now that the proxy is confirmed healthy (or timed out),
-    // run setup which writes ANTHROPIC_BASE_URL into Claude Code settings.
+    // PHASE 2: Run setup which writes MCP configs (always) and rules (if opted in).
     let opts = crate::setup::SetupOptions {
         non_interactive: true,
         yes: true,
         fix: true,
         skip_proxy: !proxy_active,
+        skip_rules: effective_skip_rules,
         ..Default::default()
     };
     if let Err(e) = crate::setup::run_setup_with_options(opts) {

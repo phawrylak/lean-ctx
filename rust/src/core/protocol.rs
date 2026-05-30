@@ -166,26 +166,42 @@ fn resolve_ide_path(cfg: &crate::core::config::Config, file_path: &str) -> Optio
 }
 
 /// Returns the file name component of a path for compact display.
+/// Normalize a path for display by converting Windows backslashes to forward
+/// slashes. Forward slashes are valid path separators on Windows, and unlike
+/// backslashes they are never misinterpreted as escape sequences by the JSON,
+/// markdown, or terminal layers of MCP clients — which corrupted Windows paths
+/// in tool output (e.g. `C:\Users\…` rendered as `CUsers…`). See issue #324.
+pub fn display_path(path: &str) -> String {
+    path.replace('\\', "/")
+}
+
 pub fn shorten_path(path: &str) -> String {
-    let p = Path::new(path);
+    let normalized = display_path(path);
+    let p = Path::new(&normalized);
     if let Some(name) = p.file_name() {
         return name.to_string_lossy().to_string();
     }
-    path.to_string()
+    normalized
 }
 
-/// Returns a path relative to `root` for disambiguated display.
-/// Falls back to basename if stripping fails.
+/// Returns a path relative to `root` for disambiguated display, always with
+/// forward slashes. Falls back to the basename if stripping fails.
+///
+/// Relativization is done on slash-normalized strings so it works regardless of
+/// the separator style the client sent (Windows backslashes, mixed separators).
+/// A component boundary is required so that root `a/b` never matches `a/bc`.
 pub fn shorten_path_relative(path: &str, root: &str) -> String {
-    let p = Path::new(path);
-    let r = Path::new(root);
-    if let Ok(rel) = p.strip_prefix(r) {
-        let s = rel.to_string_lossy();
-        if !s.is_empty() {
-            return s.to_string();
+    let norm_path = display_path(path);
+    let norm_root = display_path(root);
+    let norm_root = norm_root.strip_suffix('/').unwrap_or(&norm_root);
+    if let Some(rest) = norm_path.strip_prefix(norm_root) {
+        if let Some(rel) = rest.strip_prefix('/') {
+            if !rel.is_empty() {
+                return rel.to_string();
+            }
         }
     }
-    shorten_path(path)
+    shorten_path(&norm_path)
 }
 
 /// Whether savings footers should be suppressed in tool output.
@@ -201,10 +217,16 @@ pub fn set_mcp_context(active: bool) {
 
 /// Returns true if savings footers should be shown based on config + transport context.
 ///
-/// Suppressed when `LEAN_CTX_QUIET=1` (production use, e.g. Codex with minimal verbosity).
+/// Suppressed when `LEAN_CTX_QUIET=1`, `LEAN_CTX_SHOW_SAVINGS=0`, or compression is `Max` (ultra).
 pub fn savings_footer_visible() -> bool {
     if matches!(std::env::var("LEAN_CTX_QUIET"), Ok(v) if v.trim() == "1") {
         return false;
+    }
+    if matches!(std::env::var("LEAN_CTX_SHOW_SAVINGS"), Ok(v) if v.trim() == "0") {
+        return false;
+    }
+    if matches!(std::env::var("LEAN_CTX_SHOW_SAVINGS"), Ok(v) if v.trim() == "1") {
+        return true;
     }
     let mode = super::config::SavingsFooter::effective();
     match mode {
@@ -227,33 +249,54 @@ pub fn meta_visible() -> bool {
         || matches!(std::env::var("LEAN_CTX_DIAGNOSTICS"), Ok(v) if v.trim() == "1")
 }
 
-/// Formats a unified token savings footer like `[lean-ctx: 100→50 tok, -50%]`.
+/// Formats a token savings footer with box-drawing delimiters.
 ///
-/// Returns an empty string when savings footers are suppressed (MCP context in `auto` mode,
-/// or `savings_footer = "never"`).
+/// Output: `─── 4,200 → 840 tok (↓80%) ───`
+///
+/// Returns an empty string when savings footers are suppressed.
 pub fn format_savings(original: usize, compressed: usize) -> String {
-    if !savings_footer_visible() {
-        return String::new();
-    }
-    if original == 0 {
-        return String::new();
-    }
-    let saved = original.saturating_sub(compressed);
-    if saved == 0 {
-        return String::new();
-    }
-    let pct = (saved as f64 / original as f64 * 100.0).round() as usize;
-    format!("[lean-ctx: {original}\u{2192}{compressed} tok, -{pct}%]")
+    super::savings_footer::format_footer_basic(original, compressed)
+}
+
+/// Formats a savings footer with mode and optional detail context.
+///
+/// Output: `─── 4,200 → 840 tok (↓80%) | mode: map ───`
+pub fn format_savings_with_info(
+    original: usize,
+    compressed: usize,
+    mode: Option<&str>,
+    detail: Option<&str>,
+) -> String {
+    super::savings_footer::format_footer(&super::savings_footer::SavingsInfo {
+        original,
+        compressed,
+        mode,
+        detail,
+    })
 }
 
 /// Appends a savings footer to `output` with a newline separator, but only if the footer is non-empty.
 pub fn append_savings(output: &str, original: usize, compressed: usize) -> String {
-    let footer = format_savings(original, compressed);
-    if footer.is_empty() {
-        output.to_string()
-    } else {
-        format!("{output}\n{footer}")
-    }
+    super::savings_footer::append_footer_basic(output, original, compressed)
+}
+
+/// Appends a savings footer with mode/detail context.
+pub fn append_savings_with_info(
+    output: &str,
+    original: usize,
+    compressed: usize,
+    mode: Option<&str>,
+    detail: Option<&str>,
+) -> String {
+    super::savings_footer::append_footer(
+        output,
+        &super::savings_footer::SavingsInfo {
+            original,
+            compressed,
+            mode,
+            detail,
+        },
+    )
 }
 
 /// A terse instruction code and its human-readable expansion.
@@ -376,6 +419,52 @@ mod tests {
     use super::*;
 
     #[test]
+    fn display_path_normalizes_windows_separators() {
+        // Issue #324: backslashes were dropped/escaped by client render layers.
+        assert_eq!(
+            display_path(r"C:\Users\zir\AppData\Local\Temp\win-build-log.txt"),
+            "C:/Users/zir/AppData/Local/Temp/win-build-log.txt"
+        );
+        assert_eq!(display_path("src/main.rs"), "src/main.rs");
+    }
+
+    #[test]
+    fn shorten_path_basename_for_windows_abs_path() {
+        assert_eq!(
+            shorten_path(r"D:\Temp\win-build-raw.log"),
+            "win-build-raw.log"
+        );
+        assert_eq!(shorten_path("a/b/c.txt"), "c.txt");
+    }
+
+    #[test]
+    fn shorten_path_relative_handles_windows_separators() {
+        // Relative display keeps forward slashes regardless of input style.
+        assert_eq!(
+            shorten_path_relative(r"C:\proj\src\app\main.rs", r"C:\proj"),
+            "src/app/main.rs"
+        );
+        // Mixed separators between path and root still relativize.
+        assert_eq!(
+            shorten_path_relative(r"C:\proj\src\main.rs", "C:/proj/"),
+            "src/main.rs"
+        );
+        // A non-prefix abs path falls back to a clean basename, never a
+        // separator-stripped blob like "CUserszir…".
+        assert_eq!(
+            shorten_path_relative(r"C:\Users\zir\Temp\build.log", r"D:\proj"),
+            "build.log"
+        );
+    }
+
+    #[test]
+    fn shorten_path_relative_requires_component_boundary() {
+        // Root "a/b" must not match sibling "a/bc".
+        assert_eq!(shorten_path_relative("a/bc/d.rs", "a/b"), "d.rs");
+        assert_eq!(shorten_path_relative("a/b/d.rs", "a/b"), "d.rs");
+    }
+
+    #[test]
     fn is_project_root_marker_detects_git() {
         let tmp = std::env::temp_dir().join("lean-ctx-test-root-marker");
         let _ = std::fs::create_dir_all(&tmp);
@@ -451,40 +540,52 @@ mod tests {
     }
 
     #[test]
-    fn format_savings_returns_bracket_when_always() {
+    fn savings_footer_env_gated_tests() {
+        let _lock = crate::core::data_dir::test_env_lock();
+
+        // Test: always mode shows box-drawing format
         super::MCP_CONTEXT.store(false, std::sync::atomic::Ordering::Relaxed);
         std::env::set_var("LEAN_CTX_SAVINGS_FOOTER", "always");
+        std::env::set_var("LEAN_CTX_SHOW_SAVINGS", "1");
+        std::env::remove_var("LEAN_CTX_QUIET");
+
         let s = super::format_savings(100, 50);
+        assert!(s.contains("\u{2192}"), "expected arrow: {s}");
+        assert!(s.contains("\u{2193}50%"), "expected pct: {s}");
         assert!(
-            s.contains("100\u{2192}50 tok"),
-            "expected unified format, got: {s}"
+            s.starts_with("\u{2500}\u{2500}\u{2500}"),
+            "expected box-drawing: {s}"
         );
-        assert!(s.contains("-50%"), "expected percentage, got: {s}");
-    }
 
-    #[test]
-    fn format_savings_returns_empty_when_never() {
+        // Test: mode info included
+        let s = super::format_savings_with_info(4200, 840, Some("map"), None);
+        assert!(s.contains("mode: map"), "expected mode: {s}");
+        assert!(s.contains("\u{2193}80%"), "expected 80%: {s}");
+
+        // Test: never mode suppresses
         std::env::set_var("LEAN_CTX_SAVINGS_FOOTER", "never");
+        std::env::set_var("LEAN_CTX_SHOW_SAVINGS", "0");
         let s = super::format_savings(100, 50);
-        assert!(
-            s.is_empty(),
-            "expected empty string with never mode, got: {s}"
-        );
-    }
+        assert!(s.is_empty(), "expected empty with never: {s}");
 
-    #[test]
-    fn format_savings_suppressed_in_mcp_auto_mode() {
-        super::MCP_CONTEXT.store(true, std::sync::atomic::Ordering::Relaxed);
-        std::env::set_var("LEAN_CTX_SAVINGS_FOOTER", "auto");
-        let s = super::format_savings(100, 50);
-        assert!(s.is_empty(), "expected empty in MCP+auto, got: {s}");
-        super::MCP_CONTEXT.store(false, std::sync::atomic::Ordering::Relaxed);
-    }
-
-    #[test]
-    fn append_savings_no_trailing_newline_when_suppressed() {
-        std::env::set_var("LEAN_CTX_SAVINGS_FOOTER", "never");
         let result = super::append_savings("hello", 100, 50);
         assert_eq!(result, "hello");
+
+        // Test: MCP auto mode suppresses
+        super::MCP_CONTEXT.store(true, std::sync::atomic::Ordering::Relaxed);
+        std::env::set_var("LEAN_CTX_SAVINGS_FOOTER", "auto");
+        std::env::remove_var("LEAN_CTX_SHOW_SAVINGS");
+        let s = super::format_savings(100, 50);
+        assert!(s.is_empty(), "expected empty in MCP+auto: {s}");
+        super::MCP_CONTEXT.store(false, std::sync::atomic::Ordering::Relaxed);
+
+        // Test: SHOW_SAVINGS overrides config
+        std::env::set_var("LEAN_CTX_SAVINGS_FOOTER", "never");
+        std::env::set_var("LEAN_CTX_SHOW_SAVINGS", "1");
+        assert!(super::savings_footer_visible());
+        std::env::set_var("LEAN_CTX_SHOW_SAVINGS", "0");
+        assert!(!super::savings_footer_visible());
+
+        std::env::remove_var("LEAN_CTX_SHOW_SAVINGS");
     }
 }

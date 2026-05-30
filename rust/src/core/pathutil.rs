@@ -269,6 +269,21 @@ mod tests {
     }
 
     #[test]
+    fn normalize_windows_path_with_spaces_and_backslashes() {
+        // The exact "paths with spaces" scenario reported on Windows (#324):
+        // backslashes are converted to forward slashes (so client render layers
+        // never escape-mangle them) while spaces in directory names survive.
+        assert_eq!(
+            normalize_tool_path(r"C:\Users\My Name\My Project\src\main.rs"),
+            "C:/Users/My Name/My Project/src/main.rs"
+        );
+        assert_eq!(
+            normalize_tool_path(r"C:\Program Files\app\config.toml"),
+            "C:/Program Files/app/config.toml"
+        );
+    }
+
+    #[test]
     fn normalize_double_slashes() {
         assert_eq!(
             normalize_tool_path("C:/Users//ABC//lean-ctx"),

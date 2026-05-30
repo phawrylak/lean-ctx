@@ -401,6 +401,7 @@ fn normalize_optional_upstream(value: &str) -> Option<String> {
 
 pub fn cmd_benchmark(args: &[String]) {
     use crate::core::benchmark;
+    use crate::core::benchmark_compare;
 
     let action = args.first().map_or("run", std::string::String::as_str);
 
@@ -409,6 +410,7 @@ pub fn cmd_benchmark(args: &[String]) {
             println!("Usage: lean-ctx benchmark run [path] [--json]");
             println!("       lean-ctx benchmark report [path]");
             println!("       lean-ctx benchmark eval [path] [--json]");
+            println!("       lean-ctx benchmark compare [--repo path] [--output file.md]");
         }
         "eval" => {
             let path = args.get(1).map_or(".", std::string::String::as_str);
@@ -449,6 +451,24 @@ pub fn cmd_benchmark(args: &[String]) {
             let result = benchmark::run_project_benchmark(path);
             println!("{}", benchmark::format_markdown(&result));
         }
+        "compare" => {
+            let repo = parse_flag_value(args, "--repo").unwrap_or_else(|| ".".to_string());
+            let output = parse_flag_value(args, "--output");
+
+            let root = std::path::Path::new(&repo);
+            if !root.exists() {
+                eprintln!("Repository path does not exist: {repo}");
+                std::process::exit(1);
+            }
+
+            let report = benchmark_compare::run_compare(root, output.as_deref());
+
+            println!("{}", benchmark_compare::report::generate_terminal(&report));
+
+            if output.is_none() {
+                eprintln!("Tip: use --output BENCHMARKS.md to save the full markdown report");
+            }
+        }
         _ => {
             if std::path::Path::new(action).exists() {
                 let result = benchmark::run_project_benchmark(action);
@@ -456,10 +476,18 @@ pub fn cmd_benchmark(args: &[String]) {
             } else {
                 eprintln!("Usage: lean-ctx benchmark run [path] [--json]");
                 eprintln!("       lean-ctx benchmark report [path]");
+                eprintln!("       lean-ctx benchmark compare [--repo path] [--output file.md]");
                 std::process::exit(1);
             }
         }
     }
+}
+
+fn parse_flag_value(args: &[String], flag: &str) -> Option<String> {
+    args.iter()
+        .position(|a| a == flag)
+        .and_then(|i| args.get(i + 1))
+        .cloned()
 }
 
 pub fn cmd_stats(args: &[String]) {

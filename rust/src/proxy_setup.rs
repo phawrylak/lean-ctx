@@ -211,6 +211,8 @@ fn install_shell_exports(home: &Path, port: u16, quiet: bool) {
 
     let posix_block = format!(
         r#"{PROXY_ENV_START}
+export ANTHROPIC_BASE_URL="{base}"
+export OPENAI_BASE_URL="{base}"
 export GEMINI_API_BASE_URL="{base}"
 {PROXY_ENV_END}"#
     );
@@ -236,6 +238,8 @@ export GEMINI_API_BASE_URL="{base}"
     if fish_config.exists() {
         let fish_block = format!(
             r#"{PROXY_ENV_START}
+set -gx ANTHROPIC_BASE_URL "{base}"
+set -gx OPENAI_BASE_URL "{base}"
 set -gx GEMINI_API_BASE_URL "{base}"
 {PROXY_ENV_END}"#
         );
@@ -255,6 +259,8 @@ set -gx GEMINI_API_BASE_URL "{base}"
         if ps.exists() {
             let ps_block = format!(
                 r#"{PROXY_ENV_START}
+$env:ANTHROPIC_BASE_URL = "{base}"
+$env:OPENAI_BASE_URL = "{base}"
 $env:GEMINI_API_BASE_URL = "{base}"
 {PROXY_ENV_END}"#
             );
@@ -572,5 +578,59 @@ mod tests {
     #[test]
     fn is_proxy_reachable_returns_false_on_unused_port() {
         assert!(!is_proxy_reachable(19999));
+    }
+
+    #[test]
+    fn posix_block_contains_all_provider_env_vars() {
+        let base = "http://127.0.0.1:4444";
+        let block = format!(
+            r#"{PROXY_ENV_START}
+export ANTHROPIC_BASE_URL="{base}"
+export OPENAI_BASE_URL="{base}"
+export GEMINI_API_BASE_URL="{base}"
+{PROXY_ENV_END}"#
+        );
+        assert!(
+            block.contains("ANTHROPIC_BASE_URL"),
+            "shell exports must include ANTHROPIC_BASE_URL"
+        );
+        assert!(
+            block.contains("OPENAI_BASE_URL"),
+            "shell exports must include OPENAI_BASE_URL"
+        );
+        assert!(
+            block.contains("GEMINI_API_BASE_URL"),
+            "shell exports must include GEMINI_API_BASE_URL"
+        );
+    }
+
+    #[test]
+    fn fish_block_contains_all_provider_env_vars() {
+        let base = "http://127.0.0.1:4444";
+        let block = format!(
+            r#"{PROXY_ENV_START}
+set -gx ANTHROPIC_BASE_URL "{base}"
+set -gx OPENAI_BASE_URL "{base}"
+set -gx GEMINI_API_BASE_URL "{base}"
+{PROXY_ENV_END}"#
+        );
+        assert!(block.contains("ANTHROPIC_BASE_URL"));
+        assert!(block.contains("OPENAI_BASE_URL"));
+        assert!(block.contains("GEMINI_API_BASE_URL"));
+    }
+
+    #[test]
+    fn powershell_block_contains_all_provider_env_vars() {
+        let base = "http://127.0.0.1:4444";
+        let block = format!(
+            r#"{PROXY_ENV_START}
+$env:ANTHROPIC_BASE_URL = "{base}"
+$env:OPENAI_BASE_URL = "{base}"
+$env:GEMINI_API_BASE_URL = "{base}"
+{PROXY_ENV_END}"#
+        );
+        assert!(block.contains("ANTHROPIC_BASE_URL"));
+        assert!(block.contains("OPENAI_BASE_URL"));
+        assert!(block.contains("GEMINI_API_BASE_URL"));
     }
 }

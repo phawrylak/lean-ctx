@@ -848,15 +848,18 @@ Preserves code blocks, URLs, paths, headings, tables. Creates .original.md backu
         ),
         tool_def(
             "ctx_callgraph",
-            "Unified call graph query. direction=callers|callees for a symbol. Returns file/symbol/line edges.",
+            "Call graph query: callers/callees (multi-hop BFS), trace path between symbols, risk classification by caller count.",
             json!({
                 "type": "object",
                 "properties": {
-                    "symbol": { "type": "string", "description": "Symbol name to inspect" },
-                    "direction": { "type": "string", "description": "callers|callees (default: callers)" },
-                    "file": { "type": "string", "description": "Optional: scope to a specific file" }
-                },
-                "required": ["symbol"]
+                    "action": { "type": "string", "description": "callers|callees|trace|risk (default: callers)", "enum": ["callers", "callees", "trace", "risk"] },
+                    "symbol": { "type": "string", "description": "Symbol name (required for callers/callees/risk)" },
+                    "direction": { "type": "string", "description": "Deprecated — use action instead" },
+                    "file": { "type": "string", "description": "Optional: scope results to a specific file" },
+                    "depth": { "type": "integer", "description": "BFS depth for callers/callees (1–5, default 1)", "minimum": 1, "maximum": 5 },
+                    "from": { "type": "string", "description": "Source symbol for trace action" },
+                    "to": { "type": "string", "description": "Target symbol for trace action" }
+                }
             }),
         ),
         tool_def(
@@ -1170,7 +1173,7 @@ pull (receive shared files), list (show all shared contexts), clear (remove your
         ("ctx_execute", "Run code in sandbox (11 languages). Only stdout enters context. Languages: javascript, typescript, python, shell, ruby, go, rust, php, perl, r, elixir. Actions: batch (multiple scripts), file (process file in sandbox).", json!({"type": "object", "properties": {"language": {"type": "string"}, "code": {"type": "string"}, "intent": {"type": "string"}, "timeout": {"type": "integer"}, "action": {"type": "string"}, "items": {"type": "string"}, "path": {"type": "string"}}, "required": ["language", "code"]})),
         ("ctx_symbol", "Read a specific symbol (function, struct, class) by name. Returns only the symbol code block instead of the entire file. 90-97% fewer tokens than full file read.", json!({"type": "object", "properties": {"name": {"type": "string"}, "file": {"type": "string"}, "kind": {"type": "string"}}, "required": ["name"]})),
         ("ctx_compress_memory", "Compress a memory/config file (CLAUDE.md, .cursorrules) preserving code, URLs, paths. Creates .original.md backup.", json!({"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]})),
-        ("ctx_callgraph", "Unified call graph query with direction=callers|callees.", json!({"type": "object", "properties": {"symbol": {"type": "string"}, "direction": {"type": "string"}, "file": {"type": "string"}}, "required": ["symbol"]})),
+        ("ctx_callgraph", "Call graph: callers/callees (multi-hop BFS), trace path, risk classification.", json!({"type": "object", "properties": {"action": {"type": "string", "enum": ["callers","callees","trace","risk"]}, "symbol": {"type": "string"}, "direction": {"type": "string"}, "file": {"type": "string"}, "depth": {"type": "integer"}, "from": {"type": "string"}, "to": {"type": "string"}}})),
         ("ctx_refactor", "LSP-powered refactoring (rename, references, definition, implementations). Requires language server.", json!({"type": "object", "properties": {"action": {"type": "string", "enum": ["rename", "references", "definition", "implementations"]}, "path": {"type": "string"}, "line": {"type": "integer"}, "column": {"type": "integer"}, "new_name": {"type": "string"}}, "required": ["action", "path", "line"]})),
         ("ctx_routes", "List HTTP routes/endpoints extracted from the project. Supports Express, Flask, FastAPI, Actix, Spring, Rails, Next.js.", json!({"type": "object", "properties": {"method": {"type": "string"}, "path": {"type": "string"}}})),
         ("ctx_expand", "Retrieve archived tool output (zero-loss). Large outputs are auto-archived; use this to retrieve full details. Actions: retrieve (default), list, search_all (FTS5 cross-archive fulltext search).", json!({"type": "object", "properties": {"id": {"type": "string", "description": "Archive ID from the [Archived: ...] hint"}, "action": {"type": "string", "description": "retrieve (default), list, or search_all"}, "query": {"type": "string", "description": "FTS5 query for search_all action"}, "limit": {"type": "integer", "description": "Max results for search_all (default: 10)"}, "start_line": {"type": "integer", "description": "Start line for range retrieval"}, "end_line": {"type": "integer", "description": "End line for range retrieval"}, "search": {"type": "string", "description": "Search pattern to filter within a single archive"}, "session_id": {"type": "string", "description": "Filter list by session ID"}}})),

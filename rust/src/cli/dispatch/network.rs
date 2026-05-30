@@ -520,6 +520,8 @@ pub(super) fn cmd_serve(rest: &[String]) {
         let mut stop_mode = false;
         let mut status_mode = false;
         let mut foreground_daemon = false;
+        let mut multi_roots: Vec<(String, Option<String>)> = Vec::new();
+        let mut rrf_k: Option<f64> = None;
         let mut i = 0;
         while i < rest.len() {
             match rest[i].as_str() {
@@ -569,6 +571,29 @@ pub(super) fn cmd_serve(rest: &[String]) {
                 }
                 "--stateful" => cfg.stateful_mode = true,
                 "--stateless" => cfg.stateful_mode = false,
+                "--root" => {
+                    i += 1;
+                    if i < rest.len() {
+                        multi_roots.push((rest[i].clone(), None));
+                    }
+                }
+                arg if arg.starts_with("--root=") => {
+                    let val = arg["--root=".len()..].to_string();
+                    if let Some((path, alias)) = val.split_once(':') {
+                        multi_roots.push((path.to_string(), Some(alias.to_string())));
+                    } else {
+                        multi_roots.push((val, None));
+                    }
+                }
+                "--rrf-k" => {
+                    i += 1;
+                    if i < rest.len() {
+                        rrf_k = rest[i].parse::<f64>().ok();
+                    }
+                }
+                arg if arg.starts_with("--rrf-k=") => {
+                    rrf_k = arg["--rrf-k=".len()..].parse::<f64>().ok();
+                }
                 "--json" => cfg.json_response = true,
                 "--sse" => cfg.json_response = false,
                 "--disable-host-check" => cfg.disable_host_check = true,
@@ -658,6 +683,8 @@ pub(super) fn cmd_serve(rest: &[String]) {
                            --host, -H            Bind host (default: 127.0.0.1)\\n\\
                            --port, -p            Bind port (default: 8080)\\n\\
                            --project-root        Resolve relative paths against this root (default: cwd)\\n\\
+                           --root PATH[:ALIAS]   Add a repo root for multi-repo mode (repeatable)\\n\\
+                           --rrf-k N             RRF fusion parameter (default: 60.0)\\n\\
                            --auth-token          Require Authorization: Bearer <token> (required for non-loopback binds)\\n\\
                            --stateful/--stateless  Streamable HTTP session mode (default: stateless)\\n\\
                            --json/--sse          Response framing in stateless mode (default: json)\\n\\
@@ -674,6 +701,14 @@ pub(super) fn cmd_serve(rest: &[String]) {
                 _ => {}
             }
             i += 1;
+        }
+
+        if !multi_roots.is_empty() {
+            if let Err(e) = crate::core::multi_repo::init_with_roots(&multi_roots, rrf_k) {
+                eprintln!("Multi-repo init error: {e}");
+                std::process::exit(1);
+            }
+            eprintln!("Multi-repo mode: {} roots configured", multi_roots.len());
         }
 
         if stop_mode {

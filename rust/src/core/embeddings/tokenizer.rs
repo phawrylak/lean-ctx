@@ -266,6 +266,55 @@ fn is_bert_punctuation(ch: char) -> bool {
     }
 }
 
+/// Wrapper for HuggingFace `tokenizer.json` files.
+///
+/// Parses the JSON to extract the vocabulary map, then delegates to
+/// the existing `WordPieceTokenizer` for actual tokenization.
+/// Supports both WordPiece and BPE vocab formats (both map tokens → IDs).
+pub struct HfTokenizerWrapper {
+    inner: WordPieceTokenizer,
+}
+
+impl HfTokenizerWrapper {
+    /// Load from a HuggingFace `tokenizer.json` file.
+    pub fn from_file(path: &Path) -> anyhow::Result<Self> {
+        let content = std::fs::read_to_string(path).map_err(|e| {
+            anyhow::anyhow!("Failed to read tokenizer.json {}: {}", path.display(), e)
+        })?;
+        Self::from_json(&content)
+    }
+
+    fn from_json(json_str: &str) -> anyhow::Result<Self> {
+        let parsed: serde_json::Value = serde_json::from_str(json_str)
+            .map_err(|e| anyhow::anyhow!("Invalid tokenizer.json: {e}"))?;
+
+        let vocab_obj = parsed
+            .get("model")
+            .and_then(|m| m.get("vocab"))
+            .and_then(|v| v.as_object())
+            .ok_or_else(|| anyhow::anyhow!("tokenizer.json missing model.vocab object"))?;
+
+        let mut vocab_lines: Vec<(String, i32)> = vocab_obj
+            .iter()
+            .filter_map(|(token, id)| id.as_i64().map(|id| (token.clone(), id as i32)))
+            .collect();
+        vocab_lines.sort_by_key(|(_, id)| *id);
+
+        let vocab_str: String = vocab_lines
+            .into_iter()
+            .map(|(token, _)| token)
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        let inner = WordPieceTokenizer::from_vocab_str(&vocab_str)?;
+        Ok(Self { inner })
+    }
+
+    pub fn encode(&self, text: &str, max_len: usize) -> TokenizedInput {
+        self.inner.encode(text, max_len)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -380,5 +429,35 @@ mod tests {
         assert!(is_bert_punctuation('{'));
         assert!(!is_bert_punctuation('a'));
         assert!(!is_bert_punctuation('0'));
+    }
+
+    #[test]
+    fn hf_tokenizer_from_json() {
+        let json = r#"{
+            "version": "1.0",
+            "model": {
+                "type": "WordPiece",
+                "vocab": {
+                    "[PAD]": 0, "[UNK]": 1, "[CLS]": 2, "[SEP]": 3,
+                    "hello": 4, "world": 5, "fn": 6
+                }
+            }
+        }"#;
+        let tok = HfTokenizerWrapper::from_json(json).unwrap();
+        let input = tok.encode("hello world", 512);
+        assert_eq!(input.input_ids[0], 2); // [CLS]
+        assert_eq!(*input.input_ids.last().unwrap(), 3); // [SEP]
+        assert!(input.input_ids.len() >= 4);
+    }
+
+    #[test]
+    fn hf_tokenizer_invalid_json() {
+        assert!(HfTokenizerWrapper::from_json("not json").is_err());
+    }
+
+    #[test]
+    fn hf_tokenizer_missing_vocab() {
+        let json = r#"{"model": {"type": "WordPiece"}}"#;
+        assert!(HfTokenizerWrapper::from_json(json).is_err());
     }
 }
