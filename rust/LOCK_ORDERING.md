@@ -49,6 +49,8 @@ All `std::sync::Mutex` unless noted otherwise.
 | L36 | `BUILD` | `core/call_graph.rs:54` | `OnceLock<Mutex<BuildState>>` | Call graph build state |
 | L37 | `LAST_REAL` | `proxy/introspect.rs:54` | `Mutex<[Option<String>; 3]>` | Last 3 real (non-proxy) request paths |
 | L38 | `GLOBAL_TRACKER` | `core/bounce_tracker.rs:226` | `OnceLock<Mutex<BounceTracker>>` | Tracks repeated tool-call bounces |
+| L39 | `GLOBAL_REGISTRY` | `core/plugins/mod.rs:10` | `OnceLock<Mutex<PluginRegistry>>` | Loaded plugin registry |
+| L40 | `GLOBAL_MANAGER` | `core/multi_repo.rs:363` | `OnceLock<Mutex<MultiRepoManager>>` | Multi-repo workspace manager |
 
 ### Test / Environment Locks (serialise env-var mutations)
 
@@ -149,9 +151,9 @@ Override via `LEAN_CTX_WORKER_THREADS` (positive integer) for environments with 
 concurrent subagents. Example: `LEAN_CTX_WORKER_THREADS=8`. The blocking thread pool
 is always `worker_threads * 4`, clamped to `[8, 32]`.
 
-### Independent Static Locks (L3–L38)
+### Independent Static Locks (L3–L40)
 
-All other static locks (L3–L38) are **independent singletons** — they protect isolated subsystem
+All other static locks (L3–L40) are **independent singletons** — they protect isolated subsystem
 state and are never nested inside each other. Each should be acquired in isolation:
 
 - **Do not hold two static locks at the same time.** If a future change requires locking two

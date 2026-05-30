@@ -70,6 +70,10 @@ MANAGE:
     lean-ctx update                Update to the latest version
     lean-ctx uninstall             Remove lean-ctx cleanly
 
+SAFETY (env vars):
+    LEAN_CTX_DISABLED=1            Bypass ALL compression + prevent the shell hook from loading
+    LEAN_CTX_RAW=1                 Pass output through unmodified (same as --raw)
+
 MORE:
     lean-ctx help all              Full command reference (every subcommand)
     lean-ctx cheatsheet            Workflow cheat sheet for AI agents
