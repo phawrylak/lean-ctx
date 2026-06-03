@@ -18,6 +18,7 @@ pub const CORE_TOOL_NAMES: &[&str] = &[
     "ctx_read",
     "ctx_search",
     "ctx_shell",
+    "shell",
     "ctx_tree",
     "ctx_edit",
     "ctx_session",
