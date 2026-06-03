@@ -130,6 +130,32 @@ pub(super) fn run_fix(opts: &DoctorFixOptions) -> Result<i32, String> {
     }
     steps.push(mcp_step);
 
+    // Resolve workspace/user dual-scope conflicts (issue #338)
+    let mut ws_scope_step = SetupStepReport {
+        name: "workspace_scope".to_string(),
+        ok: true,
+        items: Vec::new(),
+        warnings: Vec::new(),
+        errors: Vec::new(),
+    };
+    let user_has_lean_ctx = !targets.is_empty();
+    let ws_fixed = super::workspace_scope::fix_workspace_dual_scope(user_has_lean_ctx);
+    ws_scope_step.items.push(SetupItem {
+        name: "dual_scope_dedup".to_string(),
+        status: if ws_fixed > 0 {
+            format!("fixed {ws_fixed}")
+        } else {
+            "clean".to_string()
+        },
+        path: None,
+        note: if ws_fixed > 0 {
+            Some("removed lean-ctx from workspace-scope (user-scope preferred)".to_string())
+        } else {
+            None
+        },
+    });
+    steps.push(ws_scope_step);
+
     let mut rules_step = SetupStepReport {
         name: "agent_rules".to_string(),
         ok: true,

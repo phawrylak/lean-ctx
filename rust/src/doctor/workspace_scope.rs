@@ -114,6 +114,75 @@ pub(super) fn workspace_scope_outcome(user_scope_has_lean_ctx: bool) -> Option<O
     })
 }
 
+/// Removes lean-ctx from workspace-scope MCP configs when user-scope already
+/// has it registered. Called by `doctor --fix` to resolve the dual-scope conflict.
+/// Returns the number of files cleaned up.
+pub(super) fn fix_workspace_dual_scope(user_scope_has_lean_ctx: bool) -> usize {
+    if !user_scope_has_lean_ctx {
+        return 0;
+    }
+    let Some(cwd) = std::env::current_dir().ok() else {
+        return 0;
+    };
+
+    let mut fixed = 0;
+    for loc in WORKSPACE_LOCATIONS {
+        let path = cwd.join(loc.rel);
+        let Ok(content) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        if content.trim().is_empty() || !super::has_lean_ctx_mcp_entry(&content) {
+            continue;
+        }
+        if let Ok(mut json) = crate::core::jsonc::parse_jsonc(&content) {
+            let removed = remove_lean_ctx_from_json(&mut json);
+            if removed {
+                if let Ok(out) = serde_json::to_string_pretty(&json) {
+                    if std::fs::write(&path, out.as_bytes()).is_ok() {
+                        tracing::info!(
+                            "Removed lean-ctx from workspace-scope {} (user-scope preferred)",
+                            path.display()
+                        );
+                        fixed += 1;
+                    }
+                }
+            }
+        }
+    }
+    fixed
+}
+
+/// Remove lean-ctx server entries from a parsed JSON value.
+fn remove_lean_ctx_from_json(json: &mut serde_json::Value) -> bool {
+    let containers = ["servers", "mcpServers", "mcp.servers"];
+    let mut removed = false;
+    for key in containers {
+        if let Some(map) = navigate_mut(json, key) {
+            if let Some(obj) = map.as_object_mut() {
+                if obj.remove("lean-ctx").is_some() {
+                    removed = true;
+                }
+                if obj.remove("user-lean-ctx").is_some() {
+                    removed = true;
+                }
+            }
+        }
+    }
+    removed
+}
+
+fn navigate_mut<'a>(
+    json: &'a mut serde_json::Value,
+    dotted: &str,
+) -> Option<&'a mut serde_json::Value> {
+    let parts: Vec<&str> = dotted.split('.').collect();
+    let mut current = json;
+    for part in parts {
+        current = current.get_mut(part)?;
+    }
+    Some(current)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

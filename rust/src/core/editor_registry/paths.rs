@@ -24,7 +24,7 @@ pub fn vscode_mcp_path() -> PathBuf {
         }
         #[cfg(target_os = "linux")]
         {
-            return home.join(".config/Code/User/mcp.json");
+            return resolve_vscode_global_storage(&home, "User/mcp.json");
         }
         #[cfg(target_os = "windows")]
         {
@@ -86,7 +86,8 @@ pub fn cline_mcp_path() -> PathBuf {
     }
     #[cfg(target_os = "linux")]
     {
-        return home.join(".config/Code/User/globalStorage/saoudrizwan.claude-dev/settings/cline_mcp_settings.json");
+        let suffix = "User/globalStorage/saoudrizwan.claude-dev/settings/cline_mcp_settings.json";
+        return resolve_vscode_global_storage(&home, suffix);
     }
     PathBuf::from("/nonexistent")
 }
@@ -111,9 +112,26 @@ pub fn roo_mcp_path() -> PathBuf {
     }
     #[cfg(target_os = "linux")]
     {
-        return home.join(".config/Code/User/globalStorage/rooveterinaryinc.roo-cline/settings/cline_mcp_settings.json");
+        let suffix =
+            "User/globalStorage/rooveterinaryinc.roo-cline/settings/cline_mcp_settings.json";
+        return resolve_vscode_global_storage(&home, suffix);
     }
     PathBuf::from("/nonexistent")
+}
+
+/// Resolves the correct VS Code-family base directory on Linux.
+/// Checks VSCodium, Code - OSS, and Code (in that order) — returns the first
+/// existing path, falling back to the standard `Code` path for fresh installs.
+#[cfg(target_os = "linux")]
+fn resolve_vscode_global_storage(home: &Path, suffix: &str) -> PathBuf {
+    const CANDIDATES: &[&str] = &["VSCodium", "Code - OSS", "Code"];
+    for base in CANDIDATES {
+        let path = home.join(".config").join(base).join(suffix);
+        if path.exists() {
+            return path;
+        }
+    }
+    home.join(".config/Code").join(suffix)
 }
 
 pub fn qoder_settings_path(home: &Path) -> PathBuf {

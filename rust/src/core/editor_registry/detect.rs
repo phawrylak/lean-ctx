@@ -574,8 +574,8 @@ pub fn detect_cline_path() -> PathBuf {
     }
     #[cfg(target_os = "linux")]
     {
-        let p = home.join(".config/Code/User/globalStorage/saoudrizwan.claude-dev");
-        if p.exists() {
+        let suffix = "User/globalStorage/saoudrizwan.claude-dev";
+        if let Some(p) = detect_vscode_global_storage(&home, suffix) {
             return p;
         }
     }
@@ -609,12 +609,26 @@ pub fn detect_roo_path() -> PathBuf {
     }
     #[cfg(target_os = "linux")]
     {
-        let p = home.join(".config/Code/User/globalStorage/rooveterinaryinc.roo-cline");
-        if p.exists() {
+        let suffix = "User/globalStorage/rooveterinaryinc.roo-cline";
+        if let Some(p) = detect_vscode_global_storage(&home, suffix) {
             return p;
         }
     }
     PathBuf::from("/nonexistent")
+}
+
+/// Checks VS Code-family base directories (VSCodium, Code - OSS, Code) on Linux
+/// and returns the first one where the given suffix directory exists.
+#[cfg(target_os = "linux")]
+fn detect_vscode_global_storage(home: &Path, suffix: &str) -> Option<PathBuf> {
+    const CANDIDATES: &[&str] = &["VSCodium", "Code - OSS", "Code"];
+    for base in CANDIDATES {
+        let p = home.join(".config").join(base).join(suffix);
+        if p.exists() {
+            return Some(p);
+        }
+    }
+    None
 }
 
 #[cfg(test)]
