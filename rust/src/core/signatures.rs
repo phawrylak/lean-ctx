@@ -104,6 +104,28 @@ impl Signature {
             ),
         }
     }
+
+    /// Compact ` @Lstart[-end]` suffix for navigation-focused modes.
+    /// Returns an empty string when the span is unknown, so compression-first
+    /// modes that render the base `to_compact`/`to_tdd` stay byte-identical.
+    pub fn line_suffix(&self) -> String {
+        match (self.start_line, self.end_line) {
+            (Some(start), Some(end)) if start > 0 && end > start => format!(" @L{start}-{end}"),
+            (Some(start), _) if start > 0 => format!(" @L{start}"),
+            _ => String::new(),
+        }
+    }
+
+    /// `to_compact` plus a line-span suffix. Reserved for navigation modes
+    /// (`map`/`signatures`) where locating code outweighs the few extra tokens.
+    pub fn to_compact_located(&self) -> String {
+        format!("{}{}", self.to_compact(), self.line_suffix())
+    }
+
+    /// `to_tdd` plus a line-span suffix. Reserved for navigation modes.
+    pub fn to_tdd_located(&self) -> String {
+        format!("{}{}", self.to_tdd(), self.line_suffix())
+    }
 }
 
 fn fn_re() -> &'static Regex {
@@ -196,7 +218,7 @@ pub fn extract_file_map(path: &str, content: &str) -> String {
     let key_sigs: Vec<String> = sigs
         .iter()
         .filter(|s| s.is_exported || s.indent == 0)
-        .map(Signature::to_compact)
+        .map(Signature::to_compact_located)
         .collect();
     if !key_sigs.is_empty() {
         parts.push(key_sigs.join("\n"));
@@ -207,7 +229,8 @@ pub fn extract_file_map(path: &str, content: &str) -> String {
 fn extract_ts_signatures(content: &str) -> Vec<Signature> {
     let mut sigs = Vec::new();
 
-    for line in content.lines() {
+    for (line_idx, line) in content.lines().enumerate() {
+        let line_no = line_idx + 1;
         let trimmed = line.trim();
         if trimmed.starts_with("//") || trimmed.starts_with("/*") || trimmed.starts_with('*') {
             continue;
@@ -225,7 +248,8 @@ fn extract_ts_signatures(content: &str) -> Vec<Signature> {
                 is_async: caps.get(3).is_some(),
                 is_exported: caps.get(2).is_some(),
                 indent: if indent > 0 { 2 } else { 0 },
-                ..Signature::no_span()
+                start_line: Some(line_no),
+                end_line: Some(line_no),
             });
         } else if let Some(caps) = class_re().captures(line) {
             sigs.push(Signature {
@@ -236,7 +260,8 @@ fn extract_ts_signatures(content: &str) -> Vec<Signature> {
                 is_async: false,
                 is_exported: caps.get(2).is_some(),
                 indent: 0,
-                ..Signature::no_span()
+                start_line: Some(line_no),
+                end_line: Some(line_no),
             });
         } else if let Some(caps) = iface_re().captures(line) {
             sigs.push(Signature {
@@ -247,7 +272,8 @@ fn extract_ts_signatures(content: &str) -> Vec<Signature> {
                 is_async: false,
                 is_exported: caps.get(2).is_some(),
                 indent: 0,
-                ..Signature::no_span()
+                start_line: Some(line_no),
+                end_line: Some(line_no),
             });
         } else if let Some(caps) = type_re().captures(line) {
             sigs.push(Signature {
@@ -258,7 +284,8 @@ fn extract_ts_signatures(content: &str) -> Vec<Signature> {
                 is_async: false,
                 is_exported: caps.get(2).is_some(),
                 indent: 0,
-                ..Signature::no_span()
+                start_line: Some(line_no),
+                end_line: Some(line_no),
             });
         } else if let Some(caps) = const_re().captures(line) {
             if caps.get(2).is_some() {
@@ -272,7 +299,8 @@ fn extract_ts_signatures(content: &str) -> Vec<Signature> {
                     is_async: false,
                     is_exported: true,
                     indent: 0,
-                    ..Signature::no_span()
+                    start_line: Some(line_no),
+                    end_line: Some(line_no),
                 });
             }
         }
@@ -284,7 +312,8 @@ fn extract_ts_signatures(content: &str) -> Vec<Signature> {
 fn extract_rust_signatures(content: &str) -> Vec<Signature> {
     let mut sigs = Vec::new();
 
-    for line in content.lines() {
+    for (line_idx, line) in content.lines().enumerate() {
+        let line_no = line_idx + 1;
         let trimmed = line.trim();
         if trimmed.starts_with("//") || trimmed.starts_with("///") {
             continue;
@@ -302,7 +331,8 @@ fn extract_rust_signatures(content: &str) -> Vec<Signature> {
                 is_async: caps.get(3).is_some(),
                 is_exported: caps.get(2).is_some(),
                 indent: if indent > 0 { 2 } else { 0 },
-                ..Signature::no_span()
+                start_line: Some(line_no),
+                end_line: Some(line_no),
             });
         } else if let Some(caps) = rust_struct_re().captures(line) {
             sigs.push(Signature {
@@ -313,7 +343,8 @@ fn extract_rust_signatures(content: &str) -> Vec<Signature> {
                 is_async: false,
                 is_exported: caps.get(2).is_some(),
                 indent: 0,
-                ..Signature::no_span()
+                start_line: Some(line_no),
+                end_line: Some(line_no),
             });
         } else if let Some(caps) = rust_enum_re().captures(line) {
             sigs.push(Signature {
@@ -324,7 +355,8 @@ fn extract_rust_signatures(content: &str) -> Vec<Signature> {
                 is_async: false,
                 is_exported: caps.get(2).is_some(),
                 indent: 0,
-                ..Signature::no_span()
+                start_line: Some(line_no),
+                end_line: Some(line_no),
             });
         } else if let Some(caps) = rust_trait_re().captures(line) {
             sigs.push(Signature {
@@ -335,7 +367,8 @@ fn extract_rust_signatures(content: &str) -> Vec<Signature> {
                 is_async: false,
                 is_exported: caps.get(2).is_some(),
                 indent: 0,
-                ..Signature::no_span()
+                start_line: Some(line_no),
+                end_line: Some(line_no),
             });
         } else if let Some(caps) = rust_impl_re().captures(line) {
             let trait_name = caps.get(2).map(|m| m.as_str());
@@ -353,7 +386,8 @@ fn extract_rust_signatures(content: &str) -> Vec<Signature> {
                 is_async: false,
                 is_exported: false,
                 indent: 0,
-                ..Signature::no_span()
+                start_line: Some(line_no),
+                end_line: Some(line_no),
             });
         }
     }
@@ -366,7 +400,8 @@ fn extract_python_signatures(content: &str) -> Vec<Signature> {
     let py_fn = static_regex!(r"^(\s*)(async\s+)?def\s+(\w+)\s*\(([^)]*)\)(?:\s*->\s*(\w+))?");
     let py_class = static_regex!(r"^(\s*)class\s+(\w+)");
 
-    for line in content.lines() {
+    for (line_idx, line) in content.lines().enumerate() {
+        let line_no = line_idx + 1;
         if let Some(caps) = py_fn.captures(line) {
             let indent = caps.get(1).map_or(0, |m| m.as_str().len());
             sigs.push(Signature {
@@ -379,7 +414,8 @@ fn extract_python_signatures(content: &str) -> Vec<Signature> {
                 is_async: caps.get(2).is_some(),
                 is_exported: !caps[3].starts_with('_'),
                 indent: if indent > 0 { 2 } else { 0 },
-                ..Signature::no_span()
+                start_line: Some(line_no),
+                end_line: Some(line_no),
             });
         } else if let Some(caps) = py_class.captures(line) {
             sigs.push(Signature {
@@ -390,7 +426,8 @@ fn extract_python_signatures(content: &str) -> Vec<Signature> {
                 is_async: false,
                 is_exported: !caps[2].starts_with('_'),
                 indent: 0,
-                ..Signature::no_span()
+                start_line: Some(line_no),
+                end_line: Some(line_no),
             });
         }
     }
@@ -405,7 +442,8 @@ fn extract_go_signatures(content: &str) -> Vec<Signature> {
     );
     let go_type = static_regex!(r"^type\s+(\w+)\s+(struct|interface)");
 
-    for line in content.lines() {
+    for (line_idx, line) in content.lines().enumerate() {
+        let line_no = line_idx + 1;
         if let Some(caps) = go_fn.captures(line) {
             let is_method = caps.get(2).is_some();
             sigs.push(Signature {
@@ -419,7 +457,8 @@ fn extract_go_signatures(content: &str) -> Vec<Signature> {
                 is_async: false,
                 is_exported: caps[3].starts_with(char::is_uppercase),
                 indent: if is_method { 2 } else { 0 },
-                ..Signature::no_span()
+                start_line: Some(line_no),
+                end_line: Some(line_no),
             });
         } else if let Some(caps) = go_type.captures(line) {
             sigs.push(Signature {
@@ -434,7 +473,8 @@ fn extract_go_signatures(content: &str) -> Vec<Signature> {
                 is_async: false,
                 is_exported: caps[1].starts_with(char::is_uppercase),
                 indent: 0,
-                ..Signature::no_span()
+                start_line: Some(line_no),
+                end_line: Some(line_no),
             });
         }
     }
@@ -534,7 +574,8 @@ fn extract_generic_signatures(content: &str) -> Vec<Signature> {
     );
 
     let mut sigs = Vec::new();
-    for line in content.lines() {
+    for (line_idx, line) in content.lines().enumerate() {
+        let line_no = line_idx + 1;
         let trimmed = line.trim();
         if trimmed.is_empty()
             || trimmed.starts_with("//")
@@ -553,7 +594,8 @@ fn extract_generic_signatures(content: &str) -> Vec<Signature> {
                 is_async: false,
                 is_exported: true,
                 indent: 0,
-                ..Signature::no_span()
+                start_line: Some(line_no),
+                end_line: Some(line_no),
             });
         } else if let Some(caps) = re_func.captures(trimmed) {
             sigs.push(Signature {
@@ -564,9 +606,80 @@ fn extract_generic_signatures(content: &str) -> Vec<Signature> {
                 is_async: trimmed.contains("async"),
                 is_exported: true,
                 indent: 0,
-                ..Signature::no_span()
+                start_line: Some(line_no),
+                end_line: Some(line_no),
             });
         }
     }
     sigs
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sample_fn() -> Signature {
+        Signature {
+            kind: "fn",
+            name: "run".to_string(),
+            params: "id:usize".to_string(),
+            return_type: "bool".to_string(),
+            is_async: false,
+            is_exported: true,
+            indent: 0,
+            start_line: None,
+            end_line: None,
+        }
+    }
+
+    #[test]
+    fn line_suffix_formats_known_spans() {
+        let mut sig = sample_fn();
+        assert_eq!(sig.line_suffix(), "");
+
+        sig.start_line = Some(42);
+        sig.end_line = Some(42);
+        assert_eq!(sig.line_suffix(), " @L42");
+
+        sig.end_line = Some(57);
+        assert_eq!(sig.line_suffix(), " @L42-57");
+    }
+
+    #[test]
+    fn base_renderers_stay_suffix_free() {
+        // Compression-first modes must never pay for line ranges, even when
+        // the span is known.
+        let mut sig = sample_fn();
+        sig.start_line = Some(3);
+        sig.end_line = Some(9);
+        assert_eq!(sig.to_compact(), "fn ⊛ run(id:usize) → bool");
+        assert_eq!(sig.to_tdd(), "λ+run(id:n)→b");
+    }
+
+    #[test]
+    fn located_renderers_append_line_suffix() {
+        let mut sig = sample_fn();
+        // Unknown span → identical to the base renderer.
+        assert_eq!(sig.to_compact_located(), "fn ⊛ run(id:usize) → bool");
+        assert_eq!(sig.to_tdd_located(), "λ+run(id:n)→b");
+
+        sig.start_line = Some(3);
+        sig.end_line = Some(5);
+        assert_eq!(sig.to_compact_located(), "fn ⊛ run(id:usize) → bool @L3-5");
+        assert_eq!(sig.to_tdd_located(), "λ+run(id:n)→b @L3-5");
+    }
+
+    #[test]
+    fn regex_fallback_assigns_declaration_line_spans() {
+        let src = "\npublic class Service {}\n\npublic fn run() {\n}\n";
+        let sigs = extract_generic_signatures(src);
+
+        let service = sigs.iter().find(|s| s.name == "Service").unwrap();
+        assert_eq!(service.start_line, Some(2));
+        assert_eq!(service.end_line, Some(2));
+
+        let run = sigs.iter().find(|s| s.name == "run").unwrap();
+        assert_eq!(run.start_line, Some(4));
+        assert_eq!(run.end_line, Some(4));
+    }
 }
