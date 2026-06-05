@@ -236,11 +236,16 @@ pub(super) fn cmd_team(rest: &[String]) {
 
 pub(super) fn cmd_dashboard(rest: &[String]) {
     if rest.iter().any(|a| a == "--help" || a == "-h") {
-        println!("Usage: lean-ctx dashboard [--port=N] [--host=H] [--project=PATH] [--export]");
+        println!(
+            "Usage: lean-ctx dashboard [--port=N] [--host=H] [--base-path=PREFIX] [--project=PATH] [--export]"
+        );
         println!("Examples:");
         println!("  lean-ctx dashboard");
         println!("  lean-ctx dashboard --port=3333");
         println!("  lean-ctx dashboard --host=0.0.0.0");
+        println!(
+            "  lean-ctx dashboard --base-path=/dashboard   Mount behind a reverse proxy subpath"
+        );
         println!("  lean-ctx dashboard --export        Export HTML report (replaces visualize)");
         return;
     }
@@ -275,8 +280,17 @@ pub(super) fn cmd_dashboard(rest: &[String]) {
     if let Some(ref p) = project {
         std::env::set_var("LEAN_CTX_DASHBOARD_PROJECT", p);
     }
+    // `--base-path` / `--prefix`: mount the dashboard behind a reverse-proxy
+    // subpath (e.g. `/dashboard`). See dashboard::base_path (#355).
+    let base_path = rest
+        .iter()
+        .find_map(|p| {
+            p.strip_prefix("--base-path=")
+                .or_else(|| p.strip_prefix("--prefix="))
+        })
+        .map(String::from);
     super::spawn_proxy_if_needed();
-    super::run_async(dashboard::start(port, host));
+    super::run_async(dashboard::start(port, host, base_path));
 }
 
 pub(super) fn cmd_watch(rest: &[String]) {

@@ -145,7 +145,7 @@ COMMANDS:
     index <status|build|build-full|watch>  Codebase index utilities
     cep                            CEP report (compression metrics, cache, modes, trends)
     watch                          Live TUI dashboard (real-time event stream)
-    dashboard [--port=N] [--host=H] Open web dashboard (default: http://localhost:3333)
+    dashboard [--port=N] [--host=H] [--base-path=/prefix]  Open web dashboard (default: http://localhost:3333)
     serve [--host H] [--port N]    MCP over HTTP (Streamable HTTP, local-first)
     proxy start [--port=4444]      API proxy: compress tool_results before LLM API
     proxy status                   Show proxy statistics

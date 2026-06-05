@@ -52,9 +52,10 @@ fn match_font_asset(path: &str) -> Option<&'static [u8]> {
     }
 }
 
+pub mod base_path;
 pub mod routes;
 
-pub async fn start(port: Option<u16>, host: Option<String>) {
+pub async fn start(port: Option<u16>, host: Option<String>, base_path: Option<String>) {
     let port = port.unwrap_or_else(|| {
         std::env::var("LEAN_CTX_PORT")
             .ok()
@@ -68,18 +69,27 @@ pub async fn start(port: Option<u16>, host: Option<String>) {
             .unwrap_or_else(|| DEFAULT_HOST.to_string())
     });
 
+    // Reverse-proxy subpath (e.g. `/dashboard`). Normalized to "" or "/prefix".
+    // Shared across connections behind an Arc; "" means "no subpath" (#355).
+    let base_path = Arc::new(
+        base_path
+            .or_else(|| std::env::var("LEAN_CTX_DASHBOARD_BASE_PATH").ok())
+            .map(|b| base_path::normalize(&b))
+            .unwrap_or_default(),
+    );
+
     let addr = format!("{host}:{port}");
     let is_local = host == "127.0.0.1" || host == "localhost" || host == "::1";
 
     // Avoid accidental multiple dashboard instances (common source of "it hangs").
     // Only safe to auto-detect for local dashboards without auth.
     if is_local && dashboard_responding(&host, port) {
-        println!("\n  lean-ctx dashboard already running → http://{host}:{port}");
+        println!("\n  lean-ctx dashboard already running → http://{host}:{port}{base_path}");
         println!("  Tip: use Ctrl+C in the existing terminal to stop it.\n");
         if let Some(t) = load_saved_token() {
-            open_browser(&format!("http://localhost:{port}/?token={t}"));
+            open_browser(&format!("http://localhost:{port}{base_path}/?token={t}"));
         } else {
-            open_browser(&format!("http://localhost:{port}"));
+            open_browser(&format!("http://localhost:{port}{base_path}/"));
         }
         return;
     }
@@ -102,12 +112,12 @@ pub async fn start(port: Option<u16>, host: Option<String>) {
         };
         if is_local {
             println!("  Auth: enabled (local)");
-            println!("  Browser URL:  http://localhost:{port}/?token={t}");
+            println!("  Browser URL:  http://localhost:{port}{base_path}/?token={t}");
         } else {
             eprintln!(
                 "  \x1b[33m⚠\x1b[0m Binding to {host} — authentication enabled.\n  \
                  Bearer token: \x1b[1;32m{masked}\x1b[0m\n  \
-                 Browser URL:  http://<your-ip>:{port}/?token={t}"
+                 Browser URL:  http://<your-ip>:{port}{base_path}/?token={t}"
             );
         }
     }
@@ -139,9 +149,9 @@ pub async fn start(port: Option<u16>, host: Option<String>) {
 
     if is_local {
         if let Some(t) = token.as_ref() {
-            open_browser(&format!("http://localhost:{port}/?token={t}"));
+            open_browser(&format!("http://localhost:{port}{base_path}/?token={t}"));
         } else {
-            open_browser(&format!("http://localhost:{port}"));
+            open_browser(&format!("http://localhost:{port}{base_path}/"));
         }
     }
     if crate::shell::is_container() && is_local {
@@ -154,7 +164,8 @@ pub async fn start(port: Option<u16>, host: Option<String>) {
     loop {
         if let Ok((stream, _)) = listener.accept().await {
             let token_ref = token.clone();
-            tokio::spawn(handle_request(stream, token_ref));
+            let base_ref = base_path.clone();
+            tokio::spawn(handle_request(stream, token_ref, base_ref));
         }
     }
 }
@@ -406,7 +417,11 @@ async fn read_http_message(stream: &mut tokio::net::TcpStream) -> Option<Vec<u8>
     }
 }
 
-async fn handle_request(mut stream: tokio::net::TcpStream, token: Option<Arc<String>>) {
+async fn handle_request(
+    mut stream: tokio::net::TcpStream,
+    token: Option<Arc<String>>,
+    base_path: Arc<String>,
+) {
     let is_loopback = stream.peer_addr().is_ok_and(|a| a.ip().is_loopback());
 
     let Some(buf) = read_http_message(&mut stream).await else {
@@ -447,6 +462,11 @@ async fn handle_request(mut stream: tokio::net::TcpStream, token: Option<Arc<Str
     let query_str = raw_path
         .find('?')
         .map_or(String::new(), |i| raw_path[i + 1..].to_string());
+
+    // Strip the reverse-proxy subpath prefix (if any) so all downstream matching
+    // (fonts, auth, routing) works on root-relative paths whether or not the
+    // proxy already stripped it (#355).
+    let path = base_path::strip(&path, base_path.as_str()).to_string();
 
     // Binary font assets are public (like CSS/JS) and bypass the String-based
     // route pipeline so their bytes stay intact.
@@ -527,6 +547,16 @@ async fn handle_request(mut stream: tokio::net::TcpStream, token: Option<Arc<Str
             r#"{"error":"dashboard route panicked"}"#.to_string(),
         ),
     };
+
+    // Under a reverse-proxy subpath, rewrite root-absolute asset/API URLs in the
+    // served HTML/CSS/JS so the browser requests them under the prefix (#355).
+    if !base_path.is_empty()
+        && (content_type.contains("text/html")
+            || content_type.contains("text/css")
+            || content_type.contains("javascript"))
+    {
+        body = base_path::rewrite_asset_urls(&body, base_path.as_str());
+    }
 
     let cache_header = if content_type.starts_with("application/json") {
         "Cache-Control: no-cache, no-store, must-revalidate\r\nPragma: no-cache\r\n"
