@@ -311,25 +311,17 @@ pub fn brute_force_topk(vectors: &[Vec<f32>], query: &[f32], top_k: usize) -> Ve
     results
 }
 
+/// Cosine similarity via the shared SIMD-friendly dot product (turbovec-derived,
+/// autovectorized chunked accumulators) rather than a scalar triple-accumulate
+/// loop. This is the hot path for every brute-force and HNSW comparison, so the
+/// vectorized kernel matters: each query touches the distance fn O(n) (brute) or
+/// O(ef·log n) (HNSW) times.
 #[inline]
 fn cosine_sim(a: &[f32], b: &[f32]) -> f32 {
     if a.len() != b.len() {
         return 0.0;
     }
-    let mut dot = 0.0f32;
-    let mut norm_a = 0.0f32;
-    let mut norm_b = 0.0f32;
-    for i in 0..a.len() {
-        dot += a[i] * b[i];
-        norm_a += a[i] * a[i];
-        norm_b += b[i] * b[i];
-    }
-    let denom = (norm_a * norm_b).sqrt();
-    if denom < 1e-10 {
-        0.0
-    } else {
-        dot / denom
-    }
+    crate::core::embeddings::cosine_similarity_raw(a, b)
 }
 
 #[cfg(test)]

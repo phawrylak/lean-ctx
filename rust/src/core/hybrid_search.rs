@@ -221,8 +221,9 @@ fn dense_search(
         return Vec::new();
     };
 
-    // Use efficient O(n log k) top-k selection instead of O(n log n) full sort
-    let scored = super::hnsw::brute_force_topk(embeddings, &query_embedding, top_k);
+    // Threshold-gated ANN: exact SIMD brute force for small corpora, cached
+    // HNSW (sub-linear) once the corpus is large enough to amortize graph build.
+    let scored = super::ann_cache::topk(embeddings, &query_embedding, top_k);
 
     scored
         .into_iter()

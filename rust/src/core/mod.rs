@@ -282,6 +282,7 @@ pub mod verification_observability;
 // ---------------------------------------------------------------------------
 pub mod active_inference;
 pub mod agent_budget;
+pub mod ann_cache;
 pub mod audit_trail;
 pub mod binary_detect;
 pub mod bounce_tracker;
