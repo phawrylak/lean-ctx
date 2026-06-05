@@ -22,7 +22,10 @@ fn max_body_bytes() -> usize {
         .saturating_mul(1024 * 1024)
 }
 
-pub type CompressFn = fn(&[u8]) -> (Vec<u8>, usize, usize);
+/// Receives the already-parsed JSON value, avoiding a redundant
+/// `serde_json::from_slice` on every request. Returns the serialized (possibly
+/// compressed) body, original size, and compressed size.
+pub type CompressFn = fn(serde_json::Value, usize) -> (Vec<u8>, usize, usize);
 
 pub async fn forward_request(
     State(state): State<ProxyState>,
@@ -40,9 +43,13 @@ pub async fn forward_request(
 
     state.stats.record_request();
 
-    // Parse once; reuse for introspection and per-model cost attribution.
+    let original_size = body_bytes.len();
+
+    // Parse once; the parsed value is shared between introspection, cost
+    // attribution, and compression — eliminating the redundant re-parse that
+    // each compress_body function previously performed internally.
     let parsed = serde_json::from_slice::<serde_json::Value>(&body_bytes).ok();
-    if let Some(parsed) = &parsed {
+    if let Some(ref parsed) = parsed {
         let provider = match provider_label {
             "Anthropic" => super::introspect::Provider::Anthropic,
             "OpenAI" => super::introspect::Provider::OpenAi,
@@ -52,7 +59,11 @@ pub async fn forward_request(
         state.introspect.record(breakdown);
     }
 
-    let (compressed_body, original_size, compressed_size) = compress_body(&body_bytes);
+    let (compressed_body, _, compressed_size) = if let Some(value) = parsed.clone() {
+        compress_body(value, original_size)
+    } else {
+        (body_bytes.to_vec(), original_size, original_size)
+    };
 
     if compressed_size < original_size {
         state

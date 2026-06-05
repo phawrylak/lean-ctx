@@ -28,14 +28,7 @@ pub async fn handler(
     .await
 }
 
-fn compress_request_body(body: &[u8]) -> (Vec<u8>, usize, usize) {
-    let original_size = body.len();
-
-    let parsed: Value = match serde_json::from_slice(body) {
-        Ok(v) => v,
-        Err(_) => return (body.to_vec(), original_size, original_size),
-    };
-
+fn compress_request_body(parsed: Value, original_size: usize) -> (Vec<u8>, usize, usize) {
     let mut doc = parsed;
     let mut modified = false;
 
@@ -59,17 +52,9 @@ fn compress_request_body(body: &[u8]) -> (Vec<u8>, usize, usize) {
         }
     }
 
-    if !modified {
-        return (body.to_vec(), original_size, original_size);
-    }
-
-    match serde_json::to_vec(&doc) {
-        Ok(compressed) => {
-            let compressed_size = compressed.len();
-            (compressed, original_size, compressed_size)
-        }
-        Err(_) => (body.to_vec(), original_size, original_size),
-    }
+    let out = serde_json::to_vec(&doc).unwrap_or_default();
+    let compressed_size = if modified { out.len() } else { original_size };
+    (out, original_size, compressed_size)
 }
 
 fn compress_string_field(obj: &mut Value, field: &str, kind: ToolResultKind) -> bool {

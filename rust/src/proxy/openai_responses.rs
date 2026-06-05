@@ -39,14 +39,7 @@ pub async fn handler(
     .await
 }
 
-fn compress_request_body(body: &[u8]) -> (Vec<u8>, usize, usize) {
-    let original_size = body.len();
-
-    let parsed: Value = match serde_json::from_slice(body) {
-        Ok(v) => v,
-        Err(_) => return (body.to_vec(), original_size, original_size),
-    };
-
+fn compress_request_body(parsed: Value, original_size: usize) -> (Vec<u8>, usize, usize) {
     let mut doc = parsed;
     let mut modified = false;
 
@@ -77,17 +70,9 @@ fn compress_request_body(body: &[u8]) -> (Vec<u8>, usize, usize) {
         }
     }
 
-    if !modified {
-        return (body.to_vec(), original_size, original_size);
-    }
-
-    match serde_json::to_vec(&doc) {
-        Ok(compressed) => {
-            let compressed_size = compressed.len();
-            (compressed, original_size, compressed_size)
-        }
-        Err(_) => (body.to_vec(), original_size, original_size),
-    }
+    let out = serde_json::to_vec(&doc).unwrap_or_default();
+    let compressed_size = if modified { out.len() } else { original_size };
+    (out, original_size, compressed_size)
 }
 
 /// Compress a `function_call_output.output`. OpenAI sends this as a JSON string,
@@ -166,7 +151,7 @@ mod tests {
             ]
         });
         let bytes = serde_json::to_vec(&body).unwrap();
-        let (out, orig, comp) = compress_request_body(&bytes);
+        let (out, orig, comp) = compress_request_body(body, bytes.len());
 
         assert!(comp < orig, "compressed body must be smaller");
         let parsed: Value = serde_json::from_slice(&out).unwrap();
@@ -192,7 +177,7 @@ mod tests {
             ]
         });
         let bytes = serde_json::to_vec(&body).unwrap();
-        let (out, orig, comp) = compress_request_body(&bytes);
+        let (out, orig, comp) = compress_request_body(body, bytes.len());
 
         assert!(comp < orig);
         let parsed: Value = serde_json::from_slice(&out).unwrap();
@@ -204,8 +189,6 @@ mod tests {
 
     #[test]
     fn non_tool_output_items_are_untouched() {
-        // A user message and a function_call (the model's invocation) must never
-        // be rewritten — only function_call_output is fair game.
         let body = serde_json::json!({
             "input": [
                 {"type": "message", "role": "user", "content": long_git_status()},
@@ -213,38 +196,31 @@ mod tests {
             ]
         });
         let bytes = serde_json::to_vec(&body).unwrap();
-        let (out, orig, comp) = compress_request_body(&bytes);
+        let (out, orig, comp) = compress_request_body(body.clone(), bytes.len());
 
         assert_eq!(comp, orig, "no function_call_output → passthrough");
-        assert_eq!(out, bytes, "body must be byte-identical");
+        let reparsed: Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(reparsed, body);
     }
 
     #[test]
     fn plain_string_input_passthrough() {
         let body = serde_json::json!({"model": "gpt-5", "input": "hello world"});
         let bytes = serde_json::to_vec(&body).unwrap();
-        let (out, orig, comp) = compress_request_body(&bytes);
+        let (out, orig, comp) = compress_request_body(body.clone(), bytes.len());
         assert_eq!(comp, orig);
-        assert_eq!(out, bytes);
+        let reparsed: Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(reparsed, body);
     }
 
     #[test]
     fn no_input_field_passthrough() {
-        // e.g. a server-state continuation that only sends previous_response_id,
-        // or a GET retrieve sub-path with no body fields we care about.
         let body = serde_json::json!({"model": "gpt-5", "previous_response_id": "resp_abc"});
         let bytes = serde_json::to_vec(&body).unwrap();
-        let (out, orig, comp) = compress_request_body(&bytes);
+        let (out, orig, comp) = compress_request_body(body.clone(), bytes.len());
         assert_eq!(comp, orig);
-        assert_eq!(out, bytes);
-    }
-
-    #[test]
-    fn invalid_json_passthrough() {
-        let bytes = b"this is not json".to_vec();
-        let (out, orig, comp) = compress_request_body(&bytes);
-        assert_eq!(comp, orig);
-        assert_eq!(out, bytes);
+        let reparsed: Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(reparsed, body);
     }
 
     #[test]
@@ -255,8 +231,9 @@ mod tests {
             ]
         });
         let bytes = serde_json::to_vec(&body).unwrap();
-        let (out, orig, comp) = compress_request_body(&bytes);
+        let (out, orig, comp) = compress_request_body(body.clone(), bytes.len());
         assert_eq!(comp, orig);
-        assert_eq!(out, bytes);
+        let reparsed: Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(reparsed, body);
     }
 }
