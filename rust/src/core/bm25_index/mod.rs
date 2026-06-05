@@ -256,12 +256,30 @@ impl BM25Index {
                 continue;
             }
 
+            // Content sources, cheapest first: an explicit per-build hint, then
+            // the shared resident content cache (populated by the search-index
+            // build / ctx_search, issue #148) validated by `(mtime, size)`, then
+            // a one-time disk read that also publishes into the shared cache.
+            let cache_state = crate::core::content_cache::FileState {
+                mtime_ms: state.mtime_ms,
+                size_bytes: state.size_bytes,
+            };
             let content = if let Some(cached) = content_hint.get(rel) {
                 cache_hits += 1;
                 std::borrow::Cow::Borrowed(cached.as_str())
+            } else if let Some(arc) = crate::core::content_cache::get(&abs, cache_state) {
+                cache_hits += 1;
+                std::borrow::Cow::Owned(arc.to_string())
             } else {
                 match std::fs::read_to_string(&abs) {
-                    Ok(c) => std::borrow::Cow::Owned(c),
+                    Ok(c) => {
+                        crate::core::content_cache::insert(
+                            &abs,
+                            cache_state,
+                            std::sync::Arc::from(c.as_str()),
+                        );
+                        std::borrow::Cow::Owned(c)
+                    }
                     Err(_) => continue,
                 }
             };

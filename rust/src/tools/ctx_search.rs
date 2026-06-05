@@ -158,7 +158,7 @@ pub fn handle(
         // device node would block `read_to_string` forever — the root cause of
         // #336 — and oversized or unstatable files are skipped. `metadata`
         // (stat) never opens the file, so it cannot block on a special file.
-        match std::fs::metadata(path) {
+        let state = match std::fs::metadata(path) {
             Ok(meta) if !meta.file_type().is_file() => {
                 files_skipped_special += 1;
                 continue;
@@ -167,17 +167,32 @@ pub fn handle(
                 files_skipped_size += 1;
                 continue;
             }
-            Ok(_) => {}
+            Ok(meta) => crate::core::content_cache::FileState::from_metadata(&meta),
             Err(_) => {
                 files_skipped_encoding += 1;
                 continue;
             }
-        }
-
-        let Ok(content) = std::fs::read_to_string(path) else {
-            files_skipped_encoding += 1;
-            continue;
         };
+
+        // Reuse the copy the trigram-index build already read (issue #148): the
+        // corpus is read from disk once and the regex-verify pass here is an
+        // in-memory hit. On a miss (cold cache / evicted) read once and publish
+        // it for the next caller. `(mtime, size)` validation guarantees we never
+        // verify against stale bytes.
+        let content: std::sync::Arc<str> =
+            if let Some(cached) = state.and_then(|s| crate::core::content_cache::get(path, s)) {
+                cached
+            } else {
+                let Ok(text) = std::fs::read_to_string(path) else {
+                    files_skipped_encoding += 1;
+                    continue;
+                };
+                let arc: std::sync::Arc<str> = std::sync::Arc::from(text);
+                if let Some(s) = state {
+                    crate::core::content_cache::insert(path, s, std::sync::Arc::clone(&arc));
+                }
+                arc
+            };
 
         files_searched += 1;
 
@@ -490,6 +505,44 @@ mod tests {
             match_lines[1].contains("b.txt:"),
             "second match should come from b.txt, got: {}",
             match_lines[1]
+        );
+    }
+
+    #[test]
+    fn warm_index_and_content_cache_path_returns_correct_matches() {
+        // Exercises the trigram-index fast path together with the shared content
+        // cache (#148): the index build reads the corpus once and publishes it,
+        // then this search reuses those bytes. Results must be byte-identical to
+        // the walk path — this asserts that correctness, independent of whether
+        // any individual file is a cache hit or a fallback re-read.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("a.rs"),
+            "fn authenticate() {}\nlet x = 1;\n",
+        )
+        .unwrap();
+        std::fs::write(dir.path().join("b.rs"), "fn connect() {}\n").unwrap();
+        let root = dir.path().to_string_lossy().to_string();
+
+        // Synchronously warm the resident trigram index (also populates the
+        // shared content cache for these paths).
+        assert!(
+            crate::core::search_index::warm_blocking(&root, true, false),
+            "index should warm for a small clean corpus"
+        );
+
+        let (out, _orig) = handle("authenticate", &root, None, 10, CrpMode::Off, true, false);
+        assert!(
+            out.contains("a.rs"),
+            "warm-index + cache search must find the match: {out}"
+        );
+        assert!(
+            out.contains("authenticate"),
+            "the matched line must be present: {out}"
+        );
+        assert!(
+            !out.contains("b.rs"),
+            "a non-matching file must not appear in results: {out}"
         );
     }
 

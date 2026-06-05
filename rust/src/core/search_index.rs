@@ -190,16 +190,30 @@ impl SearchIndex {
             // device node would block the `read_to_string` below forever (#336),
             // hanging the background build and starving the fast path. `metadata`
             // (stat) never opens the file, so it is safe on special files.
-            match std::fs::metadata(path) {
+            let state = match std::fs::metadata(path) {
                 Ok(meta) if !meta.file_type().is_file() => continue,
                 Ok(meta) if meta.len() > MAX_FILE_SIZE => continue,
-                Ok(_) => {}
+                Ok(meta) => crate::core::content_cache::FileState::from_metadata(&meta),
                 Err(_) => continue,
-            }
-            // Mirrors ctx_search: a file that cannot be read as UTF-8 is never
-            // searchable, so excluding it from the index keeps parity.
-            let Ok(content) = std::fs::read_to_string(path) else {
-                continue;
+            };
+            // Read the corpus exactly once (issue #148): reuse a fresh cached
+            // copy if a prior `ctx_search`/build already read this file, else
+            // read it now and publish it so the upcoming `ctx_search` verify
+            // pass is an in-memory hit instead of a second disk read. Mirrors
+            // ctx_search: a non-UTF-8 file is never searchable, so it is skipped.
+            let content: std::sync::Arc<str> = if let Some(cached) =
+                state.and_then(|s| crate::core::content_cache::get(path, s))
+            {
+                cached
+            } else {
+                let Ok(text) = std::fs::read_to_string(path) else {
+                    continue;
+                };
+                let arc: std::sync::Arc<str> = std::sync::Arc::from(text);
+                if let Some(s) = state {
+                    crate::core::content_cache::insert(path, s, std::sync::Arc::clone(&arc));
+                }
+                arc
             };
 
             if files.len() >= MAX_FILES {

@@ -45,6 +45,10 @@ impl Component {
 #[derive(Debug)]
 struct ProjectBuild {
     worker_running: bool,
+    /// Set the first time a heavy-index tool lazily pre-warms this root (#152).
+    /// Prevents re-triggering a full rebuild on every subsequent dispatch — the
+    /// tools' own `load_or_build` paths handle staleness from then on.
+    warm_triggered: bool,
     graph: Component,
     bm25: Component,
 }
@@ -53,6 +57,7 @@ impl ProjectBuild {
     fn new() -> Self {
         Self {
             worker_running: false,
+            warm_triggered: false,
             graph: Component::new(),
             bm25: Component::new(),
         }
@@ -110,6 +115,81 @@ fn finish_err(c: &mut Component, e: String) {
     c.finished_ms = Some(end);
     c.duration_ms = c.started_ms.map(|s| end.saturating_sub(s));
     c.last_error = Some(e);
+}
+
+/// The index warmth a tool benefits from. Drives lazy, demand-driven warming
+/// (issue #152) so the server no longer scans the whole project eagerly on every
+/// `initialize` — a session that only uses `ctx_read`/`ctx_shell`/`ctx_tree`
+/// pays zero indexing cost.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WarmNeed {
+    /// No prebuilt index needed.
+    None,
+    /// Only the resident line-search (trigram) index — cheap, used by `ctx_search`.
+    Search,
+    /// Full project indices (graph + BM25; this also warms the search index).
+    Heavy,
+}
+
+/// Classify a tool by the index warmth it benefits from. Unknown tools default
+/// to [`WarmNeed::None`]; a heavy tool mis-classified as `None` still works — it
+/// just builds its index synchronously on first use instead of being pre-warmed.
+#[must_use]
+pub fn warm_need_for_tool(tool: &str) -> WarmNeed {
+    match tool {
+        "ctx_search" => WarmNeed::Search,
+        // Tools that build/consume the graph, call-graph, BM25 or artifact index.
+        "ctx_graph"
+        | "ctx_callgraph"
+        | "ctx_routes"
+        | "ctx_repomap"
+        | "ctx_impact"
+        | "ctx_artifacts"
+        | "ctx_semantic_search"
+        | "ctx_provider"
+        | "ctx_compose"
+        | "ctx_review" => WarmNeed::Heavy,
+        _ => WarmNeed::None,
+    }
+}
+
+/// Lazily warm the indices a tool needs, deduped per root. Never blocks (all
+/// work is spawned in the background) and is safe to call on every dispatch.
+///
+/// Returns `true` only when this call is the *first* heavy pre-warm for `root`
+/// in this process — the caller can use that signal to warm secondary roots once
+/// without re-reading session state on every dispatch.
+pub fn ensure_warm_for_tool(project_root: &str, tool: &str) -> bool {
+    if project_root.is_empty() {
+        return false;
+    }
+    match warm_need_for_tool(tool) {
+        WarmNeed::None => false,
+        WarmNeed::Search => {
+            // The search index has its own TTL + background-rebuild dedup, so it
+            // is safe (and cheap) to nudge on every `ctx_search`.
+            crate::core::search_index::ensure_background(project_root, true, false);
+            false
+        }
+        WarmNeed::Heavy => {
+            let entry = entry_for(project_root);
+            let first_warm = {
+                let mut s = entry
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                if s.warm_triggered {
+                    false
+                } else {
+                    s.warm_triggered = true;
+                    true
+                }
+            };
+            if first_warm {
+                ensure_all_background(project_root);
+            }
+            first_warm
+        }
+    }
 }
 
 pub fn ensure_all_background(project_root: &str) {
@@ -470,6 +550,69 @@ mod tests {
     fn status_json_is_valid_json() {
         let s = status_json("/tmp");
         let _: serde_json::Value = serde_json::from_str(&s).unwrap();
+    }
+
+    #[test]
+    fn warm_need_classifies_tools() {
+        // Lightweight tools must never trigger a project scan (#152).
+        for light in [
+            "ctx_read",
+            "ctx_shell",
+            "ctx_tree",
+            "ctx_knowledge",
+            "unknown_tool",
+        ] {
+            assert_eq!(warm_need_for_tool(light), WarmNeed::None, "{light}");
+        }
+        // ctx_search only needs the cheap trigram index.
+        assert_eq!(warm_need_for_tool("ctx_search"), WarmNeed::Search);
+        // Graph / BM25 consumers need the full warm.
+        for heavy in [
+            "ctx_graph",
+            "ctx_callgraph",
+            "ctx_routes",
+            "ctx_repomap",
+            "ctx_impact",
+            "ctx_artifacts",
+            "ctx_semantic_search",
+            "ctx_provider",
+            "ctx_compose",
+            "ctx_review",
+        ] {
+            assert_eq!(warm_need_for_tool(heavy), WarmNeed::Heavy, "{heavy}");
+        }
+    }
+
+    #[test]
+    fn ensure_warm_lightweight_and_search_never_signal_first_warm() {
+        // None and Search must return false (no heavy pre-warm), and an empty
+        // root is always a no-op.
+        assert!(!ensure_warm_for_tool("", "ctx_graph"));
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().to_string_lossy().to_string();
+        assert!(!ensure_warm_for_tool(&root, "ctx_read"));
+        assert!(!ensure_warm_for_tool(&root, "ctx_search"));
+    }
+
+    #[test]
+    fn ensure_warm_heavy_is_once_per_root() {
+        // The first heavy pre-warm signals `true` (so the caller warms extra
+        // roots once); every subsequent call is a no-op `false`, preventing a
+        // rebuild-on-every-dispatch storm.
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().to_string_lossy().to_string();
+        assert!(
+            ensure_warm_for_tool(&root, "ctx_callgraph"),
+            "first heavy warm must signal true"
+        );
+        assert!(
+            !ensure_warm_for_tool(&root, "ctx_callgraph"),
+            "second heavy warm must be deduped to false"
+        );
+        assert!(
+            !ensure_warm_for_tool(&root, "ctx_semantic_search"),
+            "any later heavy tool on the same root is also deduped"
+        );
     }
 
     #[test]

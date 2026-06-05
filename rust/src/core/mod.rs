@@ -160,6 +160,7 @@ pub mod knowledge_domain {
 // ---------------------------------------------------------------------------
 pub mod bm25_cache;
 pub mod bm25_index;
+pub mod content_cache;
 pub mod content_chunk;
 pub mod context_packing;
 pub mod cooccurrence;

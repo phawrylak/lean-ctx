@@ -167,47 +167,9 @@ impl LeanCtxServer {
         let config = crate::core::config::Config::load();
         let minimal = config.minimal_overhead_effective();
 
-        {
-            use crate::core::budget_tracker::{BudgetLevel, BudgetTracker};
-            let snap = BudgetTracker::global().check();
-            if *snap.worst_level() == BudgetLevel::Exhausted
-                && name != "ctx_session"
-                && name != "ctx_cost"
-                && name != "ctx_metrics"
-            {
-                for (dim, lvl, used, limit) in [
-                    (
-                        "tokens",
-                        &snap.tokens.level,
-                        format!("{}", snap.tokens.used),
-                        format!("{}", snap.tokens.limit),
-                    ),
-                    (
-                        "shell",
-                        &snap.shell.level,
-                        format!("{}", snap.shell.used),
-                        format!("{}", snap.shell.limit),
-                    ),
-                    (
-                        "cost",
-                        &snap.cost.level,
-                        format!("${:.2}", snap.cost.used_usd),
-                        format!("${:.2}", snap.cost.limit_usd),
-                    ),
-                ] {
-                    if *lvl == BudgetLevel::Exhausted {
-                        crate::core::events::emit_budget_exhausted(&snap.role, dim, &used, &limit);
-                    }
-                }
-                let msg = format!(
-                    "[BUDGET EXHAUSTED] {}\n\
-                     Use `ctx_session action=role` to check/switch roles, \
-                     or `ctx_session action=reset` to start fresh.",
-                    snap.format_compact()
-                );
-                tracing::warn!(tool = name, "{msg}");
-                return Ok(CallToolResult::success(vec![Content::text(msg)]));
-            }
+        if let Some(msg) = post_process::budget_exhausted_message(name) {
+            tracing::warn!(tool = name, "{msg}");
+            return Ok(CallToolResult::success(vec![Content::text(msg)]));
         }
 
         if is_shell_tool_name(name) {
@@ -252,17 +214,7 @@ impl LeanCtxServer {
         // Context IR: record lineage for every tool call.
         if let Some(ref ir) = self.context_ir {
             let tool_duration = tool_start.elapsed();
-            let source_kind = match name {
-                n if n.contains("read") || n.contains("multi_read") || n.contains("smart_read") => {
-                    crate::core::context_ir::ContextIrSourceKindV1::Read
-                }
-                "ctx_shell" => crate::core::context_ir::ContextIrSourceKindV1::Shell,
-                "ctx_search" | "ctx_semantic_search" => {
-                    crate::core::context_ir::ContextIrSourceKindV1::Search
-                }
-                "ctx_provider" => crate::core::context_ir::ContextIrSourceKindV1::Provider,
-                _ => crate::core::context_ir::ContextIrSourceKindV1::Other,
-            };
+            let source_kind = post_process::context_ir_source_kind(name);
             let ir_path = helpers::get_str(args, "path");
             let ir_command = helpers::get_str(args, "command");
             let ir_mode = helpers::get_str(args, "mode");
@@ -325,48 +277,7 @@ impl LeanCtxServer {
         // Persist anomaly detector — debounced to reduce I/O in burst sequences.
         crate::core::anomaly::save_debounced();
 
-        let budget_warning = {
-            use crate::core::budget_tracker::{BudgetLevel, BudgetTracker};
-            let snap = BudgetTracker::global().check();
-            if *snap.worst_level() == BudgetLevel::Warning {
-                for (dim, lvl, used, limit, pct) in [
-                    (
-                        "tokens",
-                        &snap.tokens.level,
-                        format!("{}", snap.tokens.used),
-                        format!("{}", snap.tokens.limit),
-                        snap.tokens.percent,
-                    ),
-                    (
-                        "shell",
-                        &snap.shell.level,
-                        format!("{}", snap.shell.used),
-                        format!("{}", snap.shell.limit),
-                        snap.shell.percent,
-                    ),
-                    (
-                        "cost",
-                        &snap.cost.level,
-                        format!("${:.2}", snap.cost.used_usd),
-                        format!("${:.2}", snap.cost.limit_usd),
-                        snap.cost.percent,
-                    ),
-                ] {
-                    if *lvl == BudgetLevel::Warning {
-                        crate::core::events::emit_budget_warning(
-                            &snap.role, dim, &used, &limit, pct,
-                        );
-                    }
-                }
-                if crate::core::protocol::meta_visible() {
-                    Some(format!("[BUDGET WARNING] {}", snap.format_compact()))
-                } else {
-                    None
-                }
-            } else {
-                None
-            }
-        };
+        let budget_warning = post_process::budget_warning_message();
 
         let archive_hint = if minimal || is_raw_shell {
             None
@@ -397,23 +308,14 @@ impl LeanCtxServer {
         };
 
         let pre_compression = result_text.clone();
-        let deeply_compressed = matches!(
+        result_text = post_process::compress_terse(
+            result_text,
             name,
-            "ctx_read" | "ctx_multi_read" | "ctx_smart_read" | "ctx_compress" | "ctx_overview"
+            args,
+            &config,
+            tool_saved_tokens,
+            is_raw_shell,
         );
-        let skip_terse = is_raw_shell
-            || (tool_saved_tokens > 0 && deeply_compressed)
-            || (name == "ctx_shell"
-                && helpers::get_str(args, "command")
-                    .is_some_and(|c| crate::shell::compress::has_structural_output(&c)));
-        let compression = crate::core::config::CompressionLevel::effective(&config);
-        if compression.is_active() && !skip_terse {
-            let terse_result =
-                crate::core::terse::pipeline::compress(&result_text, &compression, None);
-            if terse_result.quality_passed && terse_result.savings_pct >= 3.0 {
-                result_text = terse_result.output;
-            }
-        }
 
         let profile_hints = crate::core::profiles::active_profile().output_hints;
 
@@ -693,28 +595,15 @@ impl LeanCtxServer {
             });
         }
 
-        #[allow(clippy::cast_possible_truncation)]
-        let output_token_count = if result_text.len() == pre_terse_len {
-            output_tokens as usize
-        } else {
-            crate::core::tokens::count_tokens(&result_text)
-        };
-
-        // OPT-4: Correct stats with post-processing token counts.
-        // dispatch/mod.rs records savings before terse/hints; adjust here
-        // so persistent stats reflect what the model actually receives.
-        if result_text.len() != pre_terse_len && tool_saved_tokens > 0 {
-            let pre_savings = tool_saved_tokens;
-            let actual_sent = output_token_count;
-            let original = actual_sent + pre_savings;
-            let actual_savings = original.saturating_sub(actual_sent);
-            if actual_savings != pre_savings {
-                let delta = pre_savings as i64 - actual_savings as i64;
-                if delta != 0 {
-                    crate::core::stats::adjust_savings(name, delta);
-                }
-            }
-        }
+        // OPT-4: dispatch/mod.rs records savings before terse/hints run; this
+        // finalizes the real sent-token count and corrects persistent stats.
+        let output_token_count = post_process::finalize_token_count_and_adjust(
+            name,
+            &result_text,
+            pre_terse_len,
+            output_tokens,
+            tool_saved_tokens,
+        );
 
         let action = helpers::get_str(args, "action");
 
@@ -738,119 +627,14 @@ impl LeanCtxServer {
             }
         }
 
-        {
-            let input = helpers::canonical_args_string(args);
-            let input_md5 = helpers::hash_fast(&input);
-            let output_md5 = helpers::hash_fast(&result_text);
-            let agent_id = self.agent_id.read().await.clone();
-            let client_name = self.client_name.read().await.clone();
-            let mut explicit_intent: Option<(
-                crate::core::intent_protocol::IntentRecord,
-                Option<String>,
-                String,
-            )> = None;
-
-            let pending_session_save = {
-                let empty_args = serde_json::Map::new();
-                let args_map = args.unwrap_or(&empty_args);
-                let mut session = self.session.write().await;
-                session.record_tool_receipt(
-                    name,
-                    action.as_deref(),
-                    &input_md5,
-                    &output_md5,
-                    agent_id.as_deref(),
-                    Some(&client_name),
-                );
-
-                if let Some(intent) = crate::core::intent_protocol::infer_from_tool_call(
-                    name,
-                    action.as_deref(),
-                    args_map,
-                    session.project_root.as_deref(),
-                ) {
-                    let is_explicit =
-                        intent.source == crate::core::intent_protocol::IntentSource::Explicit;
-                    let root = session.project_root.clone();
-                    let sid = session.id.clone();
-                    session.record_intent(intent.clone());
-                    if is_explicit {
-                        explicit_intent = Some((intent, root, sid));
-                    }
-                }
-                if session.should_save() {
-                    session.prepare_save().ok()
-                } else {
-                    None
-                }
-            };
-
-            if let Some(prepared) = pending_session_save {
-                let ir_clone = self.context_ir.clone();
-                tokio::task::spawn_blocking(move || {
-                    let _ = prepared.write_to_disk();
-                    if let Some(ir) = ir_clone {
-                        if let Ok(ir_guard) = ir.try_read() {
-                            ir_guard.save();
-                        }
-                    }
-                });
-            }
-
-            if let Some((intent, root, session_id)) = explicit_intent {
-                let _ = crate::core::intent_protocol::apply_side_effects(
-                    &intent,
-                    root.as_deref(),
-                    &session_id,
-                );
-            }
-
-            if self.autonomy.is_enabled() {
-                let (calls, project_root) = {
-                    let session = self.session.read().await;
-                    (session.stats.total_tool_calls, session.project_root.clone())
-                };
-
-                if let Some(root) = project_root {
-                    if crate::tools::autonomy::should_auto_consolidate(&self.autonomy, calls) {
-                        let root_clone = root.clone();
-                        tokio::task::spawn_blocking(move || {
-                            let _ = crate::core::consolidation_engine::consolidate_latest(
-                                &root_clone,
-                                crate::core::consolidation_engine::ConsolidationBudgets::default(),
-                            );
-                        });
-                    }
-                }
-            }
-
-            let agent_key = agent_id.unwrap_or_else(|| "unknown".to_string());
-            let input_token_count = crate::core::tokens::count_tokens(&input) as u64;
-            let output_token_count_u64 = output_token_count as u64;
-            let name_owned = name.to_string();
-            tokio::task::spawn_blocking(move || {
-                let pricing = crate::core::gain::model_pricing::ModelPricing::load();
-                let quote = pricing.quote_from_env_or_agent_type(&client_name);
-                let cost_usd =
-                    quote
-                        .cost
-                        .estimate_usd(input_token_count, output_token_count_u64, 0, 0);
-                crate::core::budget_tracker::BudgetTracker::global().record_cost_usd(cost_usd);
-
-                let mut store = crate::core::a2a::cost_attribution::CostStore::load();
-                store.record_tool_call(
-                    &agent_key,
-                    &client_name,
-                    &name_owned,
-                    input_token_count,
-                    output_token_count_u64,
-                    0,
-                );
-                if let Err(e) = store.save() {
-                    tracing::warn!("lean-ctx: failed to persist cost attribution: {e}");
-                }
-            });
-        }
+        self.record_receipt_and_cost(
+            name,
+            args,
+            action.as_deref(),
+            &result_text,
+            output_token_count,
+        )
+        .await;
 
         // Context Bus: conflict detection for knowledge writes in shared mode.
         if self.session_mode == crate::tools::SessionMode::Shared
@@ -889,76 +673,8 @@ impl LeanCtxServer {
             }
         }
 
-        // Context OS: persist shared session + publish events.
-        if self.session_mode == crate::tools::SessionMode::Shared {
-            let ws = self.workspace_id.clone();
-            let ch = self.channel_id.clone();
-            let rt = self.context_os.clone();
-            let agent = self.agent_id.read().await.clone();
-            let tool = name.to_string();
-            let tool_action = action.clone();
-            let tool_path = helpers::get_str(args, "path");
-            let tool_category = helpers::get_str(args, "category");
-            let tool_key = helpers::get_str(args, "key");
-            let session_snapshot = self.session.read().await.clone();
-            let session_task = session_snapshot.task.clone();
-            tokio::task::spawn_blocking(move || {
-                let Some(rt) = rt else {
-                    return;
-                };
-                let Some(root) = session_snapshot.project_root.as_deref() else {
-                    return;
-                };
-                rt.shared_sessions
-                    .persist_best_effort(root, &ws, &ch, &session_snapshot);
-                rt.metrics.record_session_persisted();
-
-                let mut base_payload = serde_json::json!({
-                    "tool": tool,
-                    "action": tool_action,
-                });
-                if let Some(ref p) = tool_path {
-                    base_payload["path"] = serde_json::Value::String(p.clone());
-                }
-                if let Some(ref c) = tool_category {
-                    base_payload["category"] = serde_json::Value::String(c.clone());
-                }
-                if let Some(ref k) = tool_key {
-                    base_payload["key"] = serde_json::Value::String(k.clone());
-                }
-                if let Some(ref t) = session_task {
-                    base_payload["reasoning"] = serde_json::Value::String(t.description.clone());
-                }
-
-                if rt
-                    .bus
-                    .append(
-                        &ws,
-                        &ch,
-                        &crate::core::context_os::ContextEventKindV1::ToolCallRecorded,
-                        agent.as_deref(),
-                        base_payload.clone(),
-                    )
-                    .is_some()
-                {
-                    rt.metrics.record_event_appended();
-                    rt.metrics.record_event_broadcast();
-                }
-
-                if let Some(secondary) =
-                    crate::core::context_os::secondary_event_kind(&tool, tool_action.as_deref())
-                {
-                    if rt
-                        .bus
-                        .append(&ws, &ch, &secondary, agent.as_deref(), base_payload)
-                        .is_some()
-                    {
-                        rt.metrics.record_event_appended();
-                        rt.metrics.record_event_broadcast();
-                    }
-                }
-            });
-        }
+        self.persist_shared_context_os(name, action.as_deref(), args)
+            .await;
 
         let skip_checkpoint = minimal
             || matches!(
@@ -1090,18 +806,11 @@ impl LeanCtxServer {
                 .cloned()
                 .collect();
         }
-        session.project_root = Some(new_root.clone());
-        let extra = session.extra_roots.clone();
+        session.project_root = Some(new_root);
         let _ = session.save();
-
-        // Trigger background indexing for the new root (+ extra roots)
         drop(session);
-        crate::core::index_orchestrator::ensure_all_background(&new_root);
-        if !extra.is_empty() {
-            let r = new_root;
-            std::thread::spawn(move || {
-                crate::core::index_orchestrator::ensure_extra_roots_background(&r, &extra);
-            });
-        }
+        // Indices warm lazily on first use of a tool that needs them (#152) —
+        // the dispatch path for this very call handles it via
+        // `index_orchestrator::ensure_warm_for_tool`, so no eager scan here.
     }
 }

@@ -31,6 +31,8 @@ use rmcp::ErrorData;
 
 use crate::tools::{CrpMode, LeanCtxServer};
 mod call_tool;
+mod post_dispatch;
+mod post_process;
 mod server_handler;
 
 pub fn build_instructions_for_test(crp_mode: CrpMode) -> String {

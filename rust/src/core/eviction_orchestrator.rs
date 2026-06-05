@@ -101,13 +101,16 @@ impl EvictionOrchestrator {
                 if bm25_bytes > 0 {
                     super::bm25_cache::unload(&self.bm25_cache);
                 }
+                let content_freed = super::content_cache::memory_usage_bytes();
+                super::content_cache::clear();
                 let trimmed = self.try_write_cache(SessionCache::trim_compressed_outputs);
                 memory_guard::jemalloc_purge();
                 tracing::info!(
-                    "[eviction] unloaded indices (bm25={:.1}MB freed, {trimmed} outputs trimmed)",
+                    "[eviction] unloaded indices (bm25={:.1}MB + content={:.1}MB freed, {trimmed} outputs trimmed)",
                     bm25_bytes as f64 / 1_048_576.0,
+                    content_freed as f64 / 1_048_576.0,
                 );
-                bm25_bytes > 0 || trimmed > 0
+                bm25_bytes > 0 || content_freed > 0 || trimmed > 0
             }
 
             HomeostasisAction::EvictProtected { target_tokens } => {
@@ -122,6 +125,7 @@ impl EvictionOrchestrator {
             HomeostasisAction::EmergencyDrop => {
                 let cleared = self.try_write_cache(SessionCache::clear);
                 super::bm25_cache::unload(&self.bm25_cache);
+                super::content_cache::clear();
                 memory_guard::jemalloc_purge();
                 tracing::warn!(
                     "[eviction] EMERGENCY: cleared {cleared} cache entries + unloaded all indices"
