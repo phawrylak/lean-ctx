@@ -146,17 +146,30 @@ fn detect_multi_root_workspace(dir: &std::path::Path) -> Option<String> {
     None
 }
 
-pub fn tool_descriptions_for_test() -> Vec<(&'static str, &'static str)> {
-    crate::tool_defs::list_all_tool_defs()
+pub fn tool_descriptions_for_test() -> Vec<(String, String)> {
+    crate::server::registry::build_registry()
+        .tool_defs()
         .into_iter()
-        .map(|(name, desc, _)| (name, desc))
+        .map(|t| {
+            (
+                t.name.to_string(),
+                t.description.as_deref().unwrap_or("").to_string(),
+            )
+        })
         .collect()
 }
 
 pub fn tool_schemas_json_for_test() -> String {
-    crate::tool_defs::list_all_tool_defs()
+    crate::server::registry::build_registry()
+        .tool_defs()
         .iter()
-        .map(|(name, _, schema)| format!("{name}: {schema}"))
+        .map(|t| {
+            format!(
+                "{}: {}",
+                t.name,
+                serde_json::to_string(&t.input_schema).unwrap_or_default()
+            )
+        })
         .collect::<Vec<_>>()
         .join("\n")
 }

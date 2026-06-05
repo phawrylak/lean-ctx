@@ -4,7 +4,7 @@ use rmcp::model::Tool;
 use serde_json::{Map, Value};
 
 mod granular;
-pub use granular::{granular_tool_defs, list_all_tool_defs, unified_tool_defs};
+pub use granular::{granular_tool_defs, unified_tool_defs};
 
 pub fn tool_def(name: &'static str, description: &'static str, schema_value: Value) -> Tool {
     let schema: Map<String, Value> = match schema_value {
@@ -42,14 +42,23 @@ pub fn lazy_tool_defs() -> Vec<Tool> {
 }
 
 pub fn discover_tools(query: &str) -> String {
-    let all = list_all_tool_defs();
+    // Derived from the registry (single source of truth) so discovery results
+    // never drift from the advertised tool schemas (#141).
+    let all = crate::server::registry::build_registry().tool_defs();
     let query_lower = query.to_lowercase();
-    let matches: Vec<(&str, &str)> = all
+    let matches: Vec<(String, String)> = all
         .iter()
-        .filter(|(name, desc, _)| {
-            name.to_lowercase().contains(&query_lower) || desc.to_lowercase().contains(&query_lower)
+        .filter_map(|t| {
+            let name = t.name.as_ref();
+            let desc = t.description.as_deref().unwrap_or("");
+            if name.to_lowercase().contains(&query_lower)
+                || desc.to_lowercase().contains(&query_lower)
+            {
+                Some((name.to_string(), desc.to_string()))
+            } else {
+                None
+            }
         })
-        .map(|(name, desc, _)| (*name, *desc))
         .collect();
 
     if matches.is_empty() {
@@ -58,10 +67,12 @@ pub fn discover_tools(query: &str) -> String {
 
     let mut out = format!("{} tools matching '{query}':\n", matches.len());
     for (name, desc) in &matches {
-        let short = if desc.len() > 80 {
-            &desc[..desc.floor_char_boundary(80)]
+        // First line only — registry descriptions can be multi-line.
+        let first = desc.lines().next().unwrap_or(desc);
+        let short = if first.len() > 80 {
+            &first[..first.floor_char_boundary(80)]
         } else {
-            desc
+            first
         };
         out.push_str(&format!("  {name} — {short}\n"));
     }

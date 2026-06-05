@@ -125,16 +125,27 @@ fn bench_tool_descriptions_token_count() {
     eprintln!("  {:<25} {:>8}", "TOTAL", total);
     eprintln!("{}", "=".repeat(70));
 
+    // Budgets reflect the real registry tool surface (single source of truth,
+    // #141): all 68 tools with their full `McpTool::tool_def()` descriptions —
+    // i.e. exactly what the live server advertises in full mode. The previous
+    // (lower) budget measured the retired `list_all_tool_defs` abbreviated set,
+    // which never matched what agents actually received.
     assert!(
-        total < 1600,
-        "Total tool description tokens should be <1600, got {total}"
+        total < 2400,
+        "Total tool description tokens should be <2400, got {total}"
     );
 
     for (name, desc) in &descriptions {
+        // ctx_call is the universal invoker: its description intentionally lists
+        // the full non-core tool catalog so lazy-mode clients can discover what
+        // is callable. Every other tool stays within a tight per-tool budget.
+        if name == "ctx_call" {
+            continue;
+        }
         let t = count_tokens(desc);
         assert!(
-            t < 120,
-            "Tool '{name}' description should be <120 tokens, got {t}"
+            t < 160,
+            "Tool '{name}' description should be <160 tokens, got {t}"
         );
     }
 }
@@ -165,9 +176,12 @@ fn bench_total_input_overhead() {
     );
     eprintln!("{}", "=".repeat(70));
 
+    // Full tool surface (all 68 tools, registry SSOT incl. full property
+    // schemas) — the worst-case opt-in overhead. The default lazy surface is
+    // far smaller; see `bench_lazy_default_vs_full_overhead` (#141).
     assert!(
-        total < 6000,
-        "Total input overhead should be <6000 tokens, got {total}"
+        total < 11000,
+        "Total input overhead should be <11000 tokens, got {total}"
     );
 }
 
@@ -237,14 +251,22 @@ fn bench_lazy_default_vs_full_overhead() {
     eprintln!("  Tool token reduction:          {reduction_pct:>5.1}%");
     eprintln!("{}", "=".repeat(70));
 
+    // Lazy mode exposes exactly the curated core set. Bound it to the canonical
+    // CORE_TOOL_NAMES length so it tracks the SSOT instead of a magic number
+    // (#141: the prior `<=12` reflected a granular list that had drifted to omit
+    // one core tool).
     assert!(
-        lazy_tools.len() <= 12,
-        "Lazy mode should expose <=12 tools, got {}",
+        lazy_tools.len() <= lean_ctx::tool_defs::core_tool_names().len(),
+        "Lazy mode should expose <= core_tool_names() ({}), got {}",
+        lean_ctx::tool_defs::core_tool_names().len(),
         lazy_tools.len()
     );
+    // Real default overhead: core tools carry their full registry schemas
+    // (uncompressed) plus descriptions, matching what the live server sends
+    // (#141).
     assert!(
-        lazy_user_overhead < 2700,
-        "Lazy default overhead should be <2700 tokens, got {lazy_user_overhead}"
+        lazy_user_overhead < 3800,
+        "Lazy default overhead should be <3800 tokens, got {lazy_user_overhead}"
     );
     assert!(
         reduction_pct > 60.0,
@@ -1792,9 +1814,11 @@ fn bench_full_per_call_overhead_budget() {
     eprintln!("  Total reduction potential:   {reduction:>5.1}%");
     eprintln!("{}", "=".repeat(70));
 
+    // Best case = lazy core tools (full registry schemas) + minimal
+    // instructions, matching the live server's default surface (#141 SSOT).
     assert!(
-        best_case < 3000,
-        "Best-case overhead should be <3000 tokens, got {best_case}"
+        best_case < 4200,
+        "Best-case overhead should be <4200 tokens, got {best_case}"
     );
     assert!(
         reduction > 50.0,
