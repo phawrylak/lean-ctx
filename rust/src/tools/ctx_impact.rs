@@ -10,7 +10,13 @@ use std::collections::BTreeSet;
 use std::path::Path;
 use std::process::Stdio;
 
-const GRAPH_SOURCE_EXTS: &[&str] = &["rs", "ts", "tsx", "js", "jsx", "py", "go", "java", "gd"];
+/// Extensions whose files become Property Graph source nodes. Must stay a subset
+/// of `language_capabilities::is_indexable_ext` and align with the deep-query
+/// extractors (`deep_queries::{type_defs, calls}`) so each language contributes
+/// real symbol/import/call structure rather than bare file nodes.
+const GRAPH_SOURCE_EXTS: &[&str] = &[
+    "rs", "ts", "tsx", "js", "jsx", "py", "go", "java", "gd", "cs",
+];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum OutputFormat {

@@ -44,6 +44,9 @@ fn is_call_node(kind: &str) -> bool {
             | "method_invocation"
             | "call"
             | "object_creation_expression"
+            // C# method calls are `invocation_expression`; `new T(...)` reuses
+            // `object_creation_expression` (shared with Java) above.
+            | "invocation_expression"
             // GDScript method calls and `X.new()` instantiation are `attribute_call`.
             | "attribute_call"
     )
@@ -59,7 +62,97 @@ fn parse_call(node: Node, src: &str, ext: &str) -> Option<CallSite> {
         "java" => parse_call_java(node, src),
         "kt" | "kts" => parse_call_kotlin(node, src),
         "gd" => parse_call_gd(node, src),
+        "cs" => parse_call_csharp(node, src),
         _ => None,
+    }
+}
+
+/// C# call sites: `invocation_expression` for method/function calls and
+/// `object_creation_expression` (`new T(...)`) for constructor calls.
+///
+/// - `foo(...)`            -> callee `foo`,  no receiver
+/// - `obj.Method(...)`     -> callee `Method`, receiver `obj`, method call
+/// - `A.B.Method(...)`     -> callee `Method`, receiver `A.B`,  method call
+/// - `Method<T>(...)`      -> callee `Method` (generic name reduced to its identifier)
+/// - `new Engine(...)`     -> callee `Engine` (the constructed type), no receiver
+#[cfg(feature = "tree-sitter")]
+fn parse_call_csharp(node: Node, src: &str) -> Option<CallSite> {
+    let line = node.start_position().row + 1;
+    let col = node.start_position().column;
+
+    if node.kind() == "object_creation_expression" {
+        // `new Foo(...)` / `new Foo<T>(...)` — the callee is the constructed type.
+        let type_node = node.child_by_field_name("type")?;
+        let callee = csharp_simple_name(type_node, src)?;
+        return Some(CallSite {
+            callee,
+            line,
+            col,
+            receiver: None,
+            is_method: false,
+        });
+    }
+
+    // invocation_expression: the `function` field holds what is being called.
+    let func = node.child_by_field_name("function")?;
+    if func.kind() == "member_access_expression" {
+        let name_node = func.child_by_field_name("name")?;
+        let callee = csharp_simple_name(name_node, src)?;
+        let receiver = func
+            .child_by_field_name("expression")
+            .map(|r| node_text(r, src).to_string());
+        return Some(CallSite {
+            callee,
+            line,
+            col,
+            receiver,
+            is_method: true,
+        });
+    }
+
+    // Bare invocation: identifier / generic_name / qualified_name.
+    let callee = csharp_simple_name(func, src)?;
+    Some(CallSite {
+        callee,
+        line,
+        col,
+        receiver: None,
+        is_method: false,
+    })
+}
+
+/// Reduce a C# name node to its simple identifier:
+/// `Foo` -> `Foo`, `Foo<T>` (generic_name) -> `Foo`, `A.B.Foo` (qualified_name) -> `Foo`.
+/// Returns `None` for nameless constructs (e.g. `new int[]`) so they do not
+/// pollute the call graph with junk callees.
+#[cfg(feature = "tree-sitter")]
+fn csharp_simple_name(node: Node, src: &str) -> Option<String> {
+    match node.kind() {
+        "identifier" => Some(node_text(node, src).to_string()),
+        "generic_name" => {
+            find_child_by_kind(node, "identifier").map(|id| node_text(id, src).to_string())
+        }
+        "qualified_name" | "alias_qualified_name" | "member_access_expression" => {
+            let text = node_text(node, src);
+            let last = text
+                .rsplit(['.', ':'])
+                .find(|seg| !seg.trim().is_empty())
+                .unwrap_or(text)
+                .trim();
+            // Drop any generic argument suffix: `Foo<T>` -> `Foo`.
+            let bare = last.split('<').next().unwrap_or(last).trim();
+            if bare.is_empty() {
+                None
+            } else {
+                Some(bare.to_string())
+            }
+        }
+        // `object_creation_expression`'s `type` field wraps a concrete type node
+        // (identifier / generic_name / qualified_name / predefined / array …).
+        _ => find_child_by_kind(node, "identifier")
+            .or_else(|| find_child_by_kind(node, "generic_name"))
+            .or_else(|| find_child_by_kind(node, "qualified_name"))
+            .and_then(|inner| csharp_simple_name(inner, src)),
     }
 }
 

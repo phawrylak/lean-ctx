@@ -360,6 +360,62 @@ fn safe_scan_root_accepts_multi_repo_parent() {
 }
 
 #[test]
+fn csharp_graph_edges_end_to_end() {
+    // Full edge pipeline for a small C# project: `using` resolution (import
+    // edges) + namespace cohesion (namespace edges). Regression for the empty
+    // C# Call Graph / sparse graph report (NINA).
+    const USER_SERVICE: &str = "namespace App.Services;\n\
+using App.Data;\n\
+\n\
+public class UserService\n{\n    \
+private readonly OrderRepository _repo = new OrderRepository();\n    \
+public void Save() { _repo.Persist(); }\n}\n";
+    const ORDER_SERVICE: &str = "namespace App.Services;\n\
+\n\
+public class OrderService { public void Process() {} }\n";
+    const ORDER_REPO: &str = "namespace App.Data;\n\
+\n\
+public class OrderRepository { public void Persist() {} }\n";
+
+    let files = [
+        ("src/App/Services/UserService.cs", USER_SERVICE),
+        ("src/App/Services/OrderService.cs", ORDER_SERVICE),
+        ("src/App/Data/OrderRepository.cs", ORDER_REPO),
+    ];
+
+    let mut index = ProjectIndex::new("/proj-does-not-need-to-exist");
+    let mut cache: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    for (path, content) in files {
+        index
+            .files
+            .insert(path.to_string(), fe(path, content, "cs"));
+        cache.insert(path.to_string(), content.to_string());
+    }
+
+    build_edges_cached(&mut index, &cache);
+
+    // `using App.Data` resolves to the representative file of that namespace.
+    assert!(
+        index.edges.iter().any(|e| e.kind == "import"
+            && e.from == "src/App/Services/UserService.cs"
+            && e.to == "src/App/Data/OrderRepository.cs"),
+        "expected a C# `using` import edge, got {:?}",
+        index.edges
+    );
+
+    // Two files in `App.Services` are linked by a namespace cohesion edge.
+    assert!(
+        index.edges.iter().any(|e| e.kind == "namespace"
+            && (e.from == "src/App/Services/OrderService.cs"
+                && e.to == "src/App/Services/UserService.cs"
+                || e.from == "src/App/Services/UserService.cs"
+                    && e.to == "src/App/Services/OrderService.cs")),
+        "expected a C# namespace cohesion edge, got {:?}",
+        index.edges
+    );
+}
+
+#[test]
 fn safe_scan_root_rejects_broad_dir_without_repos() {
     let tmp = tempdir().unwrap();
     let broad = tmp.path().join("broad");

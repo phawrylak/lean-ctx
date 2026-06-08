@@ -35,6 +35,9 @@ pub struct ResolverContext {
     pub go_module: Option<String>,
     pub dart_package: Option<String>,
     file_set: std::collections::HashSet<String>,
+    /// Directory-path suffix -> representative `.cs` file, for namespace-based
+    /// C# `using` resolution (see `build_csharp_namespace_index`).
+    csharp_ns_index: HashMap<String, String>,
 }
 
 impl ResolverContext {
@@ -44,6 +47,7 @@ impl ResolverContext {
         let tsconfig_paths = load_tsconfig_paths(project_root);
         let go_module = load_go_module(project_root);
         let dart_package = load_dart_package(project_root);
+        let csharp_ns_index = build_csharp_namespace_index(&file_paths);
 
         Self {
             project_root: project_root.to_path_buf(),
@@ -52,12 +56,54 @@ impl ResolverContext {
             go_module,
             dart_package,
             file_set,
+            csharp_ns_index,
         }
     }
 
     fn file_exists(&self, rel_path: &str) -> bool {
         self.file_set.contains(rel_path)
     }
+
+    /// Representative `.cs` file for a namespace path (`A/B/C`), matched as a
+    /// directory suffix so root prefixes (`src/`, project folder) don't break it.
+    fn csharp_namespace_file(&self, namespace_path: &str) -> Option<&str> {
+        self.csharp_ns_index.get(namespace_path).map(String::as_str)
+    }
+}
+
+/// Maps every directory-path suffix of each `.cs` file to a representative file
+/// in that directory. This lets `using A.B.C` resolve by matching the namespace
+/// path as a *folder suffix* (tolerating root prefixes like `src/` or a project
+/// name), instead of the brittle assumption that namespace == top-level layout.
+/// Content-free and deterministic: the lexicographically smallest file wins.
+fn build_csharp_namespace_index(file_paths: &[String]) -> HashMap<String, String> {
+    let mut cs_files: Vec<&String> = file_paths
+        .iter()
+        .filter(|f| {
+            Path::new(f.as_str())
+                .extension()
+                .and_then(|e| e.to_str())
+                .is_some_and(|e| e.eq_ignore_ascii_case("cs"))
+        })
+        .collect();
+    if cs_files.is_empty() {
+        return HashMap::new();
+    }
+    cs_files.sort();
+
+    let mut map: HashMap<String, String> = HashMap::new();
+    for file in cs_files {
+        let dir = Path::new(file.as_str())
+            .parent()
+            .map(|p| p.to_string_lossy().replace('\\', "/"))
+            .unwrap_or_default();
+        let segs: Vec<&str> = dir.split('/').filter(|s| !s.is_empty()).collect();
+        for start in 0..segs.len() {
+            let key = segs[start..].join("/");
+            map.entry(key).or_insert_with(|| file.clone());
+        }
+    }
+    map
 }
 
 pub fn resolve_imports(

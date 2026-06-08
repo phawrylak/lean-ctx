@@ -163,6 +163,34 @@ pub fn graph_supported_language_names() -> Vec<&'static str> {
     ALL_LANGUAGES.iter().map(LanguageId::id_str).collect()
 }
 
+/// Whether lean-ctx extracts call sites for a language (i.e. it can populate the
+/// call graph). Keep in sync with `deep_queries::calls::parse_call` — a language
+/// missing there yields zero call edges, which the dashboard must communicate
+/// honestly instead of suggesting an index rebuild that cannot help.
+pub fn supports_call_graph(lang: LanguageId) -> bool {
+    matches!(
+        lang,
+        LanguageId::TypeScript
+            | LanguageId::JavaScript
+            | LanguageId::Rust
+            | LanguageId::Python
+            | LanguageId::Go
+            | LanguageId::Java
+            | LanguageId::Kotlin
+            | LanguageId::Gdscript
+            | LanguageId::CSharp
+    )
+}
+
+/// Friendly names of every language with call-graph extraction support.
+pub fn callgraph_supported_language_names() -> Vec<&'static str> {
+    ALL_LANGUAGES
+        .iter()
+        .filter(|l| supports_call_graph(**l))
+        .map(LanguageId::id_str)
+        .collect()
+}
+
 /// Maps a file extension to a human-readable *programming language* name that
 /// lean-ctx recognizes but does **not** graph-index. Returns `None` for
 /// graph-indexed languages and for non-code files (docs, data, config). Used
@@ -270,6 +298,24 @@ mod tests {
         }
         assert!(graph_supported_language_names().contains(&"rust"));
         assert_eq!(ALL_LANGUAGES.len(), graph_supported_language_names().len());
+    }
+
+    #[test]
+    fn callgraph_support_is_consistent() {
+        // C# must be call-graph capable (issue: NINA's empty Call Graph tab).
+        assert!(supports_call_graph(LanguageId::CSharp));
+        let names = callgraph_supported_language_names();
+        assert!(names.contains(&"csharp"));
+        assert!(names.contains(&"rust"));
+        assert!(names.contains(&"typescript"));
+        // Every call-graph language is also graph-indexable, and the list is a
+        // strict subset (some graph-indexed languages have no call extraction).
+        for name in &names {
+            assert!(graph_supported_language_names().contains(name));
+        }
+        assert!(names.len() <= ALL_LANGUAGES.len());
+        // A language without call extraction must report false.
+        assert!(!supports_call_graph(LanguageId::Ruby));
     }
 
     #[test]

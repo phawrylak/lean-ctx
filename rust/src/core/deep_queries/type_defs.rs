@@ -43,6 +43,7 @@ fn match_type_def(node: Node, src: &str, ext: &str, parent_exported: bool) -> Op
         "java" => match_type_def_java(node, src)?,
         "kt" | "kts" => match_type_def_kotlin(node, src)?,
         "gd" => match_type_def_gdscript(node, src)?,
+        "cs" => match_type_def_csharp(node, src)?,
         _ => return None,
     };
 
@@ -210,6 +211,23 @@ fn match_type_def_kotlin(node: Node, src: &str) -> Option<(String, TypeDefKind)>
 }
 
 #[cfg(feature = "tree-sitter")]
+fn match_type_def_csharp(node: Node, src: &str) -> Option<(String, TypeDefKind)> {
+    let kind = match node.kind() {
+        "class_declaration" => TypeDefKind::Class,
+        "interface_declaration" => TypeDefKind::Interface,
+        "struct_declaration" => TypeDefKind::Struct,
+        "enum_declaration" => TypeDefKind::Enum,
+        "record_declaration" => TypeDefKind::Record,
+        _ => return None,
+    };
+    // Every C# type declaration exposes its identifier via the `name` field.
+    let name = node
+        .child_by_field_name("name")
+        .or_else(|| find_child_by_kind(node, "identifier"))?;
+    Some((node_text(name, src).to_string(), kind))
+}
+
+#[cfg(feature = "tree-sitter")]
 fn match_type_def_gdscript(node: Node, src: &str) -> Option<(String, TypeDefKind)> {
     match node.kind() {
         // `class_name X` (script-level global) and inner `class X:` both define a class.
@@ -268,6 +286,9 @@ fn is_exported_node(node: Node, src: &str, ext: &str) -> bool {
         }
         "java" => node_text(node, src).trim_start().starts_with("public "),
         "kt" | "kts" => kotlin_declaration_exported(node, src),
+        // C# top-level types default to `internal`; only an explicit `public`
+        // modifier makes a declaration part of the cross-assembly public surface.
+        "cs" => csharp_node_is_public(node, src),
         // GDScript has no visibility keyword; the `_name` convention marks privates.
         "gd" => find_child_by_kind(node, "name")
             .is_some_and(|name| !node_text(name, src).starts_with('_')),
@@ -295,6 +316,20 @@ fn get_declaration_name(node: Node, src: &str) -> Option<String> {
         }
     }
     None
+}
+
+/// A C# declaration is "exported" when it carries a `public` access modifier.
+/// Modifiers are direct `modifier` children, so attribute lists (`[Attr]`) and
+/// leading trivia do not interfere with the check.
+#[cfg(feature = "tree-sitter")]
+fn csharp_node_is_public(node: Node, src: &str) -> bool {
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if child.kind() == "modifier" && node_text(child, src).trim() == "public" {
+            return true;
+        }
+    }
+    false
 }
 
 #[cfg(feature = "tree-sitter")]

@@ -304,6 +304,51 @@ class CockpitGraph extends HTMLElement {
       'This scans your project and builds the dependency graph. Re-run after major changes.</p></div>';
   }
 
+  /* ============ Call-graph empty / unsupported-language state ============ */
+
+  _emptyCallGraphHtml(esc) {
+    var support = this._callGraphData ? this._callGraphData.call_graph_support : null;
+    var unsupported = support && Array.isArray(support.unsupported_present)
+      ? support.unsupported_present
+      : [];
+    var hasSupported = support ? !!support.has_supported : true;
+
+    // The project's languages have no call-site extraction (e.g. Ruby, Swift).
+    // A build cannot create call edges, so do not suggest one.
+    if (!hasSupported && unsupported.length > 0) {
+      var names = unsupported
+        .map(function (u) {
+          var n = esc(String(u.language));
+          return u.files ? n + ' (' + esc(String(u.files)) + ' files)' : n;
+        })
+        .join(', ');
+      var supported = support && Array.isArray(support.supported_languages)
+        ? support.supported_languages.map(function (s) { return esc(String(s)); }).join(', ')
+        : '';
+      return '<div class="card" style="padding:40px;text-align:center">' +
+        '<div class="loading-state" style="margin-bottom:12px">' +
+        'Call graph not available for this project\u2019s languages yet.</div>' +
+        '<p class="hs" style="color:var(--muted);margin-bottom:8px">' +
+        'Detected source without call-graph extraction: <strong>' + names + '</strong>.</p>' +
+        (supported
+          ? '<p class="hs" style="color:var(--muted);margin-top:12px;font-size:12px">' +
+            'Call graph is available for: ' + supported + '</p>'
+          : '') +
+        '</div>';
+    }
+
+    // Supported languages present but no edges yet: a build will populate them.
+    return '<div class="card" style="padding:40px;text-align:center">' +
+      '<div class="loading-state" style="margin-bottom:12px">' +
+      'No call graph data found.</div>' +
+      '<p class="hs" style="color:var(--muted);margin-bottom:16px">' +
+      'Run the following command to build the call graph index:</p>' +
+      '<pre style="background:var(--surface-2);padding:12px 20px;border-radius:8px;display:inline-block;font-size:13px;color:var(--green)">' +
+      'lean-ctx index build</pre>' +
+      '<p class="hs" style="color:var(--muted);margin-top:12px;font-size:12px">' +
+      'This analyzes function calls across your project. Re-run after significant code changes.</p></div>';
+  }
+
   /* ============ Dependencies D3 ============ */
 
   _renderDepsGraph(container) {
@@ -496,16 +541,7 @@ class CockpitGraph extends HTMLElement {
 
     var edges = this._callGraphData && this._callGraphData.edges ? this._callGraphData.edges : [];
     if (edges.length === 0) {
-      container.innerHTML =
-        '<div class="card" style="padding:40px;text-align:center">' +
-        '<div class="loading-state" style="margin-bottom:12px">' +
-        'No call graph data found.</div>' +
-        '<p class="hs" style="color:var(--muted);margin-bottom:16px">' +
-        'Run the following command to build the call graph index:</p>' +
-        '<pre style="background:var(--surface-2);padding:12px 20px;border-radius:8px;display:inline-block;font-size:13px;color:var(--green)">' +
-        'lean-ctx index build</pre>' +
-        '<p class="hs" style="color:var(--muted);margin-top:12px;font-size:12px">' +
-        'This analyzes function calls across your project. Re-run after significant code changes.</p></div>';
+      container.innerHTML = this._emptyCallGraphHtml(esc);
       return;
     }
 

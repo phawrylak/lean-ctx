@@ -602,6 +602,134 @@ class Inventory:
     }
 
     #[test]
+    fn csharp_imports_all_using_forms() {
+        let src = r"
+using System;
+using System.Collections.Generic;
+global using MyApp.Core;
+using static System.Math;
+using Json = Newtonsoft.Json;
+namespace MyApp.Services {
+    using MyApp.Data.Repositories;
+}
+";
+        let analysis = analyze(src, "cs");
+        let sources: Vec<&str> = analysis.imports.iter().map(|i| i.source.as_str()).collect();
+        assert!(sources.contains(&"System"), "plain using, got {sources:?}");
+        assert!(
+            sources.contains(&"System.Collections.Generic"),
+            "dotted using, got {sources:?}"
+        );
+        assert!(
+            sources.contains(&"MyApp.Core"),
+            "global using must drop the `global` keyword, got {sources:?}"
+        );
+        assert!(
+            sources.contains(&"System.Math"),
+            "using static must drop the `static` keyword, got {sources:?}"
+        );
+        assert!(
+            sources.contains(&"Newtonsoft.Json"),
+            "alias using must keep the right-hand namespace, got {sources:?}"
+        );
+        assert!(
+            sources.contains(&"MyApp.Data.Repositories"),
+            "using nested inside a namespace block must be found, got {sources:?}"
+        );
+    }
+
+    #[test]
+    fn csharp_types_and_visibility() {
+        let src = r"
+namespace App
+{
+    public class UserService { }
+    internal class Helper { }
+    public interface IRepository { }
+    public struct Point { public int X; }
+    public enum Status { Active, Inactive }
+    public record Money(decimal Amount, string Currency);
+}
+";
+        let analysis = analyze(src, "cs");
+        let names: Vec<&str> = analysis.types.iter().map(|t| t.name.as_str()).collect();
+        assert!(names.contains(&"UserService"), "class, got {names:?}");
+        assert!(names.contains(&"Helper"), "internal class, got {names:?}");
+        assert!(names.contains(&"IRepository"), "interface, got {names:?}");
+        assert!(names.contains(&"Point"), "struct, got {names:?}");
+        assert!(names.contains(&"Status"), "enum, got {names:?}");
+        assert!(names.contains(&"Money"), "record, got {names:?}");
+
+        let kind_of = |n: &str| {
+            analysis
+                .types
+                .iter()
+                .find(|t| t.name == n)
+                .map(|t| t.kind.clone())
+        };
+        assert_eq!(kind_of("UserService"), Some(TypeDefKind::Class));
+        assert_eq!(kind_of("IRepository"), Some(TypeDefKind::Interface));
+        assert_eq!(kind_of("Point"), Some(TypeDefKind::Struct));
+        assert_eq!(kind_of("Status"), Some(TypeDefKind::Enum));
+        assert_eq!(kind_of("Money"), Some(TypeDefKind::Record));
+
+        let exported = |n: &str| {
+            analysis
+                .types
+                .iter()
+                .find(|t| t.name == n)
+                .is_some_and(|t| t.is_exported)
+        };
+        assert!(exported("UserService"), "public class is exported");
+        assert!(
+            !exported("Helper"),
+            "internal class must not be marked exported"
+        );
+        assert!(analysis.exports.contains(&"UserService".to_string()));
+    }
+
+    #[test]
+    fn csharp_call_sites() {
+        let src = r"
+namespace App
+{
+    public class Boot
+    {
+        public void Run()
+        {
+            Prepare();
+            _repository.Save(user);
+            var engine = new Engine(100);
+            Factory.Create<Widget>();
+        }
+    }
+}
+";
+        let analysis = analyze(src, "cs");
+        let callees: Vec<&str> = analysis.calls.iter().map(|c| c.callee.as_str()).collect();
+        assert!(
+            callees.contains(&"Prepare"),
+            "direct invocation, got {callees:?}"
+        );
+        assert!(
+            callees.contains(&"Save"),
+            "member invocation must resolve to the method name, got {callees:?}"
+        );
+        assert!(
+            callees.contains(&"Engine"),
+            "`new Engine()` should reference the constructed type, got {callees:?}"
+        );
+        assert!(
+            callees.contains(&"Create"),
+            "generic member call must reduce to the identifier, got {callees:?}"
+        );
+
+        let save = analysis.calls.iter().find(|c| c.callee == "Save").unwrap();
+        assert_eq!(save.receiver.as_deref(), Some("_repository"));
+        assert!(save.is_method);
+    }
+
+    #[test]
     fn gdscript_calls_method_and_instantiation() {
         let src = r"
 func _ready():

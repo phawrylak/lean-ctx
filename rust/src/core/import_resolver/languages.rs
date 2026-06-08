@@ -864,29 +864,82 @@ pub(super) fn resolve_zig(
 // ---------------------------------------------------------------------------
 
 pub(super) fn resolve_csharp(imp: &ImportInfo, ctx: &ResolverContext) -> (Option<String>, bool) {
-    let source = &imp.source;
-
-    if source.starts_with("System.") || source.starts_with("Microsoft.") {
+    let ns = imp.source.trim();
+    if ns.is_empty() {
         return (None, true);
     }
 
-    let parts: Vec<&str> = source.rsplitn(2, '.').collect();
-    if parts.len() < 2 {
+    // 1) .NET BCL / common NuGet roots are external — resolved first so a `using`
+    //    such as `System.Text` or `System.IO` can never fall through to a local
+    //    folder that happens to share the trailing segment (`Text/`, `IO/`).
+    if is_csharp_external_namespace(ns) {
         return (None, true);
     }
 
-    let class_name = parts[0];
-    let namespace_path = parts[1].replace('.', "/");
-    let file_path = format!("{namespace_path}/{class_name}.cs");
+    let segs: Vec<&str> = ns.split('.').filter(|s| !s.is_empty()).collect();
+    if segs.is_empty() {
+        return (None, true);
+    }
 
-    if ctx.file_exists(&file_path) {
-        return (Some(file_path), false);
+    // 2) `using A.B.C` names a *namespace*. The C# root namespace (the assembly's
+    //    default namespace, possibly multi-segment) is usually NOT a folder, so we
+    //    probe every trailing folder-suffix, longest (most specific) match first.
+    if let Some(file) = probe_csharp_namespace(&segs, ctx) {
+        return (Some(file), false);
     }
-    let flat = format!("{class_name}.cs");
-    if ctx.file_exists(&flat) {
-        return (Some(flat), false);
+
+    // 3) `using A.B.C` may instead import the *type* `C` from namespace `A.B`:
+    //    drop the final segment and probe the parent namespace's folder.
+    if segs.len() >= 2 {
+        if let Some(file) = probe_csharp_namespace(&segs[..segs.len() - 1], ctx) {
+            return (Some(file), false);
+        }
     }
-    (None, false)
+
+    // 4) Unresolved: treat as external so it neither creates a phantom edge nor
+    //    is miscounted as a missing local dependency.
+    (None, true)
+}
+
+/// Probe trailing folder-suffixes of a namespace path against the C# namespace
+/// index, returning the representative file of the longest (most specific) match.
+/// `["MyApp", "Models"]` probes `MyApp/Models` then `Models`, so a root namespace
+/// that isn't mirrored as a folder (the common case) still resolves.
+fn probe_csharp_namespace(segs: &[&str], ctx: &ResolverContext) -> Option<String> {
+    (0..segs.len())
+        .map(|start| segs[start..].join("/"))
+        .find_map(|key| ctx.csharp_namespace_file(&key).map(str::to_string))
+}
+
+/// Roots of the .NET BCL and common NuGet packages. A `using` whose first
+/// segment matches one of these is an external dependency (no local edge).
+fn is_csharp_external_namespace(ns: &str) -> bool {
+    const EXTERNAL_ROOTS: &[&str] = &[
+        "System",
+        "Microsoft",
+        "Windows",
+        "Mono",
+        "Newtonsoft",
+        "NUnit",
+        "Xunit",
+        "Moq",
+        "Serilog",
+        "AutoMapper",
+        "MediatR",
+        "FluentValidation",
+        "Polly",
+        "Castle",
+        "Dapper",
+        "RestSharp",
+        "Google",
+        "Amazon",
+        "Azure",
+        "Grpc",
+        "Nito",
+        "StackExchange",
+    ];
+    let root = ns.split('.').next().unwrap_or(ns);
+    EXTERNAL_ROOTS.contains(&root)
 }
 
 // ---------------------------------------------------------------------------

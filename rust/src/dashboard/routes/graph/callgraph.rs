@@ -25,6 +25,7 @@ fn call_graph() -> (&'static str, &'static str, String) {
                 "indexed_file_count": index.files.len(),
                 "indexed_symbol_count": index.symbols.len(),
                 "analyzed_file_count": graph.file_hashes.len(),
+                "call_graph_support": call_graph_support(&index),
             });
             let json = serde_json::to_string(&payload)
                 .unwrap_or_else(|_| "{\"error\":\"failed to serialize call graph\"}".to_string());
@@ -36,6 +37,42 @@ fn call_graph() -> (&'static str, &'static str, String) {
             ("202 Accepted", "application/json", json)
         }
     }
+}
+
+/// Describes whether the call graph can be populated for the project's languages.
+/// Mirrors the dependency graph's `graph_support` so the dashboard can show a
+/// truthful "call graph not supported for <language>" message instead of an
+/// index-rebuild hint that produces zero edges (e.g. for a pure C#/Ruby project).
+fn call_graph_support(index: &crate::core::graph_index::ProjectIndex) -> serde_json::Value {
+    use crate::core::language_capabilities as lc;
+
+    let mut unsupported_counts: std::collections::HashMap<&'static str, usize> =
+        std::collections::HashMap::new();
+    let mut has_supported = false;
+    for path in index.files.keys() {
+        let Some(lang) = lc::language_for_path(path) else {
+            continue;
+        };
+        if lc::supports_call_graph(lang) {
+            has_supported = true;
+        } else {
+            *unsupported_counts.entry(lang.id_str()).or_default() += 1;
+        }
+    }
+
+    let mut ranked: Vec<(&'static str, usize)> = unsupported_counts.into_iter().collect();
+    ranked.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(b.0)));
+    ranked.truncate(5);
+    let unsupported_present: Vec<serde_json::Value> = ranked
+        .into_iter()
+        .map(|(language, files)| serde_json::json!({ "language": language, "files": files }))
+        .collect();
+
+    serde_json::json!({
+        "supported_languages": lc::callgraph_supported_language_names(),
+        "unsupported_present": unsupported_present,
+        "has_supported": has_supported,
+    })
 }
 
 fn call_graph_status() -> (&'static str, &'static str, String) {

@@ -151,29 +151,60 @@ fn extract_imports_ruby(root: Node, src: &str) -> Vec<ImportInfo> {
 
 #[cfg(feature = "tree-sitter")]
 fn extract_imports_csharp(root: Node, src: &str) -> Vec<ImportInfo> {
+    // `using` directives appear at file scope, inside `namespace { ... }` blocks,
+    // and as `global using` — so the whole tree is walked rather than only the root.
     let mut imports = Vec::new();
-    let mut cursor = root.walk();
-    for node in root.children(&mut cursor) {
-        if node.kind() == "using_directive" {
-            let text = node_text(node, src)
-                .trim()
-                .trim_start_matches("using")
-                .trim()
-                .trim_end_matches(';')
-                .trim()
-                .to_string();
-            if !text.is_empty() {
-                imports.push(ImportInfo {
-                    source: text,
-                    names: Vec::new(),
-                    kind: ImportKind::Named,
-                    line: node.start_position().row + 1,
-                    is_type_only: false,
-                });
-            }
+    collect_csharp_usings(root, src, &mut imports);
+    imports
+}
+
+#[cfg(feature = "tree-sitter")]
+fn collect_csharp_usings(node: Node, src: &str, imports: &mut Vec<ImportInfo>) {
+    if node.kind() == "using_directive" {
+        if let Some(info) = parse_csharp_using(node, src) {
+            imports.push(info);
         }
     }
-    imports
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        collect_csharp_usings(child, src, imports);
+    }
+}
+
+/// Normalize a `using_directive` to the imported namespace, handling every form:
+/// `using X.Y;`, `global using X.Y;`, `using static X.Y;`, and the alias form
+/// `using Alias = X.Y;` (where the right-hand side is the real dependency).
+#[cfg(feature = "tree-sitter")]
+fn parse_csharp_using(node: Node, src: &str) -> Option<ImportInfo> {
+    let raw = node_text(node, src).trim().trim_end_matches(';').trim();
+
+    // Strip leading `global` / `using` / `static` keywords without touching the
+    // namespace path (token-wise, so a namespace segment is never mangled).
+    let mut rest: Vec<&str> = Vec::new();
+    for tok in raw.split_whitespace() {
+        if rest.is_empty() && matches!(tok, "global" | "using" | "static") {
+            continue;
+        }
+        rest.push(tok);
+    }
+    let joined = rest.join(" ");
+
+    // Alias form `Alias = Namespace.Path` -> keep the right-hand dependency.
+    let source = joined
+        .split_once('=')
+        .map_or_else(|| joined.trim(), |(_, rhs)| rhs.trim())
+        .to_string();
+
+    if source.is_empty() {
+        return None;
+    }
+    Some(ImportInfo {
+        source,
+        names: Vec::new(),
+        kind: ImportKind::Named,
+        line: node.start_position().row + 1,
+        is_type_only: false,
+    })
 }
 
 #[cfg(feature = "tree-sitter")]
