@@ -129,11 +129,11 @@ fn bench_tool_descriptions_token_count() {
     // #141): all 75 tools with their full `McpTool::tool_def()` descriptions —
     // i.e. exactly what the live server advertises in full mode. The previous
     // (lower) budget measured the retired `list_all_tool_defs` abbreviated set,
-    // which never matched what agents actually received. Bumped to 2600 with the
-    // ctx_tools gateway meta-tool (#210).
+    // which never matched what agents actually received. Bumped to 2800 after
+    // ctx_skillify + ctx_summary + ctx_package (#290).
     assert!(
-        total < 2600,
-        "Total tool description tokens should be <2600, got {total}"
+        total < 2800,
+        "Total tool description tokens should be <2800, got {total}"
     );
 
     for (name, desc) in &descriptions {
@@ -180,9 +180,10 @@ fn bench_total_input_overhead() {
     // Full tool surface (all 75 tools, registry SSOT incl. full property
     // schemas) — the worst-case opt-in overhead. The default lazy surface is
     // far smaller; see `bench_lazy_default_vs_full_overhead` (#141).
+    // Bumped to 11500 after ctx_skillify + ctx_summary + ctx_package (#290).
     assert!(
-        total < 11000,
-        "Total input overhead should be <11000 tokens, got {total}"
+        total < 11500,
+        "Total input overhead should be <11500 tokens, got {total}"
     );
 }
 
