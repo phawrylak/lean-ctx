@@ -105,8 +105,20 @@ pub async fn start_proxy(port: u16) -> anyhow::Result<()> {
     start_proxy_with_token(port, Some(token)).await
 }
 
+/// Security invariant: the proxy NEVER runs unauthenticated. `None` does not
+/// mean "no auth" — it means "resolve the session token for me". Provider
+/// routes additionally accept provider API keys (see `proxy_auth_guard`), so
+/// IDE clients keep working without any setup.
+fn effective_auth_token(auth_token: Option<String>) -> String {
+    auth_token
+        .filter(|t| !t.trim().is_empty())
+        .unwrap_or_else(|| crate::core::session_token::resolve_proxy_token("LEAN_CTX_PROXY_TOKEN"))
+}
+
 pub async fn start_proxy_with_token(port: u16, auth_token: Option<String>) -> anyhow::Result<()> {
     use crate::core::config::{Config, ProxyProvider};
+
+    let auth_token = effective_auth_token(auth_token);
 
     // A single total timeout aborts long streaming generations (e.g. Opus doing
     // a big refactor) mid-response. Use a connect timeout plus a read (idle)
@@ -155,8 +167,8 @@ pub async fn start_proxy_with_token(port: u16, auth_token: Option<String>) -> an
         .layer(axum::middleware::from_fn(host_guard))
         .with_state(state);
 
-    if let Some(ref token) = auth_token {
-        let expected = token.clone();
+    {
+        let expected = auth_token.clone();
         app = app.layer(axum::middleware::from_fn(move |req, next| {
             let expected = expected.clone();
             proxy_auth_guard(req, next, expected)
@@ -169,11 +181,7 @@ pub async fn start_proxy_with_token(port: u16, auth_token: Option<String>) -> an
     app = app.layer(axum::middleware::from_fn(normalize_provider_path));
 
     let addr = SocketAddr::from(([127, 0, 0, 1], port));
-    if auth_token.is_some() {
-        println!("lean-ctx proxy listening on http://{addr} (token auth enabled)");
-    } else {
-        println!("lean-ctx proxy listening on http://{addr} (no auth — set LEAN_CTX_PROXY_TOKEN to enable)");
-    }
+    println!("lean-ctx proxy listening on http://{addr} (token auth enabled)");
     println!("  Anthropic: POST /v1/messages → {anthropic_upstream}");
     println!("  OpenAI:    POST /v1/chat/completions → {openai_upstream}");
     println!("  OpenAI:    POST /v1/responses → {openai_upstream}");
@@ -460,6 +468,23 @@ async fn fallback_router(State(state): State<ProxyState>, req: Request<Body>) ->
 #[cfg(test)]
 mod auth_tests {
     use super::*;
+
+    // P0-4 (#416): the proxy must never run unauthenticated — `None` means
+    // "resolve the session token", not "no auth".
+    #[test]
+    fn effective_auth_token_never_yields_empty() {
+        let _env = crate::core::data_dir::test_env_lock();
+        let tmp = tempfile::tempdir().unwrap();
+        std::env::set_var("LEAN_CTX_DATA_DIR", tmp.path());
+
+        assert_eq!(effective_auth_token(Some("tok".into())), "tok");
+        let auto = effective_auth_token(None);
+        assert!(!auto.trim().is_empty(), "None must auto-resolve a token");
+        let blank = effective_auth_token(Some("   ".into()));
+        assert!(!blank.trim().is_empty(), "blank tokens must be replaced");
+
+        std::env::remove_var("LEAN_CTX_DATA_DIR");
+    }
 
     #[test]
     fn is_provider_route_v1() {

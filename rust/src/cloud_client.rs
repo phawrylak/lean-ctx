@@ -32,16 +32,86 @@ struct Credentials {
 }
 
 fn load_credentials() -> Option<Credentials> {
-    let data = std::fs::read_to_string(credentials_path()).ok()?;
+    let path = credentials_path();
+    // One-time migration for files written before permissions were enforced:
+    // tighten anything looser than owner-only on every load.
+    tighten_secret_permissions(&path);
+    let data = std::fs::read_to_string(&path).ok()?;
     serde_json::from_str(&data).ok()
 }
 
 fn write_credentials(creds: &Credentials) -> std::io::Result<()> {
     let dir = config_dir();
     std::fs::create_dir_all(&dir)?;
+    restrict_dir_permissions(&dir);
     let json = serde_json::to_string_pretty(creds).map_err(std::io::Error::other)?;
-    std::fs::write(credentials_path(), json)
+    write_secret_file(&credentials_path(), json.as_bytes())
 }
+
+/// Writes a secret file atomically (tmp + rename) with owner-only permissions
+/// (0o600 on Unix), so credentials are never world-readable — not even
+/// transiently between create and chmod.
+fn write_secret_file(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+
+    let parent = path
+        .parent()
+        .ok_or_else(|| std::io::Error::other("credentials path has no parent directory"))?;
+    let name = path
+        .file_name()
+        .ok_or_else(|| std::io::Error::other("credentials path has no file name"))?
+        .to_string_lossy();
+    let tmp = parent.join(format!(".{name}.tmp.{}", std::process::id()));
+
+    let mut opts = std::fs::OpenOptions::new();
+    opts.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.mode(0o600);
+    }
+
+    let result = (|| {
+        let mut f = opts.open(&tmp)?;
+        f.write_all(bytes)?;
+        f.sync_all()?;
+        drop(f);
+        #[cfg(windows)]
+        {
+            if path.exists() {
+                std::fs::remove_file(path)?;
+            }
+        }
+        std::fs::rename(&tmp, path)
+    })();
+
+    if result.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    result
+}
+
+#[cfg(unix)]
+fn restrict_dir_permissions(dir: &std::path::Path) {
+    use std::os::unix::fs::PermissionsExt;
+    let _ = std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700));
+}
+
+#[cfg(not(unix))]
+fn restrict_dir_permissions(_dir: &std::path::Path) {}
+
+#[cfg(unix)]
+fn tighten_secret_permissions(path: &std::path::Path) {
+    use std::os::unix::fs::PermissionsExt;
+    if let Ok(meta) = std::fs::metadata(path) {
+        if meta.permissions().mode() & 0o077 != 0 {
+            let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
+        }
+    }
+}
+
+#[cfg(not(unix))]
+fn tighten_secret_permissions(_path: &std::path::Path) {}
 
 pub fn save_credentials(api_key: &str, user_id: &str, email: &str) -> std::io::Result<()> {
     let mut creds = load_credentials().unwrap_or(Credentials {
@@ -846,6 +916,68 @@ mod tests {
         let eff = resolve_effective_plan_cached();
         assert_eq!(eff.plan, Plan::Free);
         assert_eq!(eff.source, PlanSource::None);
+        std::env::remove_var("LEAN_CTX_DATA_DIR");
+    }
+
+    // P0-2 (#414): credentials must be owner-only on disk.
+    #[cfg(unix)]
+    #[test]
+    fn credentials_are_written_owner_only_and_atomic() {
+        use std::os::unix::fs::PermissionsExt;
+        let _env = test_env_lock();
+        let tmp = tempfile::tempdir().unwrap();
+        std::env::set_var("LEAN_CTX_DATA_DIR", tmp.path());
+
+        save_credentials("sk-test-key", "user-1", "a@b.c").unwrap();
+
+        let path = credentials_path();
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600, "credentials.json must be 0o600");
+
+        let dir_mode = std::fs::metadata(config_dir())
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_eq!(
+            dir_mode & 0o077,
+            0,
+            "cloud dir must not be group/world accessible"
+        );
+
+        // No tmp file leftovers from the atomic write.
+        let leftovers: Vec<_> = std::fs::read_dir(config_dir())
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|e| e.file_name().to_string_lossy().contains(".tmp."))
+            .collect();
+        assert!(leftovers.is_empty(), "atomic write must not leak tmp files");
+
+        std::env::remove_var("LEAN_CTX_DATA_DIR");
+    }
+
+    // P0-2 (#414): pre-existing world-readable credentials are tightened on load.
+    #[cfg(unix)]
+    #[test]
+    fn loose_credential_permissions_are_tightened_on_load() {
+        use std::os::unix::fs::PermissionsExt;
+        let _env = test_env_lock();
+        let tmp = tempfile::tempdir().unwrap();
+        std::env::set_var("LEAN_CTX_DATA_DIR", tmp.path());
+
+        std::fs::create_dir_all(config_dir()).unwrap();
+        let path = credentials_path();
+        std::fs::write(&path, "{}").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+
+        let _ = load_credentials();
+
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+        assert_eq!(
+            mode & 0o777,
+            0o600,
+            "legacy file must be tightened to 0o600"
+        );
+
         std::env::remove_var("LEAN_CTX_DATA_DIR");
     }
 

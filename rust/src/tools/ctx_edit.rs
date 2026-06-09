@@ -56,10 +56,28 @@ fn system_time_to_millis(t: SystemTime) -> u64 {
         .map_or(0, |d| d.as_millis() as u64)
 }
 
+/// Rejects symlinks at `path` (TOCTOU protection, same boundary as
+/// `core::io_boundary::read_file_nofollow`): a symlink planted inside the jail
+/// after the jail check could otherwise read or overwrite files outside it.
+fn reject_symlink(path: &Path) -> Result<(), String> {
+    if let Ok(meta) = std::fs::symlink_metadata(path) {
+        if meta.file_type().is_symlink() {
+            return Err(format!(
+                "ERROR: {} is a symlink — refusing to edit through it (TOCTOU protection). \
+                 Edit the symlink target directly via its real path.",
+                path.display()
+            ));
+        }
+    }
+    Ok(())
+}
+
 fn read_file_bytes_limited(
     path: &Path,
     cap: usize,
 ) -> Result<(Vec<u8>, std::fs::Metadata), String> {
+    reject_symlink(path)?;
+
     if let Ok(meta) = std::fs::metadata(path) {
         if meta.len() > cap as u64 {
             return Err(format!(
@@ -71,10 +89,25 @@ fn read_file_bytes_limited(
         }
     }
 
-    let mut file = std::fs::OpenOptions::new()
-        .read(true)
-        .open(path)
-        .map_err(|e| format!("ERROR: cannot open {}: {e}", path.display()))?;
+    let mut opts = std::fs::OpenOptions::new();
+    opts.read(true);
+    #[cfg(unix)]
+    {
+        // Defense in depth alongside `reject_symlink`: O_NOFOLLOW closes the
+        // race between the lstat check and the open.
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.custom_flags(libc::O_NOFOLLOW);
+    }
+    let mut file = opts.open(path).map_err(|e| {
+        #[cfg(unix)]
+        if e.raw_os_error() == Some(libc::ELOOP) {
+            return format!(
+                "ERROR: {} is a symlink — refusing to edit through it (TOCTOU protection).",
+                path.display()
+            );
+        }
+        format!("ERROR: cannot open {}: {e}", path.display())
+    })?;
 
     use std::io::Read;
     let mut raw: Vec<u8> = Vec::new();
@@ -195,6 +228,12 @@ fn write_atomic_bytes_with_permissions(
     bytes: &[u8],
     permissions: Option<&std::fs::Permissions>,
 ) -> Result<(), String> {
+    // The rename below would *replace* a symlink at `path` (safe), but the edit
+    // pipeline read through this path moments ago — a symlink here means the
+    // read/write pair straddles two different files. Reject for consistency
+    // with the read-side O_NOFOLLOW boundary.
+    reject_symlink(path)?;
+
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
@@ -1317,5 +1356,66 @@ mod tests {
         );
         assert!(text.contains("matching line exists in"), "got: {text}");
         assert!(text.contains("b.rs"), "got: {text}");
+    }
+
+    // P0-6 (#418): a symlink at the edit path must be rejected on the read side —
+    // a link planted inside the jail could otherwise read/overwrite outside it.
+    #[cfg(unix)]
+    #[test]
+    fn editing_through_a_symlink_is_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        let real = dir.path().join("real.rs");
+        std::fs::write(&real, "fn old() {}\n").unwrap();
+        let link = dir.path().join("link.rs");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+
+        let (text, effect) = run_io(
+            &mk_params(&link, "fn old() {}", "fn new() {}", false, false),
+            "",
+        );
+        assert!(text.contains("symlink"), "got: {text}");
+        assert!(matches!(effect, CacheEffect::None));
+        // Target untouched.
+        assert_eq!(std::fs::read_to_string(&real).unwrap(), "fn old() {}\n");
+    }
+
+    // P0-6 (#418): the write side must also reject a symlink destination
+    // (defense in depth for create-mode and backup paths).
+    #[cfg(unix)]
+    #[test]
+    fn creating_over_a_symlink_is_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        let real = dir.path().join("victim.txt");
+        std::fs::write(&real, "precious").unwrap();
+        let link = dir.path().join("innocent.txt");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+
+        let (text, _) = run_io(&mk_params(&link, "", "overwritten", false, true), "");
+        assert!(
+            text.contains("symlink") || text.contains("ERROR"),
+            "got: {text}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&real).unwrap(),
+            "precious",
+            "symlink target must not be modified"
+        );
+    }
+
+    #[test]
+    fn regular_file_edit_still_works_after_symlink_guard() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("normal.rs");
+        std::fs::write(&file, "fn old() {}\n").unwrap();
+
+        let (text, _) = run_io(
+            &mk_params(&file, "fn old() {}", "fn new() {}", false, false),
+            "",
+        );
+        assert!(
+            text.contains("Edit applied") || !text.starts_with("ERROR"),
+            "got: {text}"
+        );
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "fn new() {}\n");
     }
 }
