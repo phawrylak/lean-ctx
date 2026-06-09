@@ -48,7 +48,7 @@ Top-level configuration keys
 - `redirect_exclude` (string[], default `[]`) — URL patterns to exclude from proxy redirection
 - `reference_results` (bool, default `false` — env `LEAN_CTX_REFERENCE_RESULTS`) — Store large tool outputs as references instead of inline content
 - `response_verbosity` (enum: normal | compact | minimal, default `normal` — env `LEAN_CTX_RESPONSE_VERBOSITY`) — Controls how verbose tool responses are
-- `rules_injection` (enum: shared | dedicated, default `shared`) — How rules load for CLAUDE.md/AGENTS.md/GEMINI.md agents: shared block, or dedicated (no shared-file edits; SessionStart hook / instructions[] / context.fileName). Override via LEAN_CTX_RULES_INJECTION
+- `rules_injection` (enum: shared | dedicated | off, default `shared`) — How rules load for CLAUDE.md/AGENTS.md/GEMINI.md agents: shared block, dedicated (no shared-file edits; SessionStart hook / instructions[] / context.fileName), or off (write no rules file — for hosts that supply their own steering or phase-isolated/non-caching harnesses). Override via LEAN_CTX_RULES_INJECTION
 - `rules_scope` (enum: both | global | project, default `both`) — Where agent rule files are installed. Override via LEAN_CTX_RULES_SCOPE
 - `sandbox_level` (u8, default `0` — env `LEAN_CTX_SANDBOX_LEVEL`) — Sandbox strictness level (0=default, 1=strict, 2=paranoid)
 - `savings_footer` (enum: auto | always | never, default `always` — env `LEAN_CTX_SAVINGS_FOOTER`) — Controls visibility of token savings footers: always (default, show on every response), never, auto (context-dependent). Also: LEAN_CTX_SHOW_SAVINGS=1|0

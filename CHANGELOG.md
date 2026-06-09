@@ -6,6 +6,19 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 ## [Unreleased]
 
 ### Added
+- **Honest metering on phase-isolated / non-caching workloads** (#361): `lean-ctx
+  gain` now states its denominator — savings are compression on
+  *lean-ctx-touched traffic*, not the full provider bill — via a **Methodology**
+  line and a new `injected_overhead_tokens_per_turn` field in `gain --json`
+  (`net bill impact = tokens_saved − injected_overhead_tokens_per_turn × turns`).
+  New `core::context_overhead` measures the fixed per-turn prefix lean-ctx
+  injects (tool schemas + server instructions + rules block). A new
+  `rules_injection = "off"` (also `none`/`disabled`) writes **no** rules file —
+  for hosts that supply their own steering, or phase-isolated/non-caching
+  harnesses where the injected prefix is pure re-billed overhead. The
+  performance-tuning journey gains a "workload fit" section documenting the proxy
+  as the way to reach tool output the `ctx_*` tools can't wrap. Prompted by an
+  independent, reproducible external benchmark.
 - **Team RBAC roles** (Commercial Plane, EPIC 13.2): a `TeamRole`
   (`viewer`/`member`/`admin`/`owner`) layer over the existing fine-grained
   `TeamScope`s. A token's effective scopes are `scopes ∪ role.scopes()`, enforced

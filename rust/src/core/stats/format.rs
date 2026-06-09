@@ -1101,7 +1101,7 @@ fn append_gain_footer(out: &mut Vec<String>, t: &Theme, store: &StatsStore) {
         // caching, is re-billed every turn. State both so the number stays honest.
         let a = t.accent.fg();
         let m = t.muted.fg();
-        let overhead = crate::core::context_overhead::ContextOverhead::measure();
+        let overhead = crate::core::context_overhead::ContextOverhead::cached();
         out.push(format!("    {a}📐 Methodology{rst}"));
         out.push(format!(
             "    {m}   Savings = compression on lean-ctx-touched traffic (reads + shell),{rst}"

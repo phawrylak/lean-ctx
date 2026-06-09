@@ -16,6 +16,8 @@
 //!
 //! Net bill impact ≈ `gross_saved_tokens − total_tokens() × turns`.
 
+use std::sync::OnceLock;
+
 use crate::core::tokens::count_tokens;
 
 /// A measured breakdown, in tokens, of the per-turn context lean-ctx adds.
@@ -36,6 +38,17 @@ impl ContextOverhead {
     #[must_use]
     pub fn total_tokens(&self) -> usize {
         self.tool_schema_tokens + self.instruction_tokens + self.rules_block_tokens
+    }
+
+    /// Process-cached overhead. The tool surface and rules block are static and
+    /// the instruction block varies only with slow-moving session state, so a
+    /// once-per-process measurement is the right tradeoff for callers that render
+    /// repeatedly (the `gain` dashboard re-renders every second in `--live`) —
+    /// it avoids per-tick disk I/O and re-tokenization.
+    #[must_use]
+    pub fn cached() -> Self {
+        static CACHE: OnceLock<ContextOverhead> = OnceLock::new();
+        *CACHE.get_or_init(Self::measure)
     }
 
     /// Measure the overhead for the currently-configured MCP surface. Reads the

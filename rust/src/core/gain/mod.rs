@@ -110,7 +110,7 @@ impl GainEngine {
         #[cfg(not(unix))]
         let daemon_hint: Option<String> = None;
         let injected_overhead_tokens_per_turn =
-            crate::core::context_overhead::ContextOverhead::measure().total_tokens() as u64;
+            crate::core::context_overhead::ContextOverhead::cached().total_tokens() as u64;
         GainSummary {
             model: quote,
             total_commands: self.stats.total_commands,
