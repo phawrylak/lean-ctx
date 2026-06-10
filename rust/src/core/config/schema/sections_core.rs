@@ -762,10 +762,18 @@ pub(super) fn build(sections: &mut BTreeMap<String, SectionSchema>) {
             key_with_env(
                 "string",
                 serde_json::json!("minilm"),
-                "Local ONNX embedding model for ctx_semantic_search. One of: minilm (all-MiniLM-L6-v2, 384d, default), jina-code-v2 (768d, code-optimized), nomic (768d). Switching models re-indexes once on the next search.",
+                "Local ONNX embedding model for ctx_semantic_search. One of: minilm (all-MiniLM-L6-v2, 384d, default), jina-code-v2 (768d, code-optimized), nomic (768d) — or any HuggingFace repo with an ONNX export via hf:org/repo[@revision]. Switching models re-indexes once on the next search.",
                 "LEAN_CTX_EMBEDDING_MODEL",
             ),
         );
+    embedding.insert(
+        "dimensions".into(),
+        key(
+            "integer",
+            serde_json::json!(null),
+            "Declared embedding width for hf: custom models (fallback only — the real width is probed from the ONNX graph at load time). Built-in models ignore this key.",
+        ),
+    );
     sections.insert(
         "embedding".into(),
         SectionSchema {

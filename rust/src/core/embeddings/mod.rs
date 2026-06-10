@@ -149,7 +149,7 @@ impl EmbeddingEngine {
     /// Generate an embedding vector for a single text (document/code).
     pub fn embed(&self, text: &str) -> anyhow::Result<Vec<f32>> {
         let prefixed;
-        let input_text = if let Some(prefix) = self.model_config.document_prefix {
+        let input_text = if let Some(prefix) = &self.model_config.document_prefix {
             prefixed = format!("{prefix}{text}");
             &prefixed
         } else {
@@ -163,7 +163,7 @@ impl EmbeddingEngine {
     /// Applies query-specific prefix if the model requires one.
     pub fn embed_query(&self, query: &str) -> anyhow::Result<Vec<f32>> {
         let prefixed;
-        let input_text = if let Some(prefix) = self.model_config.query_prefix {
+        let input_text = if let Some(prefix) = &self.model_config.query_prefix {
             prefixed = format!("{prefix}{query}");
             &prefixed
         } else {
@@ -182,12 +182,12 @@ impl EmbeddingEngine {
         self.dimensions
     }
 
-    pub fn model_id(&self) -> EmbeddingModel {
-        self.model_id
+    pub fn model_id(&self) -> &EmbeddingModel {
+        &self.model_id
     }
 
     pub fn model_name(&self) -> &str {
-        self.model_config.name
+        &self.model_config.name
     }
 
     /// Resolve the model directory (respects LEAN_CTX_MODELS_DIR env).
@@ -255,7 +255,7 @@ impl EmbeddingEngine {
 
 /// Load the appropriate tokenizer for the model config.
 fn load_tokenizer(model_dir: &Path, config: &ModelConfig) -> anyhow::Result<TokenizerKind> {
-    match config.vocab_file {
+    match &config.vocab_file {
         VocabSource::VocabTxt(filename) => {
             let path = model_dir.join(filename);
             let tok = WordPieceTokenizer::from_file(&path)?;
@@ -263,7 +263,13 @@ fn load_tokenizer(model_dir: &Path, config: &ModelConfig) -> anyhow::Result<Toke
         }
         VocabSource::TokenizerJson(filename) => {
             let path = model_dir.join(filename);
-            let tok = tokenizer::HfTokenizerWrapper::from_file(&path)?;
+            let tok = tokenizer::HfTokenizerWrapper::from_file(&path).map_err(|e| {
+                anyhow::anyhow!(
+                    "Failed to load tokenizer.json for {}: {e}. Custom models must ship a \
+                     HuggingFace tokenizer.json with a supported model type (WordPiece/BPE).",
+                    config.name
+                )
+            })?;
             Ok(TokenizerKind::HfTokenizer(tok))
         }
     }
@@ -414,6 +420,51 @@ mod tests {
         assert!(
             result.is_none(),
             "try_shared_engine should return None without triggering load"
+        );
+    }
+
+    /// Live proof for GL #397: loads a real HuggingFace repo through the
+    /// `hf:org/repo@rev` scheme (download → SHA-256 lockfile → tokenizer.json →
+    /// ONNX inference → dimension probe). Ignored by default (network + ~91MB);
+    /// run explicitly:
+    /// `cargo test --lib --features embeddings -- --ignored custom_hf_model_end_to_end`
+    #[test]
+    #[ignore = "downloads a real model from HuggingFace (~91MB)"]
+    #[cfg(feature = "embeddings")]
+    fn custom_hf_model_end_to_end() {
+        let model = model_registry::EmbeddingModel::from_str_name(
+            "hf:sentence-transformers/all-MiniLM-L6-v2@main",
+        )
+        .expect("valid hf: spec");
+
+        let base = std::env::temp_dir().join("lean_ctx_test_custom_hf_e2e");
+        let engine = EmbeddingEngine::load_model(&base, model.clone()).expect("load custom model");
+
+        assert_eq!(engine.dimensions(), 384, "probed dims from ONNX graph");
+        assert_eq!(
+            engine.model_name(),
+            "hf:sentence-transformers/all-MiniLM-L6-v2@main"
+        );
+
+        let v = engine.embed("fn main() { println!(\"hello\"); }").unwrap();
+        assert_eq!(v.len(), 384);
+        let norm: f32 = v.iter().map(|x| x * x).sum::<f32>().sqrt();
+        assert!((norm - 1.0).abs() < 1e-3, "L2-normalized, got {norm}");
+
+        // Lockfile must exist and pin both artifacts.
+        let lock_path = base.join(model.storage_dir_name()).join("model.lock.json");
+        let lock: std::collections::BTreeMap<String, String> =
+            serde_json::from_str(&std::fs::read_to_string(&lock_path).unwrap()).unwrap();
+        assert!(lock.contains_key("model.onnx"));
+        assert!(lock.contains_key("tokenizer.json"));
+
+        // Semantic sanity: similar code closer than unrelated text.
+        let a = engine.embed("read a file from disk").unwrap();
+        let b = engine.embed("load file contents from filesystem").unwrap();
+        let c = engine.embed("the weather in Zurich is sunny").unwrap();
+        assert!(
+            cosine_similarity(&a, &b) > cosine_similarity(&a, &c),
+            "related texts must be closer"
         );
     }
 }

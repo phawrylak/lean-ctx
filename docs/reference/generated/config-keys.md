@@ -112,6 +112,7 @@ Cross-project boundary and access control policies
 
 Cloud feature settings
 
+- `auto_sync` (bool, default `false`) — Push the Personal Cloud (knowledge, commands, CEP, gotchas, buddy, feedback) silently once per day at session end (Pro; toggle: `lean-ctx cloud autosync on|off`)
 - `contribute_enabled` (bool, default `false`) — Enable contributing anonymized stats to lean-ctx cloud
 
 ## `[custom_aliases]`
@@ -125,7 +126,8 @@ Custom command aliases (array of {command, alias} entries). Note: field names ar
 
 Semantic-embedding engine settings (model selection for ctx_semantic_search)
 
-- `model` (string, default `minilm` — env `LEAN_CTX_EMBEDDING_MODEL`) — Local ONNX embedding model for ctx_semantic_search. One of: minilm (all-MiniLM-L6-v2, 384d, default), jina-code-v2 (768d, code-optimized), nomic (768d). Switching models re-indexes once on the next search.
+- `dimensions` (integer, default `null`) — Declared embedding width for hf: custom models (fallback only — the real width is probed from the ONNX graph at load time). Built-in models ignore this key.
+- `model` (string, default `minilm` — env `LEAN_CTX_EMBEDDING_MODEL`) — Local ONNX embedding model for ctx_semantic_search. One of: minilm (all-MiniLM-L6-v2, 384d, default), jina-code-v2 (768d, code-optimized), nomic (768d) — or any HuggingFace repo with an ONNX export via hf:org/repo[@revision]. Switching models re-indexes once on the next search.
 
 ## `[gain]`
 

@@ -118,6 +118,7 @@ lean-ctx setup
 ## More Resources
 
 - [Monorepo Guide](monorepo.md)
+- [Custom Embedding Models](custom-embeddings.md)
 - [Getting Started](https://leanctx.com/docs/getting-started)
 - [Tools Reference](https://leanctx.com/docs/tools/)
 - [CLI Reference](https://leanctx.com/docs/cli-reference/)

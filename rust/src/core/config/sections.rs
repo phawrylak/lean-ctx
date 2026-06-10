@@ -579,12 +579,18 @@ impl Default for LoopDetectionConfig {
 /// `model` selects which local ONNX embedding model lean-ctx downloads and uses for
 /// `ctx_semantic_search`. Accepts the same aliases as the `LEAN_CTX_EMBEDDING_MODEL` env
 /// var: `minilm` (all-MiniLM-L6-v2, 384d — the default), `jina-code-v2` (768d,
-/// code-optimized) or `nomic` (768d). When the env var is set it takes precedence; an
+/// code-optimized), `nomic` (768d) — or any HuggingFace repo with an ONNX export via
+/// `hf:org/repo[@revision]` (GL #397). When the env var is set it takes precedence; an
 /// unset/`None` value uses the default model. Switching models triggers a one-time
 /// re-index on the next semantic search (vector dimensions follow from the model).
+///
+/// `dimensions` is only consulted for `hf:` custom models as the declared fallback
+/// width; the real width is probed from the ONNX graph at load time. Built-ins ignore it.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct EmbeddingConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dimensions: Option<usize>,
 }

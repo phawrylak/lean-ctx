@@ -6,6 +6,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 ## [Unreleased]
 
 ### Added
+- **Custom embedding models** (GL #397, upstream #328): `ctx_semantic_search` can now
+  load any HuggingFace repo with an ONNX export via `model = "hf:org/repo[@revision]"`
+  (`[embedding]` in `config.toml` or `LEAN_CTX_EMBEDDING_MODEL`). Includes revision
+  pinning with an unpinned-warning, automatic dimension probing from the ONNX graph
+  (`[embedding].dimensions` as declared fallback), per-repo+revision storage isolation,
+  and SHA-256 lockfiles (`model.lock.json`, trust-on-first-use) that reject silent
+  upstream content swaps. Model or revision changes trigger the established one-shot
+  re-index. New guide: `docs/guides/custom-embeddings.md`.
 - **SDK conformance matrix** (GL #395): all three first-party SDKs (`leanctx`
   on PyPI, `@leanctx/sdk` on npm, `lean-ctx-client` on crates.io) now cover the
   **entire** public `/v1` surface — added `context_summary`, `search_events`,

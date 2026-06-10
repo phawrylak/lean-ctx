@@ -3,6 +3,11 @@
 //! Downloads the selected ONNX embedding model and its vocabulary/tokenizer
 //! files on first use. Files are cached per-model in subdirectories under
 //! `~/.lean-ctx/models/<model-name>/` and only downloaded once.
+//!
+//! Supply-chain integrity (GL #397): after the first successful download a
+//! `model.lock.json` records the SHA-256 of every artifact (trust-on-first-use).
+//! Any later re-download of the same file must reproduce the pinned hash —
+//! an upstream repo that silently swaps bytes under the same revision fails hard.
 
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -11,9 +16,12 @@ use super::model_registry::{ModelConfig, VocabSource};
 
 const USER_AGENT: &str = concat!("lean-ctx/", env!("CARGO_PKG_VERSION"));
 
+/// Lockfile name storing `{ filename: sha256-hex }` per model directory.
+const LOCKFILE: &str = "model.lock.json";
+
 struct DownloadFile {
     url: String,
-    local_name: &'static str,
+    local_name: String,
     min_bytes: u64,
 }
 
@@ -22,7 +30,7 @@ struct DownloadFile {
 pub fn ensure_model(model_dir: &Path, config: &ModelConfig) -> anyhow::Result<PathBuf> {
     let files = download_files(config);
 
-    let all_present = files.iter().all(|f| model_dir.join(f.local_name).exists());
+    let all_present = files.iter().all(|f| model_dir.join(&f.local_name).exists());
 
     if all_present {
         return Ok(model_dir.to_path_buf());
@@ -35,8 +43,10 @@ pub fn ensure_model(model_dir: &Path, config: &ModelConfig) -> anyhow::Result<Pa
     );
     std::fs::create_dir_all(model_dir)?;
 
+    let mut lock = read_lockfile(model_dir);
+
     for file in &files {
-        let local_path = model_dir.join(file.local_name);
+        let local_path = model_dir.join(&file.local_name);
         if local_path.exists() {
             let meta = std::fs::metadata(&local_path)?;
             if meta.len() >= file.min_bytes {
@@ -51,9 +61,29 @@ pub fn ensure_model(model_dir: &Path, config: &ModelConfig) -> anyhow::Result<Pa
             );
         }
 
-        download_file(&file.url, file.local_name, file.min_bytes, model_dir)?;
+        download_file(&file.url, &file.local_name, file.min_bytes, model_dir)?;
+
+        let actual = sha256_file(&model_dir.join(&file.local_name))?;
+        match lock.get(&file.local_name) {
+            Some(pinned) if pinned != &actual => {
+                let _ = std::fs::remove_file(model_dir.join(&file.local_name));
+                anyhow::bail!(
+                    "SHA-256 mismatch for {} of model '{}': pinned {pinned}, got {actual}. \
+                     Upstream content changed under the same revision — refusing the file. \
+                     If this is intentional, delete {} and re-download.",
+                    file.local_name,
+                    config.name,
+                    model_dir.join(LOCKFILE).display()
+                );
+            }
+            Some(_) => {}
+            None => {
+                lock.insert(file.local_name.clone(), actual);
+            }
+        }
     }
 
+    write_lockfile(model_dir, &lock)?;
     verify_model_files(model_dir, config)?;
 
     tracing::info!(
@@ -68,12 +98,12 @@ fn download_files(config: &ModelConfig) -> Vec<DownloadFile> {
     vec![
         DownloadFile {
             url: config.model_url(),
-            local_name: "model.onnx",
+            local_name: "model.onnx".to_string(),
             min_bytes: config.model_min_bytes,
         },
         DownloadFile {
             url: config.vocab_url(),
-            local_name: config.vocab_file.filename(),
+            local_name: config.vocab_file.filename().to_string(),
             min_bytes: config.vocab_min_bytes,
         },
     ]
@@ -193,9 +223,44 @@ fn verify_model_files(model_dir: &Path, config: &ModelConfig) -> anyhow::Result<
     Ok(())
 }
 
+/// Compute the SHA-256 of a file as lowercase hex (streaming, 64KB chunks).
+fn sha256_file(path: &Path) -> anyhow::Result<String> {
+    use sha2::{Digest, Sha256};
+    let mut file = std::fs::File::open(path)?;
+    let mut hasher = Sha256::new();
+    let mut buf = vec![0u8; 65536];
+    loop {
+        let n = file.read(&mut buf)?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buf[..n]);
+    }
+    Ok(format!("{:x}", hasher.finalize()))
+}
+
+fn read_lockfile(model_dir: &Path) -> std::collections::BTreeMap<String, String> {
+    std::fs::read_to_string(model_dir.join(LOCKFILE))
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default()
+}
+
+fn write_lockfile(
+    model_dir: &Path,
+    lock: &std::collections::BTreeMap<String, String>,
+) -> anyhow::Result<()> {
+    if lock.is_empty() {
+        return Ok(());
+    }
+    let json = serde_json::to_string_pretty(lock)?;
+    std::fs::write(model_dir.join(LOCKFILE), json)?;
+    Ok(())
+}
+
 /// Remove all downloaded model files (for cleanup/re-download).
 pub fn clean_model(model_dir: &Path) -> anyhow::Result<()> {
-    for name in ["model.onnx", "vocab.txt", "tokenizer.json"] {
+    for name in ["model.onnx", "vocab.txt", "tokenizer.json", LOCKFILE] {
         let path = model_dir.join(name);
         if path.exists() {
             std::fs::remove_file(&path)?;
@@ -244,6 +309,50 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn custom_model_downloads_tokenizer_json() {
+        let model = EmbeddingModel::from_str_name("hf:org/model@pin").unwrap();
+        let files = download_files(&model.config());
+        assert_eq!(files[1].local_name, "tokenizer.json");
+        assert!(files[0].url.contains("/resolve/pin/onnx/model.onnx"));
+    }
+
+    #[test]
+    fn sha256_and_lockfile_roundtrip() {
+        let dir = std::env::temp_dir().join("lean_ctx_test_lockfile_v1");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let f = dir.join("model.onnx");
+        std::fs::write(&f, b"abc").unwrap();
+        let h = sha256_file(&f).unwrap();
+        assert_eq!(
+            h,
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
+
+        let mut lock = std::collections::BTreeMap::new();
+        lock.insert("model.onnx".to_string(), h);
+        write_lockfile(&dir, &lock).unwrap();
+        assert_eq!(read_lockfile(&dir), lock);
+
+        // Corrupt lockfile degrades to empty (TOFU re-pin), never a panic.
+        std::fs::write(dir.join(LOCKFILE), "not json").unwrap();
+        assert!(read_lockfile(&dir).is_empty());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn empty_lockfile_is_not_written() {
+        let dir = std::env::temp_dir().join("lean_ctx_test_lockfile_empty_v1");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        write_lockfile(&dir, &std::collections::BTreeMap::new()).unwrap();
+        assert!(!dir.join(LOCKFILE).exists());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
