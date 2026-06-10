@@ -124,6 +124,7 @@ class CockpitOverview extends HTMLElement {
       '/api/slos',
       '/api/verification',
       '/api/graph/stats',
+      '/api/roi',
     ];
 
     var cached = window.LctxApi && window.LctxApi.cachedFetch ? window.LctxApi.cachedFetch : fetchJson;
@@ -155,6 +156,7 @@ class CockpitOverview extends HTMLElement {
       slos: ok(results[4]),
       verification: ok(results[5]),
       graphStats: ok(results[6]),
+      roi: ok(results[7]),
     };
 
     this._loading = false;
@@ -203,6 +205,7 @@ class CockpitOverview extends HTMLElement {
     this.innerHTML = body;
     this._bind();
     this._bindContextHealthCard();
+    this._bindVerifiedBridge();
   }
 
   /* ── Time filter bar ───────────────────────────────── */
@@ -214,13 +217,20 @@ class CockpitOverview extends HTMLElement {
       { label: '90d', val: 90 },
       { label: 'All', val: 0 },
     ];
-    var html = '<div class="tf-bar">';
+    // Label makes explicit that the range only affects the charts below —
+    // the hero numbers above stay all-time (audit finding: users assumed 7d
+    // would filter everything).
+    var html = '<div class="tf-bar">' +
+      '<span style="font-size:11px;color:var(--muted);margin-right:6px" ' +
+      'title="The big numbers above are always all-time. These buttons change the time range of the charts below.">' +
+      'Chart range</span>';
     for (var i = 0; i < ranges.length; i++) {
       var r = ranges[i];
       html +=
         '<button type="button" class="tf-btn' +
         (this._range === r.val ? ' active' : '') +
-        '" data-range="' + r.val + '">' +
+        '" data-range="' + r.val + '" ' +
+        'title="Changes the charts below \u2014 the totals above are always all-time">' +
         esc(r.label) + '</button>';
     }
     html += '</div>';
@@ -253,16 +263,22 @@ class CockpitOverview extends HTMLElement {
       ? 'var(--green)' : scoreDash >= 50
         ? 'var(--yellow)' : 'var(--red)';
 
+    var sinceStr = stats && stats.first_use
+      ? String(stats.first_use).slice(0, 10) : '';
+
     return (
       '<div class="hero stagger">' +
 
       '<div class="hero-main">' +
-      '<span class="hl">Total tokens saved' + tip('total_tokens_saved') + '</span>' +
+      '<span class="hl">Total tokens saved' + tip('total_tokens_saved') +
+      '<span class="tag tb" style="margin-left:8px">estimated' +
+      (sinceStr ? ' \u00b7 since ' + esc(sinceStr) : '') + '</span></span>' +
       '<div class="hv" id="cko-vSaved">' + esc(ff(saved)) + '</div>' +
       '<p class="hs">' +
       'From <b>' + esc(ff(totalIn)) + '</b> input to <b>' +
       esc(ff(totalOut)) + '</b> output across <b>' +
       esc(ff(calls)) + '</b> calls</p>' +
+      this._verifiedBridge(esc, ff, fu) +
       '</div>' +
 
       '<div class="hc">' +
@@ -308,6 +324,40 @@ class CockpitOverview extends HTMLElement {
     );
   }
 
+  /* ── Verified-ledger bridge line (estimated ⇄ signed, links to ROI) ── */
+
+  _verifiedBridge(esc, ff, fu) {
+    var roiPayload = this._data && this._data.roi;
+    var roi = roiPayload && roiPayload.roi ? roiPayload.roi : null;
+    if (!roi || !roi.total_events) return '';
+
+    var trend = roiPayload.trend || [];
+    var since = trend.length && trend[0] && trend[0][0] ? String(trend[0][0]) : '';
+
+    return (
+      '<p class="hs cko-bridge" id="cko-verifiedBridge" role="link" tabindex="0" ' +
+      'title="Open ROI & Plan" style="cursor:pointer;margin-top:6px">' +
+      '<span class="tag tg">verified</span> ' +
+      'of which <b>' + esc(ff(roi.net_saved_tokens)) + '</b> tokens \u00b7 <b>' +
+      esc(fu(roi.saved_usd)) + '</b> are signed in the local ledger' +
+      (since ? ' (since ' + esc(since) + ')' : '') +
+      ' <span class="hc-health-go">ROI &amp; Plan \u2192</span></p>'
+    );
+  }
+
+  _bindVerifiedBridge() {
+    var el = document.getElementById('cko-verifiedBridge');
+    if (!el || el.dataset.bound === '1') return;
+    el.dataset.bound = '1';
+    var go = function () {
+      if (window.LctxRouter) window.LctxRouter.navigateTo('roi');
+    };
+    el.addEventListener('click', go);
+    el.addEventListener('keydown', function (e) {
+      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); go(); }
+    });
+  }
+
   /* ── Context Health hero card (compact, links to Commander) ───── */
 
   _healthHeroCard(esc, ff) {
@@ -327,7 +377,7 @@ class CockpitOverview extends HTMLElement {
         }).catch(function () {});
       }
       return '<div class="hc hc--link" id="cko-healthCard" role="button" tabindex="0" ' +
-        'title="Open Context Commander">' +
+        'title="Open Context Triage">' +
         '<span class="hl">Context Health' + tip('context_health') + '</span>' +
         '<div class="hv" style="color:var(--muted)">\u2014</div>' +
         '<p class="hs">checking\u2026</p>' +
@@ -335,7 +385,7 @@ class CockpitOverview extends HTMLElement {
     }
 
     return '<div class="hc hc--link" id="cko-healthCard" role="button" tabindex="0" ' +
-      'title="Open Context Commander">' +
+      'title="Open Context Triage">' +
       this._buildHealthHeroInner(esc, ff, this._triageData) + '</div>';
   }
 
@@ -352,12 +402,18 @@ class CockpitOverview extends HTMLElement {
 
     var sub = pct + '% used \u00b7 ' + (s.total_files || 0) + ' files';
     if (s.risk_count > 0) sub += ' \u00b7 ' + s.risk_count + ' at risk';
+    // Live value that drifts quickly while agents work — show the fetch time
+    // so a stale number can't silently contradict the Triage page.
+    var now = new Date();
+    var hh = String(now.getHours()).padStart(2, '0');
+    var mm = String(now.getMinutes()).padStart(2, '0');
+    sub += ' \u00b7 as of ' + hh + ':' + mm;
 
     return '<span class="hl">Context Health' + tip('context_health') + '</span>' +
       '<div class="hv hc-health-v" style="color:' + col + '">' +
       '<span class="hc-health-dot" style="background:' + col + '"></span>' + esc(label) +
       '</div>' +
-      '<p class="hs">' + esc(sub) + '<span class="hc-health-go">Commander \u2192</span></p>';
+      '<p class="hs">' + esc(sub) + '<span class="hc-health-go">Triage \u2192</span></p>';
   }
 
   _bindContextHealthCard() {
@@ -484,6 +540,8 @@ class CockpitOverview extends HTMLElement {
       ? session.task.description || '\u2014' : '\u2014';
     var shortTask = taskDesc.length > 48
       ? taskDesc.slice(0, 48) + '\u2026' : taskDesc;
+    var filesCount = session && session.files_touched
+      ? session.files_touched.length : 0;
 
     var sloSnap = slos && slos.snapshot ? slos.snapshot : null;
     var sloArr = sloSnap && Array.isArray(sloSnap.slos) ? sloSnap.slos : [];
@@ -517,6 +575,7 @@ class CockpitOverview extends HTMLElement {
     return (
       '<div class="card status-strip" style="margin-bottom:20px">' +
       chip('Session', '<span title="' + esc(taskDesc) + '">' + esc(shortTask) + '</span>', null, 'session_overview') +
+      chip('Files touched', String(filesCount), null, null) +
       chip('Reliability', sloPct + '% <span class="status-chip-sub">(' + sloPassed + '/' + sloTotal + ')</span>', sloCol, 'slo_compliance') +
       chip('Verification', vPct + '% <span class="status-chip-sub">(' + vPassed + '/' + vTotal + ')</span>', vCol, 'verification') +
       chip('Graph', gNodes + ' nodes \u00b7 ' + gEdges + ' edges', null, 'property_graph') +

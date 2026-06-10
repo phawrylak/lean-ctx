@@ -244,24 +244,38 @@ class CockpitRoi extends HTMLElement {
     var energy = F.fe ? F.fe(energyWh) : '\u2014';
 
     // The signed ledger starts later than the all-time stats on Home, so the
-    // totals legitimately differ. Say so, or the numbers look contradictory.
+    // totals legitimately differ. Say so prominently, or the numbers look
+    // contradictory next to Home's estimated all-time figures.
     var trend = this._data.trend || [];
     var since = trend.length && trend[0] && trend[0][0] ? String(trend[0][0]) : null;
-    var scope = 'signed ledger only' + (since ? ' \u00b7 since ' + esc(since) : '') +
-      ' \u2014 Home shows all-time totals';
+
+    var scopeBanner =
+      '<div class="view-hint" style="margin-bottom:14px">' +
+      '<span class="tag tg">verified</span>' +
+      '<span>These numbers come from the <b>signed ledger</b>' +
+      (since ? ' (recording since <b>' + esc(since) + '</b>)' : '') +
+      ' \u2014 it only counts <b>measured</b> compression: actual tokens observed ' +
+      'before vs. after, per event, hash-chained. The totals on ' +
+      '<a href="#overview" style="color:var(--accent)">Home</a> are an <b>estimate</b> ' +
+      'of what agents would have loaded without lean-ctx \u2014 they include the full ' +
+      'history and a modeled baseline for search results. Estimated is the bigger ' +
+      'picture; this page is the auditable floor.</span>' +
+      '</div>';
 
     return (
+      scopeBanner +
       '<div class="hero r4 stagger" style="margin-bottom:4px">' +
-      '<div class="hc"><span class="hl">Net tokens saved</span>' +
+      '<div class="hc"><span class="hl">Net tokens saved ' +
+      '<span class="tag tg">verified</span></span>' +
       '<div class="hv">' + esc(ff(roi.net_saved_tokens)) + '</div></div>' +
-      '<div class="hc"><span class="hl">Estimated $ saved</span>' +
+      '<div class="hc"><span class="hl">$ saved ' +
+      '<span class="tag tg">verified</span></span>' +
       '<div class="hv" style="color:var(--green)">' + esc(fu(roi.saved_usd)) + '</div></div>' +
       '<div class="hc"><span class="hl">Energy saved</span>' +
       '<div class="hv">' + esc(energy) + '</div></div>' +
       '<div class="hc"><span class="hl">Verified events</span>' +
       '<div class="hv">' + esc(ff(roi.total_events)) + '</div></div>' +
-      '</div>' +
-      '<p class="hs" style="margin:0 0 12px;color:var(--muted)">' + scope + '</p>'
+      '</div>'
     );
   }
 
@@ -380,7 +394,11 @@ class CockpitRoi extends HTMLElement {
     var tools = Array.isArray(roi.top_tools) ? roi.top_tools : [];
 
     var modelRows = models.slice(0, 8).map(function (m) {
-      return '<tr><td>' + esc(String(m[0])) + '</td>' +
+      var name = String(m[0]);
+      var label = name === 'fallback-blended'
+        ? '<span title="Events without model attribution, priced at a blended average input rate">model unknown <span class="hs">(blended rate)</span></span>'
+        : esc(name);
+      return '<tr><td>' + label + '</td>' +
         '<td class="r">' + esc(ff(m[1])) + '</td>' +
         '<td class="r">' + esc(fu(m[2])) + '</td></tr>';
     }).join('');

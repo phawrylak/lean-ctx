@@ -1,5 +1,5 @@
 /**
- * Context Manager — single-page context visibility & management.
+ * Context Contents — single-page context visibility & management.
  */
 const VIEW_MODES = [
   'full', 'map', 'signatures', 'diff', 'aggressive',
@@ -179,6 +179,11 @@ class CockpitContext extends HTMLElement {
     if (this._error) { this.innerHTML = '<div class="card" style="padding:20px;color:var(--red)">\u26a0 ' + esc(this._error) + '</div>'; return; }
 
     let body = '';
+
+    // Sibling view: Contents shows what is loaded, Triage says what to do.
+    body += '<p class="hs" style="margin:0 0 12px;color:var(--muted)">Too full? ' +
+      '<a href="#commander" style="color:var(--accent)">Context Triage \u2192</a> ' +
+      'tells you what to trim.</p>';
 
     // 1. Context Window (hero)
     body += this._renderContextWindow(esc, ff, pc);
@@ -920,7 +925,10 @@ class CockpitContext extends HTMLElement {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ action, path }), timeoutMs: 15000,
       });
-      toast(action + ' applied', 'success');
+      // Always name the file — "unpin applied" alone doesn't tell the user
+      // what just changed.
+      const short = String(path || '').split('/').slice(-2).join('/');
+      toast(action + ': ' + (short || path), 'success');
       await this.loadData();
     } catch (err) { toast((err?.error || 'Request failed'), 'error'); }
   }

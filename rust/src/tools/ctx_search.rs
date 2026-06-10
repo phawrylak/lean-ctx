@@ -16,17 +16,44 @@ pub(crate) const MAX_FILE_SIZE: u64 = 512_000;
 pub(crate) const MAX_WALK_DEPTH: usize = 20;
 const MAX_MATCH_LINE_WIDTH: usize = 150;
 
-/// Counterfactual multiplier for the "what a native grep would have cost"
-/// baseline (GL #479 D1). `raw_tokens_accum` counts only the matched lines we
-/// actually scanned; an agent running native `grep`/`rg` typically pays for
-/// wider context windows, repeated refinement runs and unscoped first attempts.
-/// That overhead is a **modelling assumption, not a measurement** — which is
-/// exactly why:
-/// - it lives in one named constant instead of an inline literal,
-/// - savings derived from it are labelled *estimated* in the dashboard, and
-/// - the verified ledger records search events with the **raw, unmultiplied**
-///   baseline (see `savings_ledger::record_tool_event` below).
-pub const NATIVE_SEARCH_BASELINE_FACTOR: f64 = 2.5;
+/// Modeled baseline for the *estimated* savings series (GL #479 D1): a native
+/// agent grep tool ships matches with surrounding context lines, per-file
+/// headers and line numbers, which is roughly 2.5x the tokens of the bare
+/// match lines lean-ctx observes. This factor is a documented model
+/// assumption — it feeds `stats.json` ("estimated") only. The signed savings
+/// ledger ("verified") records `observed_tokens` without any factor applied.
+pub const NATIVE_GREP_BASELINE_FACTOR: f64 = 2.5;
+
+/// Result of a search: the rendered output plus both baseline figures.
+pub struct SearchOutcome {
+    /// Rendered, compressed search output.
+    pub text: String,
+    /// Modeled native-tool baseline (`observed_tokens` x [`NATIVE_GREP_BASELINE_FACTOR`]).
+    /// Feeds the estimated stats series.
+    pub modeled_baseline: usize,
+    /// Tokens actually measured in the raw match lines — no model applied.
+    /// Feeds the verified savings ledger.
+    pub observed_tokens: usize,
+}
+
+impl SearchOutcome {
+    fn error(text: String) -> Self {
+        Self {
+            text,
+            modeled_baseline: 0,
+            observed_tokens: 0,
+        }
+    }
+
+    fn from_observed(text: String, observed_tokens: usize) -> Self {
+        let modeled = (observed_tokens as f64 * NATIVE_GREP_BASELINE_FACTOR).ceil() as usize;
+        Self {
+            text,
+            modeled_baseline: modeled.max(observed_tokens),
+            observed_tokens,
+        }
+    }
+}
 
 /// Wall-clock budget for a single `ctx_search` call. The regular-file guard in
 /// the read loop removes the known infinite block — `read_to_string` on a
@@ -52,7 +79,7 @@ pub fn handle(
     _crp_mode: CrpMode,
     respect_gitignore: bool,
     allow_secret_paths: bool,
-) -> (String, usize) {
+) -> SearchOutcome {
     // `include` is a glob matched against each file's path *relative to* `dir`
     // (e.g. `*.ts`, `*.{rs,ts}`, `src/**/*.tsx`). Brace alternation is expanded
     // here because the `glob` crate has no native support for it. An empty result
@@ -64,13 +91,10 @@ pub fn handle(
 
     let redact = crate::core::redaction::redaction_enabled_for_active_role();
     if pattern.len() > MAX_PATTERN_LEN {
-        return (
-            format!(
-                "ERROR: pattern too long ({} > {MAX_PATTERN_LEN} chars)",
-                pattern.len()
-            ),
-            0,
-        );
+        return SearchOutcome::error(format!(
+            "ERROR: pattern too long ({} > {MAX_PATTERN_LEN} chars)",
+            pattern.len()
+        ));
     }
     let re = match RegexBuilder::new(pattern)
         .size_limit(MAX_REGEX_SIZE)
@@ -78,12 +102,12 @@ pub fn handle(
         .build()
     {
         Ok(r) => r,
-        Err(e) => return (format!("ERROR: invalid regex: {e}"), 0),
+        Err(e) => return SearchOutcome::error(format!("ERROR: invalid regex: {e}")),
     };
 
     let root = Path::new(dir);
     if !root.exists() {
-        return (format!("ERROR: {dir} does not exist"), 0);
+        return SearchOutcome::error(format!("ERROR: {dir} does not exist"));
     }
 
     let mut files: Vec<PathBuf> = Vec::new();
@@ -266,7 +290,7 @@ pub fn handle(
                 " (search stopped at the time budget — refine the pattern or scope with path=)",
             );
         }
-        return (msg, 0);
+        return SearchOutcome::error(msg);
     }
 
     // Prefix-cache-friendly: structural file list before per-query match content
@@ -343,16 +367,7 @@ pub fn handle(
     };
 
     if let Some(delta) = crate::core::search_delta::compute_delta(pattern, &matches) {
-        let native_estimate =
-            (raw_tokens_accum as f64 * NATIVE_SEARCH_BASELINE_FACTOR).ceil() as usize;
-        let original = native_estimate.max(raw_tokens_accum);
-        // Verified ledger gets the raw, unmultiplied counterfactual (GL #479 D2).
-        crate::core::savings_ledger::record_tool_event(
-            "ctx_search",
-            raw_tokens_accum,
-            count_tokens(&delta),
-        );
-        return (delta, original);
+        return SearchOutcome::from_observed(delta, raw_tokens_accum);
     }
 
     if symbol_map::substitution_enabled() {
@@ -379,17 +394,7 @@ pub fn handle(
         result.push_str(&hint);
     }
 
-    let native_estimate = (raw_tokens_accum as f64 * NATIVE_SEARCH_BASELINE_FACTOR).ceil() as usize;
-    let original = native_estimate.max(raw_tokens_accum);
-
-    // Verified ledger gets the raw, unmultiplied counterfactual (GL #479 D2).
-    crate::core::savings_ledger::record_tool_event(
-        "ctx_search",
-        raw_tokens_accum,
-        count_tokens(&result),
-    );
-
-    (result, original)
+    SearchOutcome::from_observed(result, raw_tokens_accum)
 }
 
 pub(crate) fn is_binary_ext(path: &Path) -> bool {
@@ -598,7 +603,7 @@ mod tests {
         std::fs::write(&b, "match\n").unwrap();
         std::fs::write(&a, "match\n").unwrap();
 
-        let (out, _orig) = handle(
+        let out = handle(
             "match",
             dir.path().to_string_lossy().as_ref(),
             Some("*.txt"),
@@ -606,7 +611,8 @@ mod tests {
             CrpMode::Off,
             true,
             true,
-        );
+        )
+        .text;
 
         let mut match_lines: Vec<&str> = out
             .lines()
@@ -650,7 +656,7 @@ mod tests {
             "index should warm for a small clean corpus"
         );
 
-        let (out, _orig) = handle("authenticate", &root, None, 10, CrpMode::Off, true, false);
+        let out = handle("authenticate", &root, None, 10, CrpMode::Off, true, false).text;
         assert!(
             out.contains("a.rs"),
             "warm-index + cache search must find the match: {out}"
@@ -677,7 +683,7 @@ mod tests {
         )
         .unwrap();
 
-        let (out, _orig) = handle(
+        let out = handle(
             "longIdentifier",
             dir.path().to_string_lossy().as_ref(),
             Some("*.rs"),
@@ -685,7 +691,8 @@ mod tests {
             CrpMode::Off,
             true,
             true,
-        );
+        )
+        .text;
 
         assert!(
             !out.contains("§MAP"),
@@ -709,7 +716,7 @@ mod tests {
         std::fs::write(&secret, "match\n").unwrap();
         std::fs::write(&ok, "match\n").unwrap();
 
-        let (out, _orig) = handle(
+        let out = handle(
             "match",
             dir.path().to_string_lossy().as_ref(),
             None,
@@ -717,7 +724,8 @@ mod tests {
             CrpMode::Off,
             true,
             false,
-        );
+        )
+        .text;
 
         assert!(out.contains("ok.txt:"), "expected ok.txt match, got: {out}");
         assert!(
@@ -753,10 +761,10 @@ mod tests {
         let (tx, rx) = mpsc::channel();
         std::thread::spawn(move || {
             // Fresh temp dir → no warm index yet, so this exercises the walk path.
-            let out = handle("needle_here", &dir_path, None, 10, CrpMode::Off, true, true);
+            let out = handle("needle_here", &dir_path, None, 10, CrpMode::Off, true, true).text;
             let _ = tx.send(out);
         });
-        let (out, _orig) = rx
+        let out = rx
             .recv_timeout(Duration::from_secs(5))
             .expect("ctx_search hung on a FIFO (#336 regression)");
 
@@ -820,7 +828,7 @@ mod tests {
         std::fs::write(dir.path().join("b.ts"), "needle\n").unwrap();
         std::fs::write(dir.path().join("c.py"), "needle\n").unwrap();
 
-        let (out, _) = handle(
+        let out = handle(
             "needle",
             dir.path().to_string_lossy().as_ref(),
             Some("*.{rs,ts}"),
@@ -828,7 +836,8 @@ mod tests {
             CrpMode::Off,
             true,
             true,
-        );
+        )
+        .text;
 
         assert!(out.contains("a.rs"), "rs file must match: {out}");
         assert!(out.contains("b.ts"), "ts file must match: {out}");
@@ -842,7 +851,7 @@ mod tests {
         std::fs::write(dir.path().join("src/inner/deep.rs"), "needle\n").unwrap();
         std::fs::write(dir.path().join("top.rs"), "needle\n").unwrap();
 
-        let (out, _) = handle(
+        let out = handle(
             "needle",
             dir.path().to_string_lossy().as_ref(),
             Some("src/**/*.rs"),
@@ -850,7 +859,8 @@ mod tests {
             CrpMode::Off,
             true,
             true,
-        );
+        )
+        .text;
 
         assert!(out.contains("deep.rs"), "nested match expected: {out}");
         assert!(

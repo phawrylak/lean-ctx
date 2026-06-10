@@ -166,9 +166,14 @@ class CockpitSearch extends HTMLElement {
 
     var indexed = stats.doc_count != null ? fmt(stats.doc_count) : (stats.indexed_files != null ? fmt(stats.indexed_files) : '—');
     var symbols = stats.chunk_count != null ? fmt(stats.chunk_count) : (stats.total_symbols != null ? fmt(stats.total_symbols) : '—');
-    var lastIndexed = stats.last_indexed
-      ? String(stats.last_indexed).replace('T', ' ').slice(0, 19)
-      : '—';
+    // Only show "Last indexed" when the backend actually reports it —
+    // a permanent em-dash just looks broken.
+    var lastIndexedCell = stats.last_indexed
+      ? '<div class="cks-stat">' +
+        '<span class="sl">Last indexed</span>' +
+        '<span class="sv">' + esc(String(stats.last_indexed).replace('T', ' ').slice(0, 19)) + '</span>' +
+        '</div>'
+      : '';
 
     container.innerHTML =
       '<div class="card" style="margin-bottom:16px">' +
@@ -181,10 +186,7 @@ class CockpitSearch extends HTMLElement {
       '<span class="sl">Total symbols</span>' +
       '<span class="sv">' + esc(symbols) + '</span>' +
       '</div>' +
-      '<div class="cks-stat">' +
-      '<span class="sl">Last indexed</span>' +
-      '<span class="sv">' + esc(lastIndexed) + '</span>' +
-      '</div>' +
+      lastIndexedCell +
       '</div>' +
       '</div>';
   }
@@ -237,6 +239,13 @@ class CockpitSearch extends HTMLElement {
     var meta = esc(String(total)) + ' result' + (total !== 1 ? 's' : '') +
       (elapsed ? ' in ' + esc(elapsed) : '');
 
+    // Normalize raw BM25 scores to a relative "match" percentage — the top
+    // hit defines 100%. Raw scores (e.g. 48.02) mean nothing to users.
+    var maxScore = 0;
+    this._results.results.forEach(function (r) {
+      if (r.score != null && Number(r.score) > maxScore) maxScore = Number(r.score);
+    });
+
     var items = this._results.results.map(function (r, idx) {
       var rawPath = String(r.file_path || r.path || '');
       var path = esc(rawPath || '—');
@@ -244,13 +253,15 @@ class CockpitSearch extends HTMLElement {
       var symName = r.symbol_name || '';
       var kind = r.kind || '';
       var content = esc(String(r.snippet || r.content || '').trim().slice(0, 300));
-      var score = r.score != null ? Number(r.score).toFixed(2) : '—';
 
       var header = '<code class="cks-result-path">' + path + '</code>';
       if (line) header += '<span class="cks-result-line">:' + esc(line) + '</span>';
       if (symName) header += ' <strong>' + esc(symName) + '</strong>';
       if (kind) header += ' <span class="tag ts">' + esc(kind) + '</span>';
-      header += '<span class="cks-result-score tag tg">' + esc(score) + '</span>';
+      if (r.score != null && maxScore > 0) {
+        var rel = Math.round((Number(r.score) / maxScore) * 100);
+        header += '<span class="cks-result-score tag tg" title="Relevance relative to the best match">' + rel + '%</span>';
+      }
       header += '<span class="cks-result-chevron" aria-hidden="true">\u25B8</span>';
 
       // The whole header is the disclosure control for an inline file preview
@@ -331,6 +342,16 @@ class CockpitSearch extends HTMLElement {
         return;
       }
       panel.innerHTML = this._previewHtml(data.original, line, data.original_lines || 0, path);
+      var labBtn = panel.querySelector('.cks-open-lab');
+      if (labBtn) {
+        labBtn.addEventListener('click', function (ev) {
+          ev.stopPropagation();
+          var p = labBtn.getAttribute('data-lab-path');
+          if (!p) return;
+          try { sessionStorage.setItem('lctx_lab_file', p); } catch (e) { /* private mode */ }
+          location.hash = '#compression';
+        });
+      }
       panel._loaded = true;
     } catch (e) {
       panel.innerHTML = '<p class="hs" style="color:var(--red);padding:8px">Preview failed: ' +
@@ -357,9 +378,14 @@ class CockpitSearch extends HTMLElement {
       ? '<p class="hs" style="margin:6px 8px;color:var(--muted)">Preview covers the first ' +
         lines.length + ' of ' + totalLines + ' lines.</p>'
       : '';
+    // Secondary action from the preview: hand the file to the Compression
+    // Lab via sessionStorage (the Lab may not be mounted yet when we navigate).
     return (
       '<div class="cks-preview-head"><code>' + esc(path) + '</code>' +
-      '<span class="hs">lines ' + from + '\u2013' + to + '</span></div>' +
+      '<span class="hs">lines ' + from + '\u2013' + to + '</span>' +
+      '<button type="button" class="cks-open-lab" data-lab-path="' + esc(path) + '" ' +
+      'title="Open in Compression Lab \u2014 see how lean-ctx compresses this file">' +
+      'Open in Lab \u2192</button></div>' +
       '<table class="cks-preview-table"><tbody>' + rows + '</tbody></table>' +
       truncated
     );

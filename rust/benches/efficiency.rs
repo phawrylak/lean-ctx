@@ -68,7 +68,7 @@ fn measure<F: FnMut() -> String>(mut run: F) -> (f64, f64, f64, usize) {
 }
 
 fn bench_walk(corpus: &str, pattern: &str) -> (f64, f64, f64, usize) {
-    measure(|| ctx_search::handle(pattern, corpus, None, 20, CrpMode::Off, true, false).0)
+    measure(|| ctx_search::handle(pattern, corpus, None, 20, CrpMode::Off, true, false).text)
 }
 
 fn main() {
@@ -123,7 +123,7 @@ fn main() {
 /// Extracts the set of `file:line` match lines from a search response so the
 /// walk path and index path can be compared for recall parity.
 fn match_lines(corpus: &str, pattern: &str) -> std::collections::BTreeSet<String> {
-    let (out, _) = ctx_search::handle(pattern, corpus, None, 500, CrpMode::Off, true, false);
+    let out = ctx_search::handle(pattern, corpus, None, 500, CrpMode::Off, true, false).text;
     out.lines()
         .filter(|l| l.contains(".rs:") || l.contains(".txt:"))
         .map(str::to_string)

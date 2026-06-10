@@ -37,7 +37,8 @@ function getNavMode() {
 // what agents read, remembers what they learn, guards what they touch and
 // proves what they save. Simple mode is the 5-second answer (Home only);
 // Advanced groups every deep view under the job it serves.
-// `desc` powers nav tooltips, the per-view hint banner and onboarding copy.
+// `job` is the plain-language promise rendered as the group subtitle; `desc`
+// powers nav tooltips, the per-view hint banner and onboarding copy.
 const COCKPIT_NAV_SECTIONS = [
   {
     label: 'Home',
@@ -48,22 +49,22 @@ const COCKPIT_NAV_SECTIONS = [
   },
   {
     label: 'Context',
-    job: 'decides what agents read',
+    job: 'decides what your agents read',
     tier: 'pro',
     items: [
-      { id: 'commander', label: 'Context Health', desc: 'Context-window pressure and what to trim.' },
-      { id: 'context', label: 'Context Manager', desc: 'Everything currently loaded into the model context.' },
+      { id: 'commander', label: 'Context Triage', desc: 'Context-window pressure and what to trim — your to-do list.' },
+      { id: 'context', label: 'Context Contents', desc: 'Everything currently loaded into the model context.' },
       { id: 'live', label: 'Live Activity', desc: 'What lean-ctx is doing right now.' },
-      { id: 'compression', label: 'Savings', desc: 'Which files and read modes saved the most tokens.' },
+      { id: 'compression', label: 'Compression Lab', desc: 'Which files and read modes saved the most tokens.' },
     ],
   },
   {
     label: 'Memory',
-    job: 'remembers what agents learn',
+    job: 'remembers what your agents learn',
     tier: 'pro',
     items: [
       { id: 'knowledge', label: 'Knowledge', desc: 'Facts lean-ctx has learned about your project.' },
-      { id: 'memory', label: 'Memory', desc: 'Saved episodes, procedures and bug memory.' },
+      { id: 'memory', label: 'Episodes', desc: 'Saved episodes, procedures and bug memory.' },
       { id: 'search', label: 'Search', desc: 'Search indexed files, symbols and content.' },
       { id: 'agents', label: 'Agents', desc: 'Connected agents and their activity.' },
     ],
@@ -73,7 +74,7 @@ const COCKPIT_NAV_SECTIONS = [
     job: 'proves what you save',
     tier: 'pro',
     items: [
-      { id: 'roi', label: 'ROI & Plan', desc: 'Verified savings, your plan and entitlements.' },
+      { id: 'roi', label: 'ROI & Plan', desc: 'Signed, verifiable savings plus your plan and entitlements.' },
       { id: 'learning', label: 'Trends', desc: 'How your savings and efficiency change over time.' },
     ],
   },
@@ -154,8 +155,10 @@ class CockpitNav extends HTMLElement {
       // Section labels only add value once several groups are visible (pro).
       // The job subtitle ties each group to the four-jobs story.
       if (section.label && mode === 'pro') {
+        var jobTip = (section.job || '').replace(/"/g, '&quot;');
         html +=
-          '<div class="nav-section-label">' + section.label +
+          '<div class="nav-section-label"' +
+          (jobTip ? ' title="' + jobTip + '"' : '') + '>' + section.label +
           (section.job
             ? '<span class="nav-section-job">' + section.job + '</span>'
             : '') +

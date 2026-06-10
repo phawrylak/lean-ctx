@@ -258,6 +258,11 @@ html.support-bar-off .support-bar{display:none}
   font-family:var(--mono);font-size:11px;cursor:pointer;transition:all .15s;
 }
 .cko-cmd-toggle:hover{color:var(--text);border-color:var(--accent);background:var(--bg-hover,rgba(255,255,255,.03))}
+.cks-open-lab{
+  margin-left:auto;padding:3px 10px;border-radius:var(--rs);border:1px solid var(--border);
+  background:transparent;color:var(--muted);font-family:var(--mono);font-size:10px;cursor:pointer;
+}
+.cks-open-lab:hover{color:var(--text);border-color:var(--accent)}
 .tf-btn{
   padding:6px 14px;font-size:11px;font-weight:500;border-radius:var(--rs);
   border:1px solid var(--border);background:none;color:var(--muted);

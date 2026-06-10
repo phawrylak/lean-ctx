@@ -9,16 +9,14 @@
 ╚══════╝╚══════╝╚═╝  ╚═╝╚═╝  ╚═══╝     ╚═════╝   ╚═╝   ╚═╝  ╚═╝
 </pre>
 
-**The Cognitive Context Layer for AI coding agents**
+**Context intelligence for AI agents — smaller context, smarter agents**
 
-Your AI coding agent wastes thousands of tokens rereading files, parsing noisy
-shell output, and losing context between sessions — and you have no control
-over any of it.
-
-**LeanCTX is the operating system for that context.** One local binary that
-governs every token between your code and the model: it **compresses** what the
-AI reads, **remembers** what matters across sessions, **routes** each read to the
-right fidelity, and **verifies** what comes back. Zero config required. Local-first.
+LeanCTX — short for **Lean Context** — is the context intelligence layer for
+AI agents. It runs as a single local binary between your agents and your code,
+shell and data: it **decides** what they read, **remembers** what they learn,
+**guards** what they touch — and **proves** what they save with a signed,
+verifiable savings ledger. The result: 60–90% fewer tokens — and that's the
+receipt, not the product. Zero config required. Local-first.
 
 | Problem | With LeanCTX |
 |---------|-------------|
@@ -52,9 +50,9 @@ right fidelity, and **verifies** what comes back. Zero config required. Local-fi
 
 ---
 
-> **LeanCTX** is the **Cognitive Context Layer** between your AI and your code: it perceives, compresses, remembers, routes, and governs every token that flows between them — all from one local Rust binary.
+> **LeanCTX** — short for **Lean Context** — is the **context intelligence layer** for AI agents: one local Rust binary that decides what your agents read, remembers what they learn, guards what they touch — and proves what they save.
 
-> It governs every token between your code and the AI — so you make better decisions, not just cheaper ones. Works with **Cursor, Claude Code, Copilot, Windsurf, Codex, Gemini** and 24+ other agents — no config needed.
+> Token savings are the receipt. Intelligence is the product. Works with **Cursor, Claude Code, Copilot, Windsurf, Codex, Gemini** and 30+ other agents — no config needed.
 
 <p align="center"><strong>See it in action:</strong></p>
 

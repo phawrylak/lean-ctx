@@ -927,7 +927,7 @@ class CockpitGraph extends HTMLElement {
     html += '<div class="gi-head">Insights</div>';
     html += this._suggestedQuestionsHtml();
 
-    html += '<div class="gi-sec"><div class="gi-sec-title">God-Nodes <span>' + gods.length + '</span></div>';
+    html += '<div class="gi-sec"><div class="gi-sec-title" title="Files that many other files depend on \u2014 changing them has the widest impact">God-Nodes <span>' + gods.length + '</span></div>';
     if (gods.length) {
       html += '<div class="gi-list">';
       for (var i = 0; i < Math.min(gods.length, 8); i++) {
@@ -942,7 +942,7 @@ class CockpitGraph extends HTMLElement {
     }
     html += '</div>';
 
-    html += '<div class="gi-sec"><div class="gi-sec-title">Bridges <span>' + bridges.length + '</span>' +
+    html += '<div class="gi-sec"><div class="gi-sec-title" title="Files that connect otherwise separate areas of the codebase \u2014 if they break, modules lose their link">Bridges <span>' + bridges.length + '</span>' +
       (d.betweenness_sampled
         ? ' <span style="font-size:10px;color:var(--muted);font-weight:400" title="Betweenness estimated from a sampled subset of nodes (large graph); relative ranking is preserved.">~sampled</span>'
         : '') +
@@ -962,7 +962,7 @@ class CockpitGraph extends HTMLElement {
     }
     html += '</div>';
 
-    html += '<div class="gi-sec"><div class="gi-sec-title">Surprising <span>' + surp.length + '</span></div>';
+    html += '<div class="gi-sec"><div class="gi-sec-title" title="File pairs that change together more often than their imports explain \u2014 hidden coupling worth knowing about">Surprising <span>' + surp.length + '</span></div>';
     if (surp.length) {
       html += '<div class="gi-list">';
       for (var si = 0; si < Math.min(surp.length, 6); si++) {
@@ -978,7 +978,7 @@ class CockpitGraph extends HTMLElement {
     }
     html += '</div>';
 
-    html += '<div class="gi-sec"><div class="gi-sec-title">Import-Cycles <span>' + cycles.length + '</span></div>';
+    html += '<div class="gi-sec"><div class="gi-sec-title" title="Files that import each other in a circle \u2014 hard to test and refactor; best broken up">Import-Cycles <span>' + cycles.length + '</span></div>';
     if (cycles.length) {
       html += '<div class="gi-list">';
       for (var j = 0; j < Math.min(cycles.length, 8); j++) {
@@ -1480,17 +1480,23 @@ class CockpitGraph extends HTMLElement {
       var kindCls = kindColors[String(s.kind || '').toLowerCase()] || 'tb';
       var shortPath = String(s.file || '\u2014');
       if (shortPath.length > 40) shortPath = '\u2026' + shortPath.slice(-38);
-      var sig = s.signature || '\u2014';
-      if (sig.length > 80) sig = sig.slice(0, 77) + '\u2026';
+      var startLine = s.line != null ? s.line : s.start_line;
+      var size = '\u2014';
+      if (s.end_line != null && startLine != null && s.end_line >= startLine) {
+        size = String(s.end_line - startLine + 1);
+      }
+      var exported = s.is_exported === true
+        ? '<span class="tag tg">public</span>'
+        : (s.is_exported === false ? '<span class="hs">private</span>' : '\u2014');
 
       rows +=
         '<tr>' +
         '<td>' + esc(s.name || '\u2014') + '</td>' +
         '<td><span class="tag ' + kindCls + '">' + esc(s.kind || '\u2014') + '</span></td>' +
         '<td title="' + esc(s.file || '') + '">' + esc(shortPath) + '</td>' +
-        '<td class="r">' + esc(String(s.line != null ? s.line : (s.start_line != null ? s.start_line : '\u2014'))) + '</td>' +
-        '<td title="' + esc(s.signature || '') + '" style="font-size:10px">' +
-        esc(sig) + '</td></tr>';
+        '<td class="r">' + esc(String(startLine != null ? startLine : '\u2014')) + '</td>' +
+        '<td class="r">' + esc(size) + '</td>' +
+        '<td>' + exported + '</td></tr>';
     }
 
     container.innerHTML =
@@ -1499,7 +1505,9 @@ class CockpitGraph extends HTMLElement {
       '<span class="badge">' + esc(ff(syms.length)) + ' symbols</span></div>' +
       '<div class="table-scroll"><table>' +
       '<thead><tr><th>Name</th><th>Kind</th><th>File</th>' +
-      '<th class="r">Line</th><th>Signature</th></tr></thead>' +
+      '<th class="r">Line</th>' +
+      '<th class="r" title="How many lines this symbol spans \u2014 a rough size measure">Lines</th>' +
+      '<th title="Whether the symbol is exported (public) or file-internal (private)">Visibility</th></tr></thead>' +
       '<tbody>' + rows + '</tbody></table></div></div>';
   }
 

@@ -241,9 +241,28 @@ function buildToolDetail(kind) {
   var parts = [];
   if (kind.mode) parts.push(kind.mode);
   if (kind.path) parts.push(String(kind.path));
-  if (kind.tokens_saved != null) parts.push('saved ' + String(kind.tokens_saved));
-  if (kind.tokens_original) parts.push('of ' + String(kind.tokens_original));
+  // Human-readable savings: "5.9k → 1.9k tok (−68%)" instead of "saved 4049 · of 5856".
+  var orig = kind.tokens_original || 0;
+  var saved = kind.tokens_saved != null ? kind.tokens_saved : null;
+  if (orig > 0 && saved != null) {
+    if (saved > 0) {
+      var sent = orig - saved;
+      var pct = Math.round((saved / orig) * 100);
+      parts.push(fmtTokShort(orig) + ' \u2192 ' + fmtTokShort(sent) + ' tok (\u2212' + pct + '%)');
+    } else {
+      parts.push(fmtTokShort(orig) + ' tok (not compressible)');
+    }
+  } else if (saved != null && saved > 0) {
+    parts.push('saved ' + fmtTokShort(saved) + ' tok');
+  }
   return parts.join(' · ');
+}
+
+function fmtTokShort(n) {
+  n = Number(n) || 0;
+  if (n >= 1e6) return (n / 1e6).toFixed(1) + 'M';
+  if (n >= 1000) return (n / 1000).toFixed(1) + 'k';
+  return String(Math.round(n));
 }
 
 function buildCompressionDetail(kind) {

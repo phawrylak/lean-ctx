@@ -194,7 +194,7 @@ mod error_data {
 
     #[test]
     fn scenario_search_nonexistent_dir_returns_error() {
-        let (result, _) = lean_ctx::tools::ctx_search::handle(
+        let result = lean_ctx::tools::ctx_search::handle(
             "pattern",
             "/nonexistent_dir_xyz",
             None,
@@ -202,7 +202,8 @@ mod error_data {
             CrpMode::Off,
             true,
             false,
-        );
+        )
+        .text;
         assert!(
             result.starts_with("ERROR:"),
             "Expected ERROR prefix, got: {result}"
@@ -319,7 +320,7 @@ mod search_early_abort {
             std::fs::write(&file, format!("fn search_target_{i}() {{}}\n")).unwrap();
         }
 
-        let (result, _) = lean_ctx::tools::ctx_search::handle(
+        let result = lean_ctx::tools::ctx_search::handle(
             "search_target",
             dir.path().to_str().unwrap(),
             None,
@@ -327,7 +328,8 @@ mod search_early_abort {
             CrpMode::Off,
             false,
             false,
-        );
+        )
+        .text;
         let match_lines: Vec<&str> = result
             .lines()
             .filter(|l| l.contains("search_target"))
@@ -347,7 +349,7 @@ mod search_early_abort {
             std::fs::write(&file, format!("fn unique_pattern_{i}() {{}}\n")).unwrap();
         }
 
-        let (result, _) = lean_ctx::tools::ctx_search::handle(
+        let result = lean_ctx::tools::ctx_search::handle(
             "unique_pattern",
             dir.path().to_str().unwrap(),
             None,
@@ -355,7 +357,8 @@ mod search_early_abort {
             CrpMode::Off,
             false,
             false,
-        );
+        )
+        .text;
         assert!(result.contains("3 matches"));
     }
 }
@@ -769,7 +772,7 @@ mod integration_workflow {
             writeln!(f, "pub fn helper_{i}() {{}}").unwrap();
         }
 
-        let (result, _) = lean_ctx::tools::ctx_search::handle(
+        let result = lean_ctx::tools::ctx_search::handle(
             "handler_",
             dir.path().to_str().unwrap(),
             Some("*.rs"),
@@ -777,7 +780,8 @@ mod integration_workflow {
             CrpMode::Off,
             false,
             false,
-        );
+        )
+        .text;
         assert!(result.contains("handler_"));
         assert!(
             result.contains("10 matches"),

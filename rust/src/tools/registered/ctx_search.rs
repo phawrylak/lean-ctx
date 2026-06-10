@@ -79,6 +79,7 @@ impl McpTool for CtxSearchTool {
         let per_root_max = (max / resolved.roots.len()).max(5);
         let mut combined = String::new();
         let mut total_original: usize = 0;
+        let mut total_observed: usize = 0;
         let mut total_sent: usize = 0;
 
         for root in &resolved.roots {
@@ -101,10 +102,11 @@ impl McpTool for CtxSearchTool {
                 .ok()
             });
 
-            let Some((result, original)) = search_result else {
+            let Some(outcome) = search_result else {
                 combined.push_str(&format!("── {root} ──\nERROR: search panicked\n\n"));
                 continue;
             };
+            let result = outcome.text;
 
             if result.starts_with("ERROR:") || result.trim().is_empty() {
                 if !result.trim().is_empty() {
@@ -114,7 +116,8 @@ impl McpTool for CtxSearchTool {
             }
 
             combined.push_str(&format!("── {root} ──\n{result}\n\n"));
-            total_original += original;
+            total_original += outcome.modeled_baseline;
+            total_observed += outcome.observed_tokens;
             total_sent += crate::core::tokens::count_tokens(&result);
         }
 
@@ -125,6 +128,11 @@ impl McpTool for CtxSearchTool {
         let final_out =
             crate::core::protocol::append_savings(&combined, total_original, total_sent);
         let saved = total_original.saturating_sub(total_sent);
+        crate::core::savings_ledger::record_tool_event(
+            "ctx_search",
+            total_observed,
+            total_observed.saturating_sub(total_sent),
+        );
 
         Ok(ToolOutput {
             text: final_out,
@@ -168,7 +176,7 @@ fn search_single(
         }
     });
 
-    let (result, original) = match search_result {
+    let outcome = match search_result {
         Ok(r) => r,
         Err(e) => {
             return Err(ErrorData::internal_error(
@@ -177,6 +185,8 @@ fn search_single(
             ));
         }
     };
+    let result = outcome.text;
+    let original = outcome.modeled_baseline;
 
     if result.starts_with("ERROR:") {
         return Err(ErrorData::invalid_params(result, None));
@@ -185,6 +195,11 @@ fn search_single(
     let sent = crate::core::tokens::count_tokens(&result);
     let saved = original.saturating_sub(sent);
     let final_out = crate::core::protocol::append_savings(&result, original, sent);
+    crate::core::savings_ledger::record_tool_event(
+        "ctx_search",
+        outcome.observed_tokens,
+        outcome.observed_tokens.saturating_sub(sent),
+    );
 
     Ok(ToolOutput {
         text: final_out,

@@ -97,6 +97,20 @@ class CockpitCompression extends HTMLElement {
     this._collectFiles(results[0], results[1], results[2]);
     this._loading = false;
 
+    // Deep-link handoff: Search Explorer (and others) can pre-select a file
+    // via sessionStorage before navigating here (#478).
+    var handoff = null;
+    try {
+      handoff = sessionStorage.getItem('lctx_lab_file');
+      if (handoff) sessionStorage.removeItem('lctx_lab_file');
+    } catch (e) { /* private mode */ }
+    if (handoff) {
+      this._selectedFile = handoff;
+      this._demoData = null;
+      await this._loadDemo();
+      return;
+    }
+
     var activeList = this._activeTab === 'recent' ? this._ctxFiles : this._graphFiles;
     if (activeList.length > 0 && !this._selectedFile) {
       this._selectedFile = activeList[0].path;
@@ -164,14 +178,21 @@ class CockpitCompression extends HTMLElement {
     var gfList = graphFiles && Array.isArray(graphFiles.files) ? graphFiles.files : [];
     for (var k = 0; k < gfList.length; k++) {
       var gf = gfList[k];
-      if (gf.path) {
-        graph.push({
-          path: gf.path,
-          ext: gf.language || extFromPath(gf.path),
-          original: gf.token_count || 0,
-          lines: gf.line_count || 0,
-        });
+      if (!gf.path) continue;
+      // Vendor / minified assets are never read by agents, so compressing
+      // them is meaningless — they would otherwise dominate the size-sorted
+      // project list (e.g. d3.min.js as the top suggestion).
+      var lower = gf.path.toLowerCase();
+      if (lower.indexOf('/vendor/') > -1 || lower.indexOf('node_modules') > -1 ||
+          /\.min\.(js|css)$/.test(lower)) {
+        continue;
       }
+      graph.push({
+        path: gf.path,
+        ext: gf.language || extFromPath(gf.path),
+        original: gf.token_count || 0,
+        lines: gf.line_count || 0,
+      });
     }
 
     this._ctxFiles = ctx.slice(0, 100);

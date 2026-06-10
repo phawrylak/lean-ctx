@@ -315,7 +315,7 @@ pub fn cmd_grep(args: &[String]) {
     }
     super::common::daemon_fallback_hint();
 
-    let (out, original) = crate::tools::ctx_search::handle(
+    let outcome = crate::tools::ctx_search::handle(
         pattern,
         path,
         None,
@@ -324,9 +324,14 @@ pub fn cmd_grep(args: &[String]) {
         true,
         roles::active_role().io.allow_secret_paths,
     );
+    let out = outcome.text;
     println!("{out}");
-    super::common::cli_track_search(original, count_tokens(&out));
-    if original == 0 && out.trim_start().starts_with("0 matches") {
+    super::common::cli_track_search(
+        outcome.modeled_baseline,
+        outcome.observed_tokens,
+        count_tokens(&out),
+    );
+    if outcome.modeled_baseline == 0 && out.trim_start().starts_with("0 matches") {
         std::process::exit(1);
     }
 }

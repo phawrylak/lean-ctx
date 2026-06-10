@@ -11,7 +11,7 @@ function fmtLib() {
 }
 
 function formatDuration(secs) {
-  if (secs == null) return '—';
+  if (secs == null || secs === 0) return '—';
   if (secs < 60) return secs + 's';
   if (secs < 3600) return Math.floor(secs / 60) + 'm ' + (secs % 60) + 's';
   return Math.floor(secs / 3600) + 'h ' + Math.floor((secs % 3600) / 60) + 'm';
@@ -196,13 +196,21 @@ class CockpitMemory extends HTMLElement {
         '<div class="card">' +
         '<div class="empty-state">' +
         '<h2>No Episodes Yet</h2>' +
-        '<p>Episodes are recorded as agents complete tasks. Use lean-ctx tools to generate activity.</p>' +
+        '<p>An episode is a finished task your agent worked on \u2014 lean-ctx saves it so the next session can pick up where this one left off.</p>' +
+        '<p style="margin-top:8px">Episodes are recorded automatically when an agent marks a task complete \u2014 e.g. ' +
+        '<code>ctx_session(action="task", value="ship login fix [100%]")</code>. ' +
+        'Finish your first task and it will show up here.</p>' +
         '</div></div>'
       );
     }
 
     var rows = list.map(function (e) {
-      var summary = esc(e.summary || '\u2014');
+      var fullSummary = String(e.summary || '\u2014');
+      var shortSummary = fullSummary.length > 160
+        ? fullSummary.slice(0, 157) + '\u2026'
+        : fullSummary;
+      var summary = esc(shortSummary);
+      var summaryTitle = esc(fullSummary);
       var oc = outcomeLabel(e.outcome);
       var duration = formatDuration(e.duration_secs);
       var actionsCount = Array.isArray(e.actions) ? String(e.actions.length) : '\u2014';
@@ -211,7 +219,7 @@ class CockpitMemory extends HTMLElement {
 
       return (
         '<tr>' +
-        '<td title="' + summary + '">' + summary + '</td>' +
+        '<td title="' + summaryTitle + '">' + summary + '</td>' +
         '<td>' + badge + '</td>' +
         '<td class="r">' + esc(duration) + '</td>' +
         '<td class="r">' + esc(actionsCount) + '</td>' +
@@ -225,8 +233,10 @@ class CockpitMemory extends HTMLElement {
       '<div class="card-header"><h3>Episodes' + tip('episodes') + '</h3></div>' +
       '<div class="table-scroll"><table>' +
       '<thead><tr>' +
-      '<th>Summary</th><th>Outcome</th><th class="r">Duration</th>' +
-      '<th class="r">Actions</th><th class="r">Tokens Used</th>' +
+      '<th>Summary</th><th>Outcome</th>' +
+      '<th class="r" title="How long this task was the active one (from the previous episode to this one)">Duration</th>' +
+      '<th class="r">Actions</th>' +
+      '<th class="r" title="Tokens lean-ctx saved while this task was active">Tokens saved</th>' +
       '</tr></thead>' +
       '<tbody>' + rows + '</tbody>' +
       '</table></div></div>'

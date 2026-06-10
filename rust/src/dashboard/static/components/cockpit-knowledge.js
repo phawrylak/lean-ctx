@@ -57,6 +57,10 @@ function edgeStyle(kind) {
   return EDGE_STYLES[kind] || EDGE_STYLES.related_to;
 }
 
+function tipOrEmpty(k) {
+  return window.LctxShared && window.LctxShared.tip ? window.LctxShared.tip(k) : '';
+}
+
 class CockpitKnowledge extends HTMLElement {
   constructor() {
     super();
@@ -201,10 +205,133 @@ class CockpitKnowledge extends HTMLElement {
     var body = '';
     body += this._renderMetrics(facts, esc, fmt);
     body += this._renderGraphContainer(facts, esc);
+    body += this._renderFactsCard(facts, esc);
     body += this._renderHowItWorks();
     this.innerHTML = body;
 
     S.bindHowItWorks && S.bindHowItWorks(this);
+    this._bindFactsCard();
+  }
+
+  // === READABLE FACTS LIST ===
+  // The graph shows structure; this list makes the actual facts readable,
+  // searchable and filterable — without it the page is stats-only.
+
+  _renderFactsCard(facts, esc) {
+    var cats = {};
+    for (var i = 0; i < facts.length; i++) {
+      cats[facts[i].category] = (cats[facts[i].category] || 0) + 1;
+    }
+    var chips = Object.keys(cats).sort().map(function (cat) {
+      return (
+        '<button type="button" class="kg-cat-chip" data-cat="' + esc(cat) + '" ' +
+        'style="display:inline-flex;align-items:center;gap:6px;padding:3px 10px;border-radius:999px;' +
+        'border:1px solid var(--border);background:var(--surface-2);color:var(--text);font-size:11px;cursor:pointer">' +
+        '<span style="width:8px;height:8px;border-radius:50%;background:' + catColor(cat) + '"></span>' +
+        esc(cat) + ' <span style="color:var(--muted)">' + cats[cat] + '</span></button>'
+      );
+    }).join('');
+
+    return (
+      '<div class="card" style="margin-top:14px">' +
+      '<div class="card-header"><h3>All Facts' + tipOrEmpty('knowledge_facts_list') + '</h3>' +
+      '<span class="badge">' + facts.length + ' facts</span></div>' +
+      '<div style="display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin-bottom:10px">' +
+      '<input type="text" id="kgFactSearch" placeholder="Search facts\u2026" ' +
+      'style="flex:1;min-width:180px;padding:6px 10px;border-radius:8px;border:1px solid var(--border);' +
+      'background:var(--surface-2);color:var(--text);font-size:12px" />' +
+      chips +
+      '</div>' +
+      '<div id="kgFactsList"></div>' +
+      '</div>'
+    );
+  }
+
+  _bindFactsCard() {
+    var self = this;
+    var input = this.querySelector('#kgFactSearch');
+    if (input) {
+      input.addEventListener('input', function () {
+        self._factQuery = input.value || '';
+        self._renderFactsRows();
+      });
+    }
+    this.querySelectorAll('.kg-cat-chip').forEach(function (chip) {
+      chip.addEventListener('click', function () {
+        var cat = chip.getAttribute('data-cat');
+        self._factCat = self._factCat === cat ? null : cat;
+        self.querySelectorAll('.kg-cat-chip').forEach(function (c) {
+          var active = c.getAttribute('data-cat') === self._factCat;
+          c.style.borderColor = active ? catColor(self._factCat) : 'var(--border)';
+          c.style.background = active ? 'color-mix(in srgb, ' + catColor(self._factCat) + ' 14%, var(--surface-2))' : 'var(--surface-2)';
+        });
+        self._renderFactsRows();
+      });
+    });
+    this._renderFactsRows();
+  }
+
+  _renderFactsRows() {
+    var box = this.querySelector('#kgFactsList');
+    if (!box) return;
+    var F = fmtLib();
+    var esc = F.esc || function (s) { return String(s); };
+    var q = (this._factQuery || '').toLowerCase();
+    var cat = this._factCat || null;
+    var self = this;
+
+    var facts = this._currentFacts().filter(function (f) {
+      if (cat && f.category !== cat) return false;
+      if (!q) return true;
+      return (
+        String(f.key || '').toLowerCase().indexOf(q) >= 0 ||
+        String(f.value || '').toLowerCase().indexOf(q) >= 0 ||
+        String(f.category || '').toLowerCase().indexOf(q) >= 0
+      );
+    });
+
+    facts.sort(function (a, b) { return (b.confidence || 0) - (a.confidence || 0); });
+
+    if (facts.length === 0) {
+      box.innerHTML = '<p class="hs" style="color:var(--muted);padding:14px 0">No facts match your filter.</p>';
+      return;
+    }
+
+    var rows = facts.map(function (f, idx) {
+      var conf = typeof f.confidence === 'number' ? Math.round(f.confidence * 100) : null;
+      var confCls = conf == null ? 'tb' : conf >= 80 ? 'tg' : conf >= 50 ? 'ty' : 'td';
+      var value = String(f.value || '');
+      var preview = value.length > 180 ? value.slice(0, 179) + '\u2026' : value;
+      return (
+        '<div class="kg-fact-row" data-fact-idx="' + idx + '" ' +
+        'style="display:flex;gap:10px;align-items:flex-start;padding:9px 6px;border-bottom:1px solid var(--border);cursor:pointer">' +
+        '<span style="flex-shrink:0;width:8px;height:8px;border-radius:50%;margin-top:5px;background:' + catColor(f.category) + '" title="' + esc(f.category) + '"></span>' +
+        '<div style="flex:1;min-width:0">' +
+        '<div style="font-family:var(--mono);font-size:11px;color:var(--text)">' + esc(f.key || '') + '</div>' +
+        '<div style="font-size:12px;color:var(--muted);line-height:1.5;word-break:break-word">' + esc(preview) + '</div>' +
+        '</div>' +
+        (conf != null
+          ? '<span class="tag ' + confCls + '" style="flex-shrink:0" title="How sure lean-ctx is about this fact">' + conf + '%</span>'
+          : '') +
+        '</div>'
+      );
+    }).join('');
+
+    box.innerHTML = rows;
+
+    this._factsShown = facts;
+    box.querySelectorAll('.kg-fact-row').forEach(function (row) {
+      row.addEventListener('click', function () {
+        var idx = Number(row.getAttribute('data-fact-idx'));
+        var f = self._factsShown && self._factsShown[idx];
+        if (f) self._openFactDetail(f);
+      });
+    });
+  }
+
+  _openFactDetail(f) {
+    // Reuse the same detail panel the graph nodes use.
+    this._onNodeClick({ type: 'fact', fact: f, label: f.key });
   }
 
   _currentFacts() {

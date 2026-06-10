@@ -111,8 +111,12 @@ pub(crate) fn cli_track_read_cached(
     crate::core::tool_lifecycle::record_file_read(path, mode, original_tokens, output_tokens, true);
 }
 
-pub(crate) fn cli_track_search(original_tokens: usize, output_tokens: usize) {
-    crate::core::tool_lifecycle::record_search(original_tokens, output_tokens);
+pub(crate) fn cli_track_search(
+    modeled_baseline: usize,
+    observed_tokens: usize,
+    output_tokens: usize,
+) {
+    crate::core::tool_lifecycle::record_search(modeled_baseline, observed_tokens, output_tokens);
 }
 
 pub(crate) fn cli_track_tree(original_tokens: usize, output_tokens: usize) {

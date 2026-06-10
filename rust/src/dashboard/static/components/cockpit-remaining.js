@@ -1,5 +1,6 @@
 /**
- * Remaining lightweight views: Learning Curves, Route Map, Context Layer.
+ * Remaining lightweight views: Route Map.
+ * (Trend charts moved into Home — see cockpit-overview.js.)
  */
 
 /* ===================== shared helpers ===================== */
@@ -272,6 +273,7 @@ class CockpitRoutes extends HTMLElement {
     this._error = null;
     this._routes = [];
     this._indexedFileCount = null;
+    this._candidateCount = null;
     this._onRefresh = this._onRefresh.bind(this);
   }
 
@@ -311,10 +313,14 @@ class CockpitRoutes extends HTMLElement {
       this._indexedFileCount = data && typeof data.indexed_file_count === 'number'
         ? data.indexed_file_count
         : null;
+      this._candidateCount = data && typeof data.route_candidate_count === 'number'
+        ? data.route_candidate_count
+        : null;
     } catch (e) {
       this._error = e && e.error ? e.error : String(e || 'load failed');
       this._routes = [];
       this._indexedFileCount = null;
+      this._candidateCount = null;
     }
 
     this._loading = false;
@@ -338,19 +344,30 @@ class CockpitRoutes extends HTMLElement {
       return;
     }
     if (this._routes.length === 0) {
-      // 0 graph-indexed files means the project's languages aren't graph-indexed
-      // (e.g. Lua/Luau, #360) — roads are derived from the graph, so say so.
-      var noIndex = this._indexedFileCount === 0
-        ? '<p class="hs" style="color:var(--muted);font-size:12px;margin-top:8px">' +
-          'No files are graph-indexed in this project. Roads are derived from the ' +
-          'code-map, which only supports specific languages \u2014 see the Code ' +
-          'Intelligence \u2192 Dependencies tab for details.</p>'
-        : '';
+      // Routes come from static analysis of the project's own source code.
+      // Be honest about what was scanned and why nothing was found.
+      var detail;
+      if (this._indexedFileCount === 0) {
+        detail =
+          'No files are graph-indexed in this project. Routes are detected from the ' +
+          'code-map, which only supports specific languages \u2014 see ' +
+          '<a href="#deps" style="color:var(--accent)">Dependencies</a> for details.';
+      } else if (this._indexedFileCount != null) {
+        detail =
+          'lean-ctx scanned <b>' + esc(ff(this._candidateCount != null ? this._candidateCount : this._indexedFileCount)) +
+          ' source files</b> and found no web-framework route definitions ' +
+          '(Express, FastAPI, Flask, Axum, Actix, Spring\u2026). ' +
+          'That\u2019s expected for projects that aren\u2019t web APIs \u2014 ' +
+          'this view fills up automatically when you work on one.';
+      } else {
+        detail =
+          'Routes are detected from your project\u2019s source code. ' +
+          'None were found \u2014 this view fills up automatically for web-API projects.';
+      }
       this.innerHTML =
         '<div class="card"><div class="empty-state">' +
-        '<h2>No Routes</h2>' +
-        '<p>API route data appears after the daemon processes requests.</p>' +
-        noIndex +
+        '<h2>No API Routes in This Project</h2>' +
+        '<p class="hs" style="color:var(--muted);max-width:520px;margin:8px auto 0">' + detail + '</p>' +
         '</div></div>';
       return;
     }
@@ -400,14 +417,7 @@ customElements.define('cockpit-routes', CockpitRoutes);
       var section = document.getElementById('view-learning');
       if (!section) return;
       var el = section.querySelector('cockpit-learning');
-      if (!el) {
-        section.innerHTML = '';
-        el = document.createElement('cockpit-learning');
-        el.id = 'ckle-root';
-        section.appendChild(el);
-      } else if (typeof el.loadData === 'function') {
-        el.loadData();
-      }
+      if (el && typeof el.loadData === 'function') el.loadData();
     });
 
     R.registerLoader('routes', function () {

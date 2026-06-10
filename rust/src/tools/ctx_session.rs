@@ -212,7 +212,26 @@ stale_files: {}\n",
         "task" => {
             let desc = value.unwrap_or("(no description)");
             session.set_task(desc, None);
-            format!("Task set: {desc}")
+            // Auto-record an episode when the task is marked complete.
+            // Without this, Episodes only fill via an explicit
+            // `action=episodes value=record` call that nobody makes (#477).
+            let lower = desc.to_lowercase();
+            let completed = desc.contains("[100%]")
+                || lower.contains("[done]")
+                || lower.contains("[complete]");
+            let mut note = String::new();
+            if completed {
+                match auto_record_episode(session, tool_calls) {
+                    Ok(Some(id)) => {
+                        note = format!("\nEpisode auto-recorded: {id}");
+                    }
+                    Ok(None) => {} // same task already recorded — skip duplicate
+                    Err(e) => {
+                        note = format!("\n(episode auto-record skipped: {e})");
+                    }
+                }
+            }
+            format!("Task set: {desc}{note}")
         }
 
         "finding" => {
@@ -717,6 +736,63 @@ stale_files: {}\n",
 
         _ => format!("Unknown action: {action}. Use: status, load, save, task, finding, decision, reset, list, cleanup, snapshot, restore, resume, configure, profile, role, budget, slo, diff, output_stats, verify, export, import, episodes, procedures"),
     }
+}
+
+/// Records an episode from the current session when a task completes.
+///
+/// Returns `Ok(Some(id))` on record, `Ok(None)` when the latest episode
+/// already covers the same task (duplicate guard), `Err` on policy/IO issues.
+fn auto_record_episode(
+    session: &SessionState,
+    tool_calls: &[(String, u64)],
+) -> Result<Option<String>, String> {
+    let project_root = session.project_root.clone().unwrap_or_else(|| {
+        std::env::current_dir().map_or_else(
+            |_| "unknown".to_string(),
+            |p| p.to_string_lossy().to_string(),
+        )
+    });
+    let policy = crate::core::config::Config::load()
+        .memory_policy_effective()
+        .map_err(|e| format!("invalid memory policy: {e}"))?;
+    let hash = crate::core::project_hash::hash_project_root(&project_root);
+    let mut store = crate::core::episodic_memory::EpisodicStore::load_or_create(&hash);
+
+    let mut ep = crate::core::episodic_memory::create_episode_from_session(session, tool_calls);
+    if let Some(last) = store.recent(1).first() {
+        if last.task_description == ep.task_description {
+            return Ok(None);
+        }
+    }
+    // Convert cumulative session counters into per-task delta + duration.
+    crate::core::episodic_memory::finalize_episode_metrics(&mut ep, &store, session.started_at);
+
+    let id = ep.id.clone();
+    store.record_episode(ep, &policy.episodic);
+    store.save()?;
+    crate::core::events::emit(crate::core::events::EventKind::KnowledgeUpdate {
+        category: "episodic".to_string(),
+        key: id.clone(),
+        action: "auto_record".to_string(),
+    });
+
+    // Each new episode is a chance to learn a procedure: mine the episode
+    // history for repeated tool sequences. Best-effort — pattern detection
+    // must never fail the task update itself (#478).
+    let episodes: Vec<crate::core::episodic_memory::Episode> =
+        store.recent(50).into_iter().cloned().collect();
+    let mut procs = crate::core::procedural_memory::ProceduralStore::load_or_create(&hash);
+    let before = procs.procedures.len();
+    procs.detect_patterns(&episodes, &policy.procedural);
+    if procs.procedures.len() > before && procs.save().is_ok() {
+        crate::core::events::emit(crate::core::events::EventKind::KnowledgeUpdate {
+            category: "procedural".to_string(),
+            key: format!("{} new", procs.procedures.len() - before),
+            action: "auto_learn".to_string(),
+        });
+    }
+
+    Ok(Some(id))
 }
 
 fn parse_finding_value(value: &str) -> (Option<String>, Option<u32>, &str) {

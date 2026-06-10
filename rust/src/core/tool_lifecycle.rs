@@ -93,11 +93,13 @@ pub fn record_file_read(
 }
 
 /// Record a search/grep operation with full Context OS side effects.
-/// No ledger event here: `original_tokens` carries the 2.5x native-grep
-/// estimate, and `tools::ctx_search::handle` already appends a raw-baseline
-/// ledger event itself (GL #479 D2) — recording again would double-count.
-pub fn record_search(original_tokens: usize, output_tokens: usize) {
-    stats::record("cli_grep", original_tokens, output_tokens);
+///
+/// `modeled_baseline` (native-tool estimate, GL #479 D1) feeds the estimated
+/// stats series; `observed_tokens` (raw measured match lines, no factor) feeds
+/// the verified ledger (GL #479 D2).
+pub fn record_search(modeled_baseline: usize, observed_tokens: usize, output_tokens: usize) {
+    stats::record("cli_grep", modeled_baseline, output_tokens);
+    crate::core::savings_ledger::record_tool_event("cli_grep", observed_tokens, output_tokens);
 
     if let Some(mut session) = SessionState::load_latest() {
         session.record_command();
@@ -165,7 +167,7 @@ mod tests {
 
     #[test]
     fn record_search_does_not_panic_without_session() {
-        record_search(200, 150);
+        record_search(500, 200, 150);
     }
 
     #[test]

@@ -357,7 +357,7 @@ pub fn handle(task: &str, project_root: &str, crp_mode: CrpMode) -> (String, usi
 
     // 2. Exact match locations for the primary keyword (index-backed search).
     if let Some(primary) = keywords.first() {
-        let (grep, _g) = crate::tools::ctx_search::handle(
+        let grep = crate::tools::ctx_search::handle(
             primary,
             project_root,
             None,
@@ -365,7 +365,8 @@ pub fn handle(task: &str, project_root: &str, crp_mode: CrpMode) -> (String, usi
             crp_mode,
             true,
             allow_secret,
-        );
+        )
+        .text;
         out.push_str(&format!("\n## Exact matches: '{primary}'\n"));
         out.push_str(grep.trim());
         out.push('\n');

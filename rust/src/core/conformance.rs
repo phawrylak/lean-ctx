@@ -492,7 +492,13 @@ mod tests {
         let v = run().to_json();
         assert_eq!(v["version"], 1);
         assert!(v["checks"].is_array());
-        assert_eq!(v["passed"], v["total"]);
+        // Shape only: `passed == total` is covered by builtin_suite_passes.
+        // Asserting it here races with tests that register an intentionally
+        // broken compressor in the global extension registry.
+        let passed = v["passed"].as_u64().expect("passed is a number");
+        let total = v["total"].as_u64().expect("total is a number");
+        assert!(passed <= total);
+        assert_eq!(v["checks"].as_array().map(|c| c.len() as u64), Some(total));
     }
 
     #[test]

@@ -371,9 +371,6 @@
     <section id="view-search" class="view">
       <cockpit-search id="searchView"></cockpit-search>
     </section>
-    <section id="view-learning" class="view">
-      <cockpit-learning id="learningView"></cockpit-learning>
-    </section>
     <section id="view-symbols" class="view">
       <cockpit-graph id="symbolsView" data-tab="symbols"></cockpit-graph>
     </section>
@@ -397,20 +394,22 @@
 </div>
 
 <footer class="cockpit-status-bar" id="cockpitStatusBar" role="status" aria-live="polite">
-  <div class="sb-l" id="sbDaemonItem" title="lean-ctx daemon: [*] green = connected (warm cache, live stats). [x] red = offline (cold starts, stats paused). Start with: lean-ctx serve -d">
+  <div class="sb-l" id="sbDaemonItem"
+       title="Connection between this dashboard and the lean-ctx engine on your machine. [*] green = live; [x] red = engine unreachable (data frozen until it reconnects). Start with: lean-ctx serve -d">
+
     <span class="ts-ascii on" id="daemonDotBar" aria-hidden="true">[*]</span>
     <span id="sbDaemonText">Connected</span>
     <span class="sb-sep">·</span>
     <span id="sbVersion">v---</span>
   </div>
-  <div class="sb-c">
+  <div class="sb-c" title="Estimated tokens saved all-time — same figure as the Home hero.">
     <span>Tokens saved</span>
     <span class="sb-strong" id="sbTokensSaved">—</span>
   </div>
   <div class="sb-r">
-    <span id="sbCompression">Compression —</span>
+    <span id="sbCompression" title="Share of estimated input tokens removed before sending, all-time.">Compression —</span>
     <span class="sb-sep">·</span>
-    <span id="sbSession">No session</span>
+    <span id="sbSession" title="The task your most recent agent session is working on.">No session</span>
   </div>
 </footer>
 
@@ -420,11 +419,11 @@
   <div class="onboard-card" role="dialog" aria-modal="true" aria-labelledby="onboardTitle">
     <div class="onboard-logo"><span>&lt;|&gt;</span> Lean<b>CTX</b></div>
     <h2 class="onboard-title" id="onboardTitle">Welcome to your cockpit</h2>
-    <p class="onboard-sub">lean-ctx quietly shrinks what your AI tools read. Here's what it has saved you so far:</p>
+    <p class="onboard-sub">lean-ctx does four jobs for your AI agents — and this is what it has saved you so far:</p>
     <div class="onboard-stats" id="onboardStats"></div>
     <ul class="onboard-points">
       <li><b>Home</b> shows your savings — that's all most people need.</li>
-      <li>Want the deep views? Flip <b>Simple → Advanced</b>: Context, Memory, Proof and Project Map.</li>
+      <li><b>Context</b> decides what agents read, <b>Memory</b> remembers what they learn, <b>Proof</b> signs what you save, the <b>Project Map</b> shows what lean-ctx understands — flip <b>Simple → Advanced</b> to see them.</li>
       <li>Hover any <span class="onboard-i">i</span> for a plain-language explanation.</li>
     </ul>
     <button type="button" class="onboard-btn" id="onboardBtn">Got it — show me</button>
@@ -693,8 +692,9 @@ function bootCockpit() {
     var badge = document.getElementById('agentCountBadge');
     var n = agentsPayload && typeof agentsPayload.total_active === 'number' ? agentsPayload.total_active : 0;
     if (badge) {
-      badge.textContent = String(n);
-      badge.title = n === 1 ? '1 active agent' : n + ' active agents';
+      // A bare number next to "Daemon" reads as noise — say what it counts.
+      badge.textContent = n === 1 ? '1 agent' : n + ' agents';
+      badge.title = (n === 1 ? '1 AI agent is' : n + ' AI agents are') + ' currently connected through lean-ctx';
     }
   }
 

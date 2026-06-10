@@ -98,21 +98,11 @@ fn new_event(tool: &str) -> SavingsEvent {
 /// Best-effort append of one auditable savings event for a value-producing read.
 /// Skips zero-saving events (keeps the ledger meaningful and cheap) and never panics.
 pub fn record_read_event(original_tokens: usize, saved_tokens: usize) {
-    if saved_tokens == 0 || !enabled() {
-        return;
-    }
-    let Some(path) = store::default_path() else {
-        return;
-    };
-    let baseline = original_tokens as u64;
-    let saved = saved_tokens as u64;
-
-    let mut event = new_event("ctx_read");
-    event.baseline_tokens = baseline;
-    event.actual_tokens = baseline.saturating_sub(saved);
-    event.saved_tokens = saved;
-    event.saved_usd = saved as f64 / 1_000_000.0 * event.unit_price_per_m_usd;
-    let _ = store::append(&path, event);
+    record_tool_event(
+        "ctx_read",
+        original_tokens,
+        original_tokens.saturating_sub(saved_tokens),
+    );
 }
 
 /// Best-effort append of one auditable savings event for any non-read tool
