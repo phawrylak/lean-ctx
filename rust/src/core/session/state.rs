@@ -44,6 +44,9 @@ impl SessionState {
             compression_level: String::new(),
             last_consolidate_ts: None,
             extra_roots: Vec::new(),
+            wakeup_manifest: Vec::new(),
+            playbook: super::playbook::Playbook::default(),
+            last_semantic_query: None,
         }
         .with_compression_from_config()
     }

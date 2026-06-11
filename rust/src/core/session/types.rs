@@ -41,6 +41,32 @@ pub struct SessionState {
     /// Populated from config `extra_roots` and/or MCP `roots/list`.
     #[serde(default)]
     pub extra_roots: Vec<String>,
+    /// LITM placement manifest (#539): what the last wakeup injection placed
+    /// where, so explicit re-recalls can be scored as placement misses.
+    #[serde(default)]
+    pub wakeup_manifest: Vec<ManifestEntry>,
+    /// ACE delta playbook (#541): incremental, stable-ID checkpoint entries —
+    /// grown by ctx_compress, never rewritten (anti context-collapse).
+    #[serde(default)]
+    pub playbook: super::playbook::Playbook,
+    /// Last ctx_semantic_search query (#542): fallback query source for
+    /// query-conditioned IB compression when no explicit task is set.
+    #[serde(default)]
+    pub last_semantic_query: Option<String>,
+}
+
+/// One item placed by the wakeup/instructions builder, used for LITM
+/// placement calibration (#539).
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct ManifestEntry {
+    pub key: String,
+    /// "begin" | "end"
+    pub position: String,
+    /// LITM profile name active when placed ("claude" | "gpt" | "gemini").
+    pub profile: String,
+    /// Set once this entry was re-recalled (counted as a miss).
+    #[serde(default)]
+    pub missed: bool,
 }
 
 /// Description of the current task being worked on, with optional progress tracking.

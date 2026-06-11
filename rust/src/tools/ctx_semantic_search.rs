@@ -32,6 +32,17 @@ pub fn handle(
         root
     };
 
+    // Query-conditioned IB (#542): remember the latest search query as a
+    // fallback relevance signal for subsequent compressed reads.
+    if !query.trim().is_empty() {
+        if let Some(mut session) = crate::core::session::SessionState::load_latest() {
+            if session.last_semantic_query.as_deref() != Some(query) {
+                session.last_semantic_query = Some(query.to_string());
+                let _ = session.save();
+            }
+        }
+    }
+
     let filter = match SearchFilter::new(languages, path_glob) {
         Ok(f) => f,
         Err(e) => return format!("ERR: invalid filter: {e}"),

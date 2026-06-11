@@ -328,6 +328,26 @@ fn handle_with_options_resolved(
             result.output_tokens,
             original_tokens,
         );
+
+        // Quality signals (#538): compressed reads count as clean until a
+        // bounce proves otherwise (the bounce signal outweighs 6:1); large
+        // full reads of never-bouncing extensions are wasted compression
+        // opportunities and push the learned threshold up.
+        let compressed = !matches!(result.resolved_mode.as_str(), "full" | "diff" | "lines");
+        if compressed {
+            crate::core::threshold_learning::record_signal(
+                path,
+                crate::core::threshold_learning::QualitySignal::CleanCompressed,
+            );
+        } else if result.resolved_mode == "full"
+            && result.output_tokens > 2000
+            && bt.bounce_rate_for_extension(path).unwrap_or(0.0) < 0.05
+        {
+            crate::core::threshold_learning::record_signal(
+                path,
+                crate::core::threshold_learning::QualitySignal::WastedFull,
+            );
+        }
     }
 
     // Plugin seam: emit the realized compression stats. Same zero-cost guard.
@@ -338,6 +358,27 @@ fn handle_with_options_resolved(
             original_tokens,
             compressed_tokens: result.output_tokens,
         });
+    }
+
+    // Stigmergy (#540): deposit a Hot scent for this read in the background
+    // (the field file lock may briefly block; never stall the read path), and
+    // surface an active foreign claim as a one-line hint (~10 tokens) so
+    // parallel agents stop duplicating work.
+    {
+        let self_agent = crate::core::agent_identity::current_agent_id();
+        let scent_path = crate::core::pathutil::normalize_tool_path(path);
+        std::thread::spawn(move || {
+            crate::core::scent_field::deposit(
+                self_agent,
+                crate::core::scent_field::ScentKind::Hot,
+                &scent_path,
+                0.3,
+            );
+        });
+        if let Some(hint) = crate::core::scent_field::read_hint(path, self_agent) {
+            result.content.push('\n');
+            result.content.push_str(&hint);
+        }
     }
 
     result

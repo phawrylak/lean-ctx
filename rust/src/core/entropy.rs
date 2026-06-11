@@ -284,6 +284,57 @@ pub fn entropy_compress_task_conditioned(
     result
 }
 
+/// Real line embedder for the semantic redundancy filter (#544): uses the
+/// shared neural engine only when it is ALREADY loaded (never blocks a read
+/// on a model load) and only for files small enough that per-line embedding
+/// stays within the read-path latency budget. Embeddings are cached by line
+/// hash so re-reads cost nothing.
+#[cfg(feature = "embeddings")]
+fn line_embedder(line_count: usize) -> impl Fn(&str) -> Option<Vec<f32>> {
+    use std::collections::HashMap;
+    use std::sync::Mutex;
+
+    const MAX_LINES_FOR_SEMANTIC: usize = 400;
+    const CACHE_CAP: usize = 8192;
+    static LINE_EMBED_CACHE: Mutex<Option<HashMap<u64, Vec<f32>>>> = Mutex::new(None);
+
+    let engine = if line_count <= MAX_LINES_FOR_SEMANTIC {
+        crate::tools::ctx_knowledge::embeddings::embedding_engine_nonblocking()
+    } else {
+        None
+    };
+
+    move |line: &str| {
+        let engine = engine?;
+        if line.len() < 8 {
+            return None;
+        }
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        std::hash::Hash::hash(&line, &mut hasher);
+        let key = std::hash::Hasher::finish(&hasher);
+
+        if let Ok(mut guard) = LINE_EMBED_CACHE.lock() {
+            if let Some(hit) = guard.get_or_insert_with(HashMap::new).get(&key) {
+                return Some(hit.clone());
+            }
+        }
+        let emb = engine.embed(line).ok()?;
+        if let Ok(mut guard) = LINE_EMBED_CACHE.lock() {
+            let map = guard.get_or_insert_with(HashMap::new);
+            if map.len() >= CACHE_CAP {
+                map.clear();
+            }
+            map.insert(key, emb.clone());
+        }
+        Some(emb)
+    }
+}
+
+#[cfg(not(feature = "embeddings"))]
+fn line_embedder(_line_count: usize) -> impl Fn(&str) -> Option<Vec<f32>> {
+    |_: &str| None
+}
+
 fn entropy_compress_with_task(
     content: &str,
     entropy_threshold: f64,
@@ -297,9 +348,20 @@ fn entropy_compress_with_task(
     let kw_lower: Vec<String> = task_keywords.iter().map(|k| k.to_lowercase()).collect();
     let original_count = lines.len();
     let mut task_rescued = 0usize;
+    // Semantic redundancy (#544): when the embedding engine is already
+    // loaded, kept lines that embed near-identically to earlier kept lines
+    // are dropped (MMR). Without the engine the closure returns None and the
+    // decision path is byte-identical to the Zipf-only filter.
+    let embed = line_embedder(original_count);
+    let mut scoring_ctx = super::surprise::ScoringCtx::new();
     lines.retain(|line| {
         let trimmed = line.trim();
-        if super::surprise::should_keep_line(trimmed, entropy_threshold) {
+        if super::surprise::should_keep_line_semantic(
+            trimmed,
+            entropy_threshold,
+            &embed,
+            &mut scoring_ctx,
+        ) {
             return true;
         }
         // Task-conditioned rescue: keep low-entropy lines that mention task keywords.

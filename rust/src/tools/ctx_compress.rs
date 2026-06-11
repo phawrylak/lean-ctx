@@ -72,6 +72,14 @@ pub fn handle(cache: &SessionCache, include_signatures: bool, crp_mode: CrpMode)
         stats.hit_rate()
     ));
 
+    // ACE delta playbook (#541): distill the session into incremental,
+    // stable-ID entries instead of re-summarizing previous summaries —
+    // prevents brevity bias and context collapse across checkpoints.
+    if let Some(playbook_block) = update_playbook_from_session() {
+        sections.push(String::new());
+        sections.push(playbook_block);
+    }
+
     let contents: Vec<(String, String)> = entries
         .iter()
         .filter_map(|(p, e)| Some(((*p).clone(), e.content()?)))
@@ -104,4 +112,83 @@ pub fn handle(cache: &SessionCache, include_signatures: bool, crp_mode: CrpMode)
     let savings = protocol::format_savings(total_original, compressed_tokens);
 
     format!("{cleaned_output}{legend}\nCOMPRESSION: {total_original} → {compressed_tokens} tok\n{savings}")
+}
+
+/// Grow-and-refine (#541): fold the latest session findings, decisions and
+/// modified files into the playbook as deltas (dedup confirms instead of
+/// duplicating), evict locally, persist, and return the rendered block.
+fn update_playbook_from_session() -> Option<String> {
+    use crate::core::session::EntryKind;
+
+    let mut session = crate::core::session::SessionState::load_latest()?;
+    let turn = session.stats.total_tool_calls;
+
+    let findings: Vec<String> = session
+        .findings
+        .iter()
+        .rev()
+        .take(8)
+        .map(|f| f.summary.clone())
+        .collect();
+    let decisions: Vec<String> = session
+        .decisions
+        .iter()
+        .rev()
+        .take(5)
+        .map(|d| d.summary.clone())
+        .collect();
+    let modified: Vec<String> = session
+        .files_touched
+        .iter()
+        .filter(|f| f.modified)
+        .rev()
+        .take(10)
+        .map(|f| {
+            let why = f.summary.as_deref().unwrap_or("modified this session");
+            format!("{} — {}", f.path, why)
+        })
+        .collect();
+
+    for s in findings {
+        session.playbook.add_delta(EntryKind::Fact, &s, turn);
+    }
+    for s in decisions {
+        session.playbook.add_delta(EntryKind::Strategy, &s, turn);
+    }
+    for s in modified {
+        session.playbook.add_delta(EntryKind::FileRef, &s, turn);
+    }
+    // Pitfalls from live bounce evidence: extensions that keep bouncing are
+    // exactly the "this bit us" knowledge ACE wants preserved verbatim.
+    if let Ok(bt) = crate::core::bounce_tracker::global().lock() {
+        if bt.total_bounces() > 0 {
+            for ext_stat in bt.per_extension_json() {
+                let (Some(ext), Some(rate)) = (
+                    ext_stat.get("ext").and_then(|v| v.as_str()),
+                    ext_stat.get("rate").and_then(serde_json::Value::as_f64),
+                ) else {
+                    continue;
+                };
+                if rate >= 0.3 {
+                    session.playbook.add_delta(
+                        EntryKind::Pitfall,
+                        &format!(
+                            "{ext} files bounce often ({:.0}% rate) — prefer mode=full",
+                            rate * 100.0
+                        ),
+                        turn,
+                    );
+                }
+            }
+        }
+    }
+    session.playbook.evict(turn);
+
+    let rendered = session.playbook.render(20);
+    let _ = session.save();
+    if rendered.is_empty() {
+        None
+    } else {
+        Some(rendered)
+    }
 }

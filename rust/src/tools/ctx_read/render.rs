@@ -303,11 +303,23 @@ pub(crate) fn process_mode(
             )
         }
         "entropy" => {
-            // Task-conditioned IB: when there is an active session intent, use
-            // task keywords to rescue low-entropy lines that are still relevant.
-            let task_kws: Vec<String> = crate::core::session::SessionState::load_latest()
-                .and_then(|s| s.active_structured_intent)
-                .map(|i| i.keywords.clone())
+            // Query-conditioned IB (#542) — relevance source chain: explicit
+            // task param > active session intent > last semantic-search query.
+            let task_kws: Vec<String> = task
+                .filter(|t| !t.trim().is_empty())
+                .map(|t| crate::core::task_relevance::parse_task_hints(t).1)
+                .filter(|kws| !kws.is_empty())
+                .or_else(|| {
+                    let session = crate::core::session::SessionState::load_latest()?;
+                    if let Some(intent) = session.active_structured_intent {
+                        if !intent.keywords.is_empty() {
+                            return Some(intent.keywords);
+                        }
+                    }
+                    let q = session.last_semantic_query?;
+                    let kws = crate::core::task_relevance::parse_task_hints(&q).1;
+                    (!kws.is_empty()).then_some(kws)
+                })
                 .unwrap_or_default();
             let result = if task_kws.is_empty() {
                 entropy::entropy_compress_adaptive(content, file_path)

@@ -54,6 +54,56 @@ fn is_claude_code_client(client_name: &str) -> bool {
     lower.contains("claude") && !lower.contains("cursor")
 }
 
+/// LITM calibration manifest rotation (#539).
+///
+/// Settles the previous manifest — every entry the agent never re-recalled is
+/// a placement *hit* (misses were already recorded by the recall hook) — then
+/// stores the manifest for the injection built from `session` right now:
+/// task + decisions go to the begin block, findings + next steps to the end.
+fn rotate_wakeup_manifest(session: &crate::core::session::SessionState, profile_name: &str) {
+    use crate::core::litm_calibration::{record_outcome, Position};
+    use crate::core::session::ManifestEntry;
+
+    let mut updated = session.clone();
+
+    for entry in &updated.wakeup_manifest {
+        if !entry.missed {
+            if let Some(pos) = Position::parse(&entry.position) {
+                record_outcome(&entry.profile, pos, true);
+            }
+        }
+    }
+
+    let mut manifest: Vec<ManifestEntry> = Vec::new();
+    let mut push = |key: &str, position: &str| {
+        let key = key.trim();
+        if !key.is_empty() {
+            manifest.push(ManifestEntry {
+                key: key.chars().take(80).collect(),
+                position: position.to_string(),
+                profile: profile_name.to_string(),
+                missed: false,
+            });
+        }
+    };
+
+    if let Some(ref task) = updated.task {
+        push(&task.description, "begin");
+    }
+    for d in updated.decisions.iter().rev().take(5) {
+        push(&d.summary, "begin");
+    }
+    for f in updated.findings.iter().rev().take(8) {
+        push(&f.summary, "end");
+    }
+    for n in updated.next_steps.iter().take(3) {
+        push(n, "end");
+    }
+
+    updated.wakeup_manifest = manifest;
+    let _ = updated.save();
+}
+
 pub fn claude_config_dir_display() -> String {
     match std::env::var("CLAUDE_CONFIG_DIR") {
         Ok(dir) if !dir.trim().is_empty() => {
@@ -177,7 +227,12 @@ fn build_full_instructions(crp_mode: CrpMode, client_name: &str) -> String {
 
     let (session_block, litm_end_block) = match loaded_session {
         Some(ref session) => {
-            let positioned = crate::core::litm::position_optimize(session);
+            // LITM calibration (#539): rotate the placement manifest — every
+            // entry the agent never re-recalled counts as a placement hit —
+            // then rebuild it for this injection and apply the learned share.
+            rotate_wakeup_manifest(session, profile.name);
+            let share = crate::core::litm_calibration::begin_share(profile.name);
+            let positioned = crate::core::litm::position_optimize_with_share(session, share);
             let begin = format!(
                 "\n\n--- ACTIVE SESSION (LITM P1: begin position, profile: {}) ---\n{}\n---\n",
                 profile.name, positioned.begin_block

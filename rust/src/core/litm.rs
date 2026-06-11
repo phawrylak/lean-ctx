@@ -70,6 +70,16 @@ pub struct PositionedOutput {
 ///   P2 (end): recent findings, test results, next steps
 ///   P3 (dropped): old completed tasks, historical reads beyond limit
 pub fn position_optimize(session: &SessionState) -> PositionedOutput {
+    position_optimize_with_share(session, crate::core::litm_calibration::DEFAULT_BEGIN_SHARE)
+}
+
+/// Calibrated variant (#539): `begin_share` < 0.6 means the begin position
+/// empirically under-performs for this client — progress moves to the end
+/// block and the task line is duplicated there (recency rescue for the most
+/// critical item). At the default share the layout is byte-identical to the
+/// uncalibrated version.
+pub fn position_optimize_with_share(session: &SessionState, begin_share: f64) -> PositionedOutput {
+    let begin_weak = begin_share < 0.6;
     let mut begin_lines = Vec::new();
     let mut end_lines = Vec::new();
 
@@ -116,7 +126,9 @@ pub fn position_optimize(session: &SessionState) -> PositionedOutput {
         begin_lines.push(format!("Files: {}", items.join(" ")));
     }
 
-    // Progress entries (recent work done)
+    // Progress entries (recent work done). When the begin position is
+    // calibrated as weak (#539) this least-critical begin item moves to the
+    // end block instead.
     if !session.progress.is_empty() {
         let items: Vec<String> = session
             .progress
@@ -129,7 +141,12 @@ pub fn position_optimize(session: &SessionState) -> PositionedOutput {
                     .map_or_else(|| p.action.clone(), |d| format!("{}: {d}", p.action))
             })
             .collect();
-        begin_lines.push(format!("Progress: {}", items.join(" | ")));
+        let line = format!("Progress: {}", items.join(" | "));
+        if begin_weak {
+            end_lines.push(line);
+        } else {
+            begin_lines.push(line);
+        }
     }
 
     if !session.findings.is_empty() {
@@ -153,6 +170,15 @@ pub fn position_optimize(session: &SessionState) -> PositionedOutput {
 
     if !session.next_steps.is_empty() {
         end_lines.push(format!("Next: {}", session.next_steps.join(" → ")));
+    }
+
+    // Recency rescue (#539): when begin is weak, repeat the task line at the
+    // end — ~10 tokens to keep the single most critical item in the strong
+    // position for this client.
+    if begin_weak {
+        if let Some(ref task) = session.task {
+            end_lines.push(format!("Task (active): {}", task.description));
+        }
     }
 
     // Session stats at end — changes every call, placing here preserves prefix-cache stability
@@ -303,6 +329,47 @@ mod tests {
             eff_balanced > eff_middle,
             "middle-heavy should be less efficient"
         );
+    }
+
+    #[test]
+    fn calibrated_share_moves_progress_to_end() {
+        let mut session = SessionState::new();
+        session.task = Some(crate::core::session::TaskInfo {
+            description: "fix webhook".to_string(),
+            intent: None,
+            progress_pct: None,
+        });
+        session.progress.push(crate::core::session::ProgressEntry {
+            action: "deployed billing".to_string(),
+            detail: None,
+            timestamp: chrono::Utc::now(),
+        });
+
+        let default_layout = position_optimize_with_share(&session, 0.7);
+        assert!(default_layout.begin_block.contains("Progress:"));
+        assert!(!default_layout.end_block.contains("Task (active)"));
+
+        let weak_begin = position_optimize_with_share(&session, 0.45);
+        assert!(!weak_begin.begin_block.contains("Progress:"));
+        assert!(weak_begin.end_block.contains("Progress:"));
+        assert!(weak_begin.end_block.contains("Task (active): fix webhook"));
+    }
+
+    #[test]
+    fn default_share_is_byte_identical_to_uncalibrated() {
+        let mut session = SessionState::new();
+        session.task = Some(crate::core::session::TaskInfo {
+            description: "t".to_string(),
+            intent: None,
+            progress_pct: Some(50),
+        });
+        let a = position_optimize(&session);
+        let b = position_optimize_with_share(
+            &session,
+            crate::core::litm_calibration::DEFAULT_BEGIN_SHARE,
+        );
+        assert_eq!(a.begin_block, b.begin_block);
+        assert_eq!(a.end_block, b.end_block);
     }
 
     #[test]

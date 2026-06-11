@@ -180,7 +180,48 @@ pub fn handle(
             registry.set_status(from, AgentStatus::Finished, Some("handed off"));
             let _ = registry.save();
 
+            // Stigmergy (#540): mark the handed-off work as Done in the field
+            // so other agents see it arithmetically, without reading messages.
+            crate::core::scent_field::deposit(
+                from,
+                crate::core::scent_field::ScentKind::Done,
+                summary,
+                1.0,
+            );
+
             format!("Handoff complete: {from} → {target}\nSummary: {summary}")
+        }
+
+        // Stigmergic claim (#540): atomically claim a target (file, task,
+        // deploy unit) in the shared scent field. Fails fast when another
+        // agent's claim is still active — prevents duplicate work for ~0 tokens.
+        "claim" => {
+            let Some(target) = message else {
+                return "Error: message (the claim target, e.g. a file path or task label) is required for claim".to_string();
+            };
+            let agent = current_agent_id.map_or_else(
+                || crate::core::agent_identity::current_agent_id().to_string(),
+                str::to_string,
+            );
+            let normalized = crate::core::pathutil::normalize_tool_path(target);
+            match crate::core::scent_field::claim(&agent, &normalized) {
+                Ok(()) => format!("Claimed: {normalized} (by {agent}, decays in ~10m unless re-claimed)"),
+                Err(e) => format!("Claim REJECTED: {normalized} — {e}"),
+            }
+        }
+
+        // Release a stigmergic claim early (done or abandoned).
+        "release" => {
+            let Some(target) = message else {
+                return "Error: message (the claim target) is required for release".to_string();
+            };
+            let agent = current_agent_id.map_or_else(
+                || crate::core::agent_identity::current_agent_id().to_string(),
+                str::to_string,
+            );
+            let normalized = crate::core::pathutil::normalize_tool_path(target);
+            crate::core::scent_field::release(&agent, &normalized);
+            format!("Released: {normalized}")
         }
 
         // Sub-agent context contract (GL#450): deterministic briefing pack.
@@ -301,6 +342,13 @@ pub fn handle(
             }
             out.push_str(&format!("  Pending messages: {pending_count}\n"));
             out.push_str(&format!("  Shared contexts: {shared_count}\n"));
+
+            // Stigmergy (#540): arithmetic field view — claims, stuck markers,
+            // hot files across all agents, no scratchpad reads needed.
+            let scents = crate::core::scent_field::sync_block();
+            if !scents.is_empty() {
+                out.push_str(&scents);
+            }
             out
         }
 

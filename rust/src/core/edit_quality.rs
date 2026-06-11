@@ -244,6 +244,22 @@ pub fn record_edit_outcome(path: &str, last_mode: &str, success: bool) {
         if last_mode != "full" {
             let norm = crate::core::pathutil::normalize_tool_path(path);
             store.set_pending_escalation(&norm, now);
+            // Quality signal (#538): edit failures after compressed reads are
+            // the strongest "compressed too much" evidence we have.
+            crate::core::threshold_learning::record_signal(
+                path,
+                crate::core::threshold_learning::QualitySignal::EditFail,
+            );
+            // Stigmergy (#540): edit failures mark the path as Stuck.
+            let scent_path = norm.clone();
+            std::thread::spawn(move || {
+                crate::core::scent_field::deposit(
+                    crate::core::agent_identity::current_agent_id(),
+                    crate::core::scent_field::ScentKind::Stuck,
+                    &scent_path,
+                    1.0,
+                );
+            });
         }
     }
     maybe_flush(&mut store);

@@ -283,6 +283,9 @@ pub fn import_bundle_v1_into_session(
         compression_level: imported.compression_level.clone(),
         last_consolidate_ts: None,
         extra_roots: Vec::new(),
+        wakeup_manifest: Vec::new(),
+        playbook: crate::core::session::Playbook::default(),
+        last_semantic_query: None,
     };
 
     ImportReportV1 {

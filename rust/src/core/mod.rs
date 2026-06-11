@@ -346,6 +346,7 @@ pub mod homeostasis;
 
 pub mod compliance;
 pub mod edit_quality;
+pub mod evidence_bundle;
 pub mod graph_cache;
 pub mod ide_permissions;
 pub mod import_resolver;

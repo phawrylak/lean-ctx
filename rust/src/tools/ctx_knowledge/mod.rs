@@ -6,7 +6,7 @@ use crate::core::embeddings::EmbeddingEngine;
 use crate::core::knowledge::ProjectKnowledge;
 use crate::core::memory_policy::MemoryPolicy;
 use crate::core::session::SessionState;
-mod embeddings;
+pub(crate) mod embeddings;
 pub(crate) use embeddings::*;
 mod remember;
 pub(crate) use remember::*;

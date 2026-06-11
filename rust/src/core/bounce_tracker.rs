@@ -128,6 +128,23 @@ impl BounceTracker {
                     // Long-term per-path memory (#496): remember which exact
                     // files keep bouncing so auto-mode learns across restarts.
                     crate::core::path_mode_memory::record_bounce(norm_path);
+                    // Quality signal (#538): bounces push the learned entropy
+                    // threshold down for this extension (compress less).
+                    crate::core::threshold_learning::record_signal(
+                        norm_path,
+                        crate::core::threshold_learning::QualitySignal::Bounce,
+                    );
+                    // Stigmergy (#540): a bounce marks this path as Stuck so
+                    // other agents see friction here. Background: lock may block.
+                    let scent_path = norm_path.to_string();
+                    std::thread::spawn(move || {
+                        crate::core::scent_field::deposit(
+                            crate::core::agent_identity::current_agent_id(),
+                            crate::core::scent_field::ScentKind::Stuck,
+                            &scent_path,
+                            0.5,
+                        );
+                    });
                 }
             }
         }

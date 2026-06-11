@@ -15,9 +15,11 @@ impl McpTool for CtxAgentTool {
     fn tool_def(&self) -> Tool {
         tool_def(
             "ctx_agent",
-            "Multi-agent coordination (shared message bus + persistent diaries). Actions: register (join with agent_type+role), \
+            "Multi-agent coordination (shared message bus + persistent diaries + stigmergic scent field). Actions: register (join with agent_type+role), \
 post (broadcast or direct message with category), read (poll messages), status (update state: active|idle|finished), \
-handoff (transfer task to another agent with summary), sync (overview of all agents + pending messages + shared contexts), \
+handoff (transfer task to another agent with summary), sync (agents + pending messages + decaying scent field: claims/stuck/hot), \
+claim (atomically claim a file/task in the scent field: message=target — rejected if another agent holds it), \
+release (drop own claim early: message=target), \
 brief (deterministic sub-agent briefing pack: message=task, priority=token budget — returns versioned contract JSON), \
 return (distill a sub-agent report into parent knowledge: message=lines of 'category/key: value'), \
 diary (log discovery/decision/blocker/progress/insight — persisted across sessions), \
@@ -28,7 +30,7 @@ list, info.",
                 "properties": {
                     "action": {
                         "type": "string",
-                        "enum": ["register", "list", "post", "read", "status", "info", "handoff", "sync", "brief", "return", "diary", "recall_diary", "diaries", "share_knowledge", "receive_knowledge"],
+                        "enum": ["register", "list", "post", "read", "status", "info", "handoff", "sync", "claim", "release", "brief", "return", "diary", "recall_diary", "diaries", "share_knowledge", "receive_knowledge"],
                         "description": "Agent operation."
                     },
                     "agent_type": {

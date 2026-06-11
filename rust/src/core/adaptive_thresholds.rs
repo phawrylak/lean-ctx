@@ -297,6 +297,12 @@ pub fn adaptive_thresholds(path: &str, content: &str) -> CompressionThresholds {
         base.jaccard = base.jaccard * 0.6 + learned_jaccard * 0.4;
     }
 
+    // Quality-signal loop (#538): bounce/edit-fail history shifts the threshold
+    // additively, clamped to ±0.15 inside threshold_learning. Applied before the
+    // Kolmogorov adjustment so the final clamp below still bounds everything.
+    base.bpe_entropy =
+        (base.bpe_entropy + super::threshold_learning::learned_delta(ext)).clamp(0.4, 2.0);
+
     if content.len() > 500 {
         let k = kolmogorov_proxy(content);
         let k_adjustment = (k - 0.45) * 0.5;

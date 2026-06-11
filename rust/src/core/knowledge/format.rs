@@ -192,23 +192,17 @@ impl ProjectKnowledge {
             return String::new();
         }
 
+        // Theta-gamma chunking (#543): salience-ordered top-K facts grouped
+        // into 4±1-sized thematic chunks; shared headers amortize category
+        // prefixes (token savings) and prime related facts (recall).
         let mut top_facts: Vec<&KnowledgeFact> = current_facts;
         top_facts.sort_by(|a, b| sort_fact_for_output(a, b));
-        top_facts.truncate(10);
+        top_facts.truncate(20);
 
-        let items: Vec<String> = top_facts
-            .iter()
-            .map(|f| {
-                let cat = crate::core::sanitize::neutralize_metadata(&f.category);
-                let key = crate::core::sanitize::neutralize_metadata(&f.key);
-                let val = crate::core::sanitize::neutralize_metadata(&f.value);
-                format!("{cat}/{key}={val}")
-            })
-            .collect();
-
+        let clusters = super::chunking::cluster_facts(&top_facts);
         crate::core::sanitize::fence_content(
             "project_facts_wakeup",
-            &format!("FACTS:{}", items.join("|")),
+            &super::chunking::render_chunked(&clusters),
         )
     }
 }
