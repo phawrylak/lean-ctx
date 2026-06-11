@@ -140,8 +140,11 @@ pub fn sign_bundle(bundle: &mut HandoffTransferBundleV1, agent_id: &str) -> Resu
     let canonical =
         serde_json::to_string(bundle).map_err(|e| format!("serialize for signing: {e}"))?;
 
-    let sig_bytes = crate::core::agent_identity::sign_bytes(agent_id, canonical.as_bytes())?;
-    let pub_key = crate::core::agent_identity::get_public_key(agent_id)?;
+    // One atomic key resolution — signature and embedded public key must come
+    // from the same keypair (two separate lookups raced with concurrent
+    // data-dir changes and produced unverifiable bundles).
+    let (sig_bytes, pub_key) =
+        crate::core::agent_identity::sign_with_public_key(agent_id, canonical.as_bytes())?;
 
     bundle.signature = Some(crate::core::agent_identity::hex_encode(&sig_bytes));
     bundle.signer_public_key = Some(crate::core::agent_identity::hex_encode(&pub_key.to_bytes()));

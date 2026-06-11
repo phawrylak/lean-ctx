@@ -211,9 +211,13 @@ pub fn generate(spec: &BundleSpec) -> Result<BundleResult, String> {
         .map(|(path, bytes)| json!({ "path": path, "sha256": sha256_hex(bytes) }))
         .collect();
 
-    let public_key = crate::core::agent_identity::get_public_key(SIGNING_AGENT)
-        .map(|k| crate::core::agent_identity::hex_encode(k.as_bytes()))
+    // Resolve the keypair once: the public key goes into the manifest and the
+    // signature is computed over that manifest's digest — both must come from
+    // the same key or the embedded key can never verify the signature.
+    let signing_key = crate::core::agent_identity::get_or_create_keypair(SIGNING_AGENT)
         .map_err(|e| format!("signing identity: {e}"))?;
+    let public_key =
+        crate::core::agent_identity::hex_encode(signing_key.verifying_key().as_bytes());
 
     let mut manifest = json!({
         "bundle": "evidence-bundle",
@@ -236,9 +240,9 @@ pub fn generate(spec: &BundleSpec) -> Result<BundleResult, String> {
     });
 
     let digest = sha256_hex(canonical_json(&manifest).as_bytes());
-    let signature = crate::core::agent_identity::sign_bytes(SIGNING_AGENT, digest.as_bytes())
-        .map(|sig| crate::core::agent_identity::hex_encode(&sig))
-        .map_err(|e| format!("signing: {e}"))?;
+    let signature = crate::core::agent_identity::hex_encode(
+        &crate::core::agent_identity::sign_bytes_with(&signing_key, digest.as_bytes()),
+    );
     manifest["signing"]["signed_digest"] = Value::String(digest);
     manifest["signing"]["signature"] = Value::String(signature);
 

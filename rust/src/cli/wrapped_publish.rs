@@ -172,12 +172,15 @@ fn publish_report(
         serde_json::to_string(&payload).map_err(|e| format!("could not build payload: {e}"))?;
 
     let agent = publisher_agent_id();
-    let public_key = agent_identity::get_public_key(&agent)
-        .map(|k| agent_identity::hex_encode(&k.to_bytes()))
-        .map_err(|e| format!("could not load publish identity: {e}"))?;
-    let signature = agent_identity::sign_bytes(&agent, payload_json.as_bytes())
-        .map(|s| agent_identity::hex_encode(&s))
-        .map_err(|e| format!("could not sign payload: {e}"))?;
+    let (signature, public_key) =
+        agent_identity::sign_with_public_key(&agent, payload_json.as_bytes())
+            .map(|(sig, key)| {
+                (
+                    agent_identity::hex_encode(&sig),
+                    agent_identity::hex_encode(&key.to_bytes()),
+                )
+            })
+            .map_err(|e| format!("could not sign payload: {e}"))?;
 
     let envelope = serde_json::json!({
         "payload_json": payload_json,
