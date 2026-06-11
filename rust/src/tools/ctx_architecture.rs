@@ -743,7 +743,13 @@ fn handle_hotspots(root: &str, fmt: OutputFormat) -> String {
             result.push_str(&format!("  {}\n", "-".repeat(82)));
             for (file, score, rank, edges, smells) in hotspots.iter().take(limit) {
                 let display = if file.len() > 48 {
-                    format!("...{}", &file[file.len() - 45..])
+                    // Suffix cut must land on a char boundary — multibyte
+                    // paths panic on byte-indexed slicing (GitHub #386).
+                    let mut start = file.len() - 45;
+                    while start < file.len() && !file.is_char_boundary(start) {
+                        start += 1;
+                    }
+                    format!("...{}", &file[start..])
                 } else {
                     file.clone()
                 };

@@ -752,11 +752,15 @@ fn full_server_entry(binary: &str) -> serde_json::Value {
     let data_dir = crate::core::data_dir::lean_ctx_data_dir()
         .map(|d| d.to_string_lossy().to_string())
         .unwrap_or_default();
+    // No LEAN_CTX_FULL_TOOLS here: forcing the full toolset (69+ schemas,
+    // ~15k tokens of tool definitions resent every turn) made lean-ctx one of
+    // the biggest token consumers in users' sessions (GitHub #385). The server
+    // defaults to the core toolset + ctx_call/ctx_expand for on-demand access;
+    // power users opt in via `tool_profile = "power"` in config.toml.
     serde_json::json!({
         "command": binary,
         "env": {
-            "LEAN_CTX_DATA_DIR": data_dir,
-            "LEAN_CTX_FULL_TOOLS": "1"
+            "LEAN_CTX_DATA_DIR": data_dir
         }
     })
 }

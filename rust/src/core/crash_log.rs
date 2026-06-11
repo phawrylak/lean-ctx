@@ -85,24 +85,45 @@ pub fn write_crash_entry(info: &std::panic::PanicHookInfo<'_>) -> Option<PathBuf
 /// Installs the process-wide panic hook: persistent crash log + the friendly
 /// stderr message. Used by the binary entry point (CLI, MCP server, proxy and
 /// daemon all run through it).
+///
+/// The hook itself must be panic-free: a panic inside the panic hook is a
+/// double panic and the runtime `abort()`s the whole process. `eprintln!`
+/// panics on I/O errors — background workers whose stderr is gone (terminal
+/// closed, parent recycled the pipe → EPIPE) turned every ordinary panic into
+/// a SIGABRT coredump (GitHub #378: 38 cores, all `abort` in the panic path).
+/// Everything here is therefore best-effort writes + catch_unwind.
 pub fn install_panic_hook() {
     std::panic::set_hook(Box::new(|info| {
-        let log_path = write_crash_entry(info);
+        use std::io::Write;
 
-        eprintln!("lean-ctx: unexpected error (your command was not affected)");
-        eprintln!("  Disable temporarily: lean-ctx-off");
-        eprintln!("  Full uninstall:      lean-ctx uninstall");
-        if let Some(msg) = info.payload().downcast_ref::<&str>() {
-            eprintln!("  Details: {msg}");
-        } else if let Some(msg) = info.payload().downcast_ref::<String>() {
-            eprintln!("  Details: {msg}");
+        let log_path =
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| write_crash_entry(info)))
+                .unwrap_or_default();
+
+        let mut msg = String::from(
+            "lean-ctx: unexpected error (your command was not affected)\n\
+             \x20 Disable temporarily: lean-ctx-off\n\
+             \x20 Full uninstall:      lean-ctx uninstall\n",
+        );
+        if let Some(m) = info.payload().downcast_ref::<&str>() {
+            let _ = std::fmt::Write::write_fmt(&mut msg, format_args!("  Details: {m}\n"));
+        } else if let Some(m) = info.payload().downcast_ref::<String>() {
+            let _ = std::fmt::Write::write_fmt(&mut msg, format_args!("  Details: {m}\n"));
         }
         if let Some(loc) = info.location() {
-            eprintln!("  Location: {}:{}", loc.file(), loc.line());
+            let _ = std::fmt::Write::write_fmt(
+                &mut msg,
+                format_args!("  Location: {}:{}\n", loc.file(), loc.line()),
+            );
         }
         if let Some(p) = log_path {
-            eprintln!("  Crash log: {}", p.display());
+            let _ = std::fmt::Write::write_fmt(
+                &mut msg,
+                format_args!("  Crash log: {}\n", p.display()),
+            );
         }
+        // Non-panicking stderr write — ignore EPIPE and friends.
+        let _ = std::io::stderr().write_all(msg.as_bytes());
     }));
 }
 

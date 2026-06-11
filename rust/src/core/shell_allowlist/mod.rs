@@ -721,6 +721,13 @@ fn split_on_operators(command: &str) -> Vec<&str> {
                     segments.push(&command[start..i]);
                     i += 2;
                     start = i;
+                } else if i > 0 && bytes[i - 1] == b'>' {
+                    // `>|` (noclobber redirect), NOT a pipe: the '|' belongs to
+                    // the redirect operator and the following token is a file
+                    // path, not a command. Splitting here treated the target
+                    // (e.g. `out` in `date >| out`) as a command and falsely
+                    // blocked it against the allowlist (#387).
+                    i += 1;
                 } else {
                     // pipe
                     segments.push(&command[start..i]);

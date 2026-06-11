@@ -1012,12 +1012,13 @@ pub(super) fn write_qoder_settings(
     opts: WriteOptions,
 ) -> Result<WriteResult, String> {
     let data_dir = default_data_dir()?;
+    // Core toolset by default — no LEAN_CTX_FULL_TOOLS (GitHub #385, see
+    // hooks::full_server_entry).
     let desired = serde_json::json!({
         "command": binary,
         "args": [],
         "env": {
-            "LEAN_CTX_DATA_DIR": data_dir,
-            "LEAN_CTX_FULL_TOOLS": "1"
+            "LEAN_CTX_DATA_DIR": data_dir
         }
     });
 

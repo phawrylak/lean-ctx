@@ -111,8 +111,6 @@ pub(crate) fn agent_mcp_targets(
         });
     };
 
-    let pi_cfg = home.join(".pi").join("agent").join("mcp.json");
-
     match agent {
         "cursor" => push(
             &mut targets,
@@ -200,7 +198,6 @@ pub(crate) fn agent_mcp_targets(
             home.join(".config/crush/crush.json"),
             ConfigType::Crush,
         ),
-        "pi" => push(&mut targets, "Pi Coding Agent", pi_cfg, ConfigType::McpJson),
         "qoder" => {
             for path in crate::core::editor_registry::qoder_all_mcp_paths(home) {
                 push(&mut targets, "Qoder", path, ConfigType::QoderSettings);
@@ -236,8 +233,14 @@ pub(crate) fn agent_mcp_targets(
             home.join(".verdent/mcp.json"),
             ConfigType::McpJson,
         ),
-        "jetbrains" | "amp" | "openclaw" => {
-            // Handled by dedicated install hooks (servers[] array / amp.mcpServers / mcp.servers)
+        // pi: deliberately no MCP target. Pi has no native MCP adapter — a
+        // ~/.pi/agent/mcp.json entry is never served and made older pi-lean-ctx
+        // versions disable their embedded bridge (GitHub #361). Pi runs through
+        // the pi-lean-ctx npm package; install_pi_hook_with_mode removes stale
+        // entries instead.
+        "pi" | "jetbrains" | "amp" | "openclaw" => {
+            // jetbrains/amp/openclaw: handled by dedicated install hooks
+            // (servers[] array / amp.mcpServers / mcp.servers).
         }
         "qwen" => push(
             &mut targets,

@@ -184,13 +184,12 @@ pub fn build_targets(home: &Path) -> Vec<EditorTarget> {
             detect_path: home.join(".config/crush"),
             config_type: ConfigType::Crush,
         },
-        EditorTarget {
-            name: "Pi Coding Agent",
-            agent_key: "pi".to_string(),
-            config_path: home.join(".pi/agent/mcp.json"),
-            detect_path: home.join(".pi/agent"),
-            config_type: ConfigType::McpJson,
-        },
+        // NOTE: Pi Coding Agent is deliberately NOT an MCP-config target. Pi has
+        // no native MCP adapter — a `lean-ctx` entry in ~/.pi/agent/mcp.json is
+        // never served, and older pi-lean-ctx versions read it as "adapter
+        // configured" and disabled their embedded bridge (GitHub #361). Pi is
+        // integrated via the pi-lean-ctx npm package (embedded MCP bridge) and
+        // AGENTS.md; `init --agent pi` removes stale mcp.json entries.
         EditorTarget {
             name: "Amp",
             agent_key: "amp".to_string(),

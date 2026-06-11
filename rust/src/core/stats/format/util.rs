@@ -59,10 +59,15 @@ pub(super) fn format_num(n: u64) -> String {
 
 pub(super) fn truncate_cmd(cmd: &str, max: usize) -> String {
     if cmd.len() <= max {
-        cmd.to_string()
-    } else {
-        format!("{}…", &cmd[..max - 1])
+        return cmd.to_string();
     }
+    // Cut on a char boundary: byte-indexed slicing panics mid-codepoint for
+    // multibyte command names (GitHub #386).
+    let mut end = max.saturating_sub(1);
+    while end > 0 && !cmd.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}…", &cmd[..end])
 }
 
 pub(super) fn cmd_total_saved(s: &CommandStats, _cm: &CostModel) -> u64 {

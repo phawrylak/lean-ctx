@@ -148,6 +148,26 @@ fn redirect_ampersand_forms_not_separators() {
 }
 
 #[test]
+fn noclobber_redirect_not_a_pipe() {
+    // #387: `>|` (noclobber redirect) must not split as a pipe — the target
+    // is a file path, not a command to allowlist.
+    let list = allow(&["date", "cmd"]);
+    assert!(check_all_segments("date >| out", &list).is_ok());
+    assert!(check_all_segments("cmd >>out", &list).is_ok());
+    assert!(check_all_segments("cmd > out", &list).is_ok());
+    // Exact reporter repros (both spellings of the fd-dup).
+    assert!(check_all_segments("date --fsdfs >| out 2>&1", &list).is_ok());
+    assert!(check_all_segments("date --fsdfs >| out 2>& 1", &list).is_ok());
+    assert!(check_all_segments("date --fsdfs > out 2>& 1", &list).is_ok());
+    assert_eq!(split_on_operators("date >| out").len(), 1);
+    assert_eq!(split_on_operators("date --fsdfs >| out 2>&1").len(), 1);
+    // A genuine pipe still splits — `>|` detection must not swallow it.
+    assert_eq!(split_on_operators("date | wc -l").len(), 2);
+    let date_only = allow(&["date"]);
+    assert!(check_all_segments("date | wc -l", &date_only).is_err());
+}
+
+#[test]
 fn background_ampersand_still_splits() {
     // A genuine background `&` remains a separator — the trailing command is checked.
     let only_sleep = allow(&["sleep"]);

@@ -69,6 +69,7 @@ fn build_report_body(_title: &str, description: &str, include_tee: bool) -> Stri
 
     sections.push(format!("## Description\n\n{description}"));
     sections.push(section_environment());
+    sections.push(section_recent_crashes());
     sections.push(section_configuration());
     sections.push(section_mcp_status());
     sections.push(section_tool_calls());
@@ -83,6 +84,46 @@ fn build_report_body(_title: &str, description: &str, include_tee: bool) -> Stri
 }
 
 // ── Section Builders ──────────────────────────────────────────────────────
+
+/// The last entries of the panic-hook crash log (`<data_dir>/logs/crash.log`).
+/// Without this, crash reports arrive with no location/payload and are not
+/// actionable (GitHub #386 shipped an empty report for a reproducible panic).
+fn section_recent_crashes() -> String {
+    let mut out = String::from("## Recent Crashes\n\n");
+    let log_path = crate::core::data_dir::lean_ctx_data_dir()
+        .ok()
+        .map(|d| d.join("logs").join("crash.log"));
+    let content = log_path
+        .as_ref()
+        .and_then(|p| std::fs::read_to_string(p).ok());
+    let Some(content) = content else {
+        out.push_str("No crash log found — no panics recorded on this machine.");
+        return out;
+    };
+
+    // Entries are separated by the `=== panic at` header; keep the newest 3
+    // and cap each backtrace so the report stays reviewable.
+    let entries: Vec<&str> = content
+        .split("=== panic at ")
+        .filter(|e| !e.trim().is_empty())
+        .collect();
+    if entries.is_empty() {
+        out.push_str("Crash log present but empty.");
+        return out;
+    }
+
+    out.push_str("```\n");
+    for entry in entries.iter().rev().take(3).rev() {
+        out.push_str("=== panic at ");
+        for line in entry.lines().take(14) {
+            out.push_str(line);
+            out.push('\n');
+        }
+        out.push_str("…\n\n");
+    }
+    out.push_str("```");
+    out
+}
 
 fn section_environment() -> String {
     let os = std::env::consts::OS;

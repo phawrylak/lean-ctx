@@ -507,11 +507,39 @@ fn format_heatmap_themed(
     out.push(format!("  {}", t.box_bottom_square(w)));
 }
 
+/// Longest prefix of `s` that is at most `max_bytes` bytes and ends on a char
+/// boundary. Byte-indexed slicing (`&s[..n]`) panics mid-codepoint — paths and
+/// agent ids regularly carry multibyte characters (umlauts, CJK, emoji), which
+/// crashed `gain --deep` (GitHub #386).
+fn safe_prefix(s: &str, max_bytes: usize) -> &str {
+    if s.len() <= max_bytes {
+        return s;
+    }
+    let mut end = max_bytes;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    &s[..end]
+}
+
+/// Longest suffix of `s` that is at most `max_bytes` bytes and starts on a
+/// char boundary.
+fn safe_suffix(s: &str, max_bytes: usize) -> &str {
+    if s.len() <= max_bytes {
+        return s;
+    }
+    let mut start = s.len() - max_bytes;
+    while start < s.len() && !s.is_char_boundary(start) {
+        start += 1;
+    }
+    &s[start..]
+}
+
 fn truncate_str(s: &str, max: usize) -> String {
     if s.len() <= max {
         s.to_string()
     } else {
-        format!("{}…", &s[..max - 1])
+        format!("{}…", safe_prefix(s, max.saturating_sub(1)))
     }
 }
 
@@ -521,14 +549,16 @@ fn shorten_path(path: &str, max: usize) -> String {
     }
     if let Some(pos) = path.rfind('/') {
         let file = &path[pos + 1..];
-        if file.len() >= max - 3 {
-            return format!("…{}", &file[file.len() - (max - 1)..]);
+        // `file.len() + 3 >= max` (not `file.len() >= max - 3`): the
+        // subtraction underflows for max < 3.
+        if file.len() + 3 >= max {
+            return format!("…{}", safe_suffix(file, max.saturating_sub(1)));
         }
-        let remaining = max - file.len() - 4;
-        let start = &path[..remaining.min(path.len())];
+        let remaining = max.saturating_sub(file.len() + 4);
+        let start = safe_prefix(path, remaining);
         return format!("{start}…/{file}");
     }
-    format!("{}…", &path[..max - 1])
+    format!("{}…", safe_prefix(path, max.saturating_sub(1)))
 }
 
 #[cfg(test)]
@@ -565,5 +595,36 @@ mod tests {
             matches!(engagement, "proxy_down" | "no_requests" | "engaged"),
             "unexpected engagement tag: {engagement}"
         );
+    }
+
+    #[test]
+    fn truncation_is_char_boundary_safe() {
+        // GitHub #386: byte-indexed truncation panicked mid-codepoint when
+        // paths/agent ids contained multibyte characters. Sweep every cut
+        // position across multibyte inputs — must never panic.
+        let samples = [
+            "/Users/müller/Projekte/größe/mod.rs",
+            "/home/用户/プロジェクト/файл.rs",
+            "agent-🚀🔥-ünïcödé-identifier",
+            "ä",
+            "",
+            "no-multibyte-at-all/plain.rs",
+        ];
+        for s in samples {
+            for max in 0..=s.len() + 2 {
+                let _ = truncate_str(s, max);
+                let _ = shorten_path(s, max);
+            }
+        }
+    }
+
+    #[test]
+    fn truncation_keeps_ascii_behaviour() {
+        assert_eq!(truncate_str("short", 10), "short");
+        assert_eq!(truncate_str("exactly-ten", 11), "exactly-ten");
+        assert_eq!(truncate_str("longer-than-max", 8), "longer-…");
+        assert_eq!(shorten_path("/a/b/file.rs", 50), "/a/b/file.rs");
+        let p = shorten_path("/very/long/path/to/some/file.rs", 20);
+        assert!(p.contains('…') && p.ends_with("file.rs"), "got: {p}");
     }
 }

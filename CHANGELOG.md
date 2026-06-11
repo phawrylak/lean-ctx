@@ -32,6 +32,46 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   `docs/enterprise/reading-evidence.md`.
 
 ### Fixed
+- **Shell parser: `>|` noclobber redirect treated as a pipe** (GitHub #387):
+  `date --fsdfs >| out 2>&1` split at the `|`, so the redirect target
+  (`out`) was checked against the shell allowlist as a command and
+  blocked. The segment splitter now recognises `>|` as a redirect
+  operator; file-write targets are never allowlist-checked.
+- **`gain --deep` crash on multibyte paths/agent ids** (GitHub #386):
+  every display truncation helper (`ctx_gain::truncate_str` /
+  `shorten_path`, `stats::format::truncate_cmd`, `ctx_architecture`
+  hotspot paths) sliced at byte offsets and panicked mid-codepoint for
+  umlauts/CJK/emoji; one helper could also underflow for tiny widths.
+  All cuts are now char-boundary-safe (swept 0..=len+2 in tests).
+- **`report-issue` now embeds the crash log** (GitHub #386 follow-up):
+  the last 3 entries of `<data_dir>/logs/crash.log` (location, payload,
+  truncated backtrace) ship with every report, so panic reports are
+  actionable instead of arriving empty.
+- **SIGABRT coredumps from the panic hook itself** (GitHub #378): the
+  process-wide panic hook used `eprintln!`, which panics on I/O errors —
+  when a background worker's stderr was gone (terminal closed → EPIPE),
+  any ordinary panic became a double panic and the runtime aborted the
+  whole process (38 coredumps reported). The hook now writes its message
+  best-effort (`write_all`, errors ignored) and wraps the crash-log write
+  in `catch_unwind`; a panic can never escalate to SIGABRT through the
+  hook anymore.
+- **MCP token footprint: installers no longer force the full toolset**
+  (GitHub #385): every generated MCP config carried
+  `LEAN_CTX_FULL_TOOLS=1`, advertising 69+ tool schemas (~15k tokens)
+  to the client on every turn — lean-ctx showed up as one of the biggest
+  token consumers in users' own usage breakdowns. New installs/refreshes
+  now use the core toolset (13 tools + `ctx_call`/`ctx_expand` for
+  on-demand access); opt back in via `tool_profile = "power"` in
+  config.toml or `LEAN_CTX_FULL_TOOLS=1` in the server env.
+- **Pi: stale `~/.pi/agent/mcp.json` entry defeated the embedded bridge**
+  (GitHub #361, found by the tokbench independent benchmark): Pi has no
+  native MCP adapter, but `init --agent pi` wrote a `lean-ctx` mcp.json
+  entry that older pi-lean-ctx versions read as "adapter configured" and
+  disabled their embedded MCP bridge — the session cache silently never
+  engaged. The installer no longer writes that entry anywhere
+  (hooks path + editor-registry target + setup target all removed) and
+  `init --agent pi` migrates existing configs by deleting the stale
+  entry (file removed entirely when lean-ctx was its only content).
 - **Uninstall: perfect-clean guarantee** (GL #558, Discord report):
   `lean-ctx uninstall` now leaves zero artifacts behind. Backup sweep
   covers installer subdirectories (`hooks/`, `rules/`, `skills/`,
