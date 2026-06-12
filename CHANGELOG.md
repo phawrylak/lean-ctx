@@ -3,9 +3,19 @@
 All notable changes to lean-ctx are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
-## [Unreleased]
+## [3.8.2] — 2026-06-12
 
 ### Fixed
+- **Linux: `ctx_*` tools broke for projects under `/c/…` and other
+  single-letter roots (#397)**: the MSYS2/Git-Bash drive mapping
+  (`/c/Users/…` → `C:/Users/…`) in the MCP path normalizer ran
+  **unconditionally** — on Linux/macOS, where `/c/…` is a literal directory,
+  every file-addressing tool then failed with `file not found` on a
+  nonexistent `C:/…` path (and absolute arguments were re-joined under the
+  already-translated root, doubling it). The mapping is now gated on Windows
+  hosts (`cfg!(windows)`) — that is the only platform where MSYS2/Git-Bash
+  clients hand POSIX drive paths to a native Windows binary. On other hosts,
+  `/c/…` passes through untouched; regression tests cover both sides.
 - **`lean-ctx doctor` reported "no rules file found" right after `lean-ctx setup`
   (#396)**: the 3.8 layout (GL #555) intentionally replaced the always-loaded
   `~/.claude/rules/lean-ctx.md` with a CLAUDE.md block + on-demand skill — setup
