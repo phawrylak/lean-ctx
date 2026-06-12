@@ -28,11 +28,13 @@ fn docs_tool_counts_match_manifest() {
         ),
     ];
 
-    // Approximate-count files use "N+" format (marketing docs)
+    // Approximate-count files use "N+" format (marketing docs).
+    // VISION.md is intentionally absent: the public manifesto carries no tool
+    // counts since the vision-docs consolidation (numbers live in README,
+    // ARCHITECTURE and the internal source of truth).
     let approx_checks: Vec<(&str, &str)> = vec![
         ("README.md", "MCP tools"),
         ("ARCHITECTURE.md", "tools"),
-        ("VISION.md", "MCP tools"),
         ("skills/lean-ctx/SKILL.md", "MCP tools"),
         ("rust/src/templates/SKILL.md", "MCP tools"),
     ];
