@@ -898,19 +898,27 @@ mod tests {
         assert_eq!(to_bash_compatible_path("lean-ctx"), "lean-ctx");
     }
 
+    // MSYS2 drive mapping applies on Windows hosts only — on Linux/macOS
+    // /c/… is a literal directory and must pass through (GH #397).
+    #[cfg(windows)]
     #[test]
     fn normalize_msys2_path() {
         assert_eq!(
             normalize_tool_path("/c/Users/game/Downloads/project"),
             "C:/Users/game/Downloads/project"
         );
-    }
-
-    #[test]
-    fn normalize_msys2_drive_d() {
         assert_eq!(
             normalize_tool_path("/d/Projects/app/src"),
             "D:/Projects/app/src"
+        );
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn normalize_msys2_path_untouched_on_unix() {
+        assert_eq!(
+            crate::core::pathutil::normalize_tool_path_lexical("/c/Users/game/Downloads/project"),
+            "/c/Users/game/Downloads/project"
         );
     }
 
@@ -1150,16 +1158,14 @@ mod tests {
         assert_eq!(recommend_hook_mode("unknown-agent"), HookMode::Mcp);
     }
 
+    // Drive translation only applies on Windows hosts (GH #397).
+    #[cfg(windows)]
     #[test]
     fn from_bash_to_native_converts_msys_drive() {
         assert_eq!(
             from_bash_to_native_path("/c/Users/ABC/lean-ctx"),
             "C:/Users/ABC/lean-ctx"
         );
-    }
-
-    #[test]
-    fn from_bash_to_native_drive_d() {
         assert_eq!(
             from_bash_to_native_path("/d/Program Files/lean-ctx.exe"),
             "D:/Program Files/lean-ctx.exe"
@@ -1180,10 +1186,18 @@ mod tests {
     }
 
     #[test]
-    fn roundtrip_windows_path() {
+    fn windows_path_to_bash_form() {
         let native = r"C:\Users\ABC\AppData\Local\lean-ctx\lean-ctx.exe";
         let bash = to_bash_compatible_path(native);
         assert_eq!(bash, "/c/Users/ABC/AppData/Local/lean-ctx/lean-ctx.exe");
+    }
+
+    // The bash→native return leg only translates on Windows hosts (GH #397).
+    #[cfg(windows)]
+    #[test]
+    fn roundtrip_windows_path() {
+        let native = r"C:\Users\ABC\AppData\Local\lean-ctx\lean-ctx.exe";
+        let bash = to_bash_compatible_path(native);
         let back = from_bash_to_native_path(&bash);
         assert_eq!(back, "C:/Users/ABC/AppData/Local/lean-ctx/lean-ctx.exe");
     }

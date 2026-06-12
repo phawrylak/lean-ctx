@@ -77,25 +77,42 @@ pub fn strip_verbatim_str(path: &str) -> Option<String> {
     }
 }
 
-/// Lexical (string-only) part of [`normalize_tool_path`]: MSYS2 drive prefix,
-/// separators, double slashes, trailing slash. Performs **no** filesystem
-/// access, so it is safe on persisted paths in TCC-standalone processes
-/// (launchd daemon, #356) and as a dedupe key where symlink resolution is
-/// not worth a `realpath` per entry.
-pub fn normalize_tool_path_lexical(path: &str) -> String {
-    let mut p = match strip_verbatim_str(path) {
-        Some(stripped) => stripped,
-        None => path.to_string(),
-    };
-
-    // MSYS2/Git Bash: /c/Users/... -> C:/Users/...
+/// MSYS2/Git Bash drive mapping: `/c/Users/...` -> `C:/Users/...`.
+///
+/// Returns `None` when the path does not carry a single-letter drive prefix.
+/// Callers must apply this **only on Windows hosts**: clients running under
+/// MSYS2/Git Bash hand POSIX-style drive paths to a native Windows lean-ctx.
+/// On Linux/macOS `/c/...` is a literal directory and must pass through
+/// untouched (GH #397 — the unconditional rewrite broke every `ctx_*` tool
+/// for Linux projects rooted under `/c/...` and similar paths).
+fn translate_msys_drive_prefix(p: &str) -> Option<String> {
     if p.len() >= 3
         && p.starts_with('/')
         && p.as_bytes()[1].is_ascii_alphabetic()
         && p.as_bytes()[2] == b'/'
     {
         let drive = p.as_bytes()[1].to_ascii_uppercase() as char;
-        p = format!("{drive}:{}", &p[2..]);
+        Some(format!("{drive}:{}", &p[2..]))
+    } else {
+        None
+    }
+}
+
+/// Lexical (string-only) part of [`normalize_tool_path`]: MSYS2 drive prefix
+/// (Windows hosts only), separators, double slashes, trailing slash. Performs
+/// **no** filesystem access, so it is safe on persisted paths in
+/// TCC-standalone processes (launchd daemon, #356) and as a dedupe key where
+/// symlink resolution is not worth a `realpath` per entry.
+pub fn normalize_tool_path_lexical(path: &str) -> String {
+    let mut p = match strip_verbatim_str(path) {
+        Some(stripped) => stripped,
+        None => path.to_string(),
+    };
+
+    if cfg!(windows) {
+        if let Some(translated) = translate_msys_drive_prefix(&p) {
+            p = translated;
+        }
     }
 
     p = p.replace('\\', "/");
@@ -114,8 +131,10 @@ pub fn normalize_tool_path_lexical(path: &str) -> String {
 }
 
 /// Normalize paths from any client format to a consistent OS-native form.
-/// Handles MSYS2/Git Bash (`/c/Users/...` -> `C:/Users/...`), mixed separators,
-/// double slashes, and trailing slashes. Uses forward slashes for consistency.
+/// Handles MSYS2/Git Bash drive prefixes on Windows hosts
+/// (`/c/Users/...` -> `C:/Users/...`), mixed separators, double slashes, and
+/// trailing slashes. Uses forward slashes for consistency. On non-Windows
+/// hosts `/c/...` is a literal directory and passes through unchanged (#397).
 pub fn normalize_tool_path(path: &str) -> String {
     let mut p = normalize_tool_path_lexical(path);
 
@@ -486,19 +505,48 @@ mod tests {
         assert_eq!(result, p.to_path_buf());
     }
 
+    // The drive translation itself is platform-independent and testable
+    // everywhere; only its *application* is gated on Windows hosts (#397).
+    #[test]
+    fn msys_drive_prefix_translation() {
+        assert_eq!(
+            translate_msys_drive_prefix("/c/Users/ABC").as_deref(),
+            Some("C:/Users/ABC")
+        );
+        assert_eq!(
+            translate_msys_drive_prefix("/D/Program Files").as_deref(),
+            Some("D:/Program Files")
+        );
+        assert_eq!(translate_msys_drive_prefix("/usr/local/bin"), None);
+        assert_eq!(translate_msys_drive_prefix("/c"), None);
+        assert_eq!(translate_msys_drive_prefix("c/Users"), None);
+    }
+
+    #[cfg(windows)]
     #[test]
     fn normalize_msys_path_to_native() {
         assert_eq!(
             normalize_tool_path("/c/Users/ABC/AppData/lean-ctx"),
             "C:/Users/ABC/AppData/lean-ctx"
         );
-    }
-
-    #[test]
-    fn normalize_msys_uppercase_drive() {
         assert_eq!(
             normalize_tool_path("/D/Program Files/lean-ctx.exe"),
             "D:/Program Files/lean-ctx.exe"
+        );
+    }
+
+    // GH #397: on Linux/macOS, /c/… is a literal directory — a Linux project
+    // rooted there must not be rewritten to a Windows drive path.
+    #[cfg(not(windows))]
+    #[test]
+    fn normalize_single_letter_unix_path_untouched() {
+        assert_eq!(
+            normalize_tool_path_lexical("/c/Users/me/proj"),
+            "/c/Users/me/proj"
+        );
+        assert_eq!(
+            normalize_tool_path_lexical("/x/projects/app/src"),
+            "/x/projects/app/src"
         );
     }
 
@@ -551,7 +599,11 @@ mod tests {
 
     #[test]
     fn normalize_trailing_slash_removed() {
-        assert_eq!(normalize_tool_path("/c/Users/ABC/"), "C:/Users/ABC");
+        assert_eq!(normalize_tool_path("C:/Users/ABC/"), "C:/Users/ABC");
+        assert_eq!(
+            normalize_tool_path_lexical("/tmp/nonexistent-dir-xyzzy/"),
+            "/tmp/nonexistent-dir-xyzzy"
+        );
     }
 
     #[test]

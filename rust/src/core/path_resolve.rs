@@ -172,4 +172,26 @@ mod tests {
         assert!(out.ends_with("missing.rs"), "got {out}");
         let _ = fs::remove_dir_all(&tmp);
     }
+
+    // GH #397: on Unix an absolute path under a single-letter root (`/c/…`)
+    // was rewritten to `C:/…`, which `Path::is_absolute()` rejects on Unix —
+    // the path was then re-joined under the (also-translated) project root,
+    // producing the doubled `C:/root/C:/root/file` form from the report.
+    // `/c` cannot be created in this test environment, so the jail may still
+    // reject the path as nonexistent — the regression assertion is that no
+    // `C:/` drive form appears anywhere in the outcome (Ok or Err).
+    #[cfg(not(windows))]
+    #[test]
+    fn single_letter_root_is_never_drive_translated_on_unix() {
+        for raw in ["/c/Users/me/proj/src/app.ts", "src/app.ts"] {
+            let rendered = match resolve_tool_path(Some("/c/Users/me/proj"), None, raw) {
+                Ok(p) => p,
+                Err(e) => e,
+            };
+            assert!(
+                !rendered.contains("C:/"),
+                "drive translation must not run on unix hosts (raw={raw}): {rendered}"
+            );
+        }
+    }
 }
