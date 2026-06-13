@@ -797,9 +797,13 @@ impl Config {
 }
 
 impl Config {
-    /// Returns the path to the global config file (`~/.lean-ctx/config.toml`).
+    /// Returns the path to the global config file (`$XDG_CONFIG_HOME/lean-ctx/config.toml`).
+    ///
+    /// Resolves via [`crate::core::paths::config_dir`] so config lives in the
+    /// RO-safe config category. Behavior-neutral today: `config_dir()` equals the
+    /// legacy data dir for existing/single-dir installs (GH #408 / GL #602).
     pub fn path() -> Option<PathBuf> {
-        crate::core::data_dir::lean_ctx_data_dir()
+        crate::core::paths::config_dir()
             .ok()
             .map(|d| d.join("config.toml"))
     }
