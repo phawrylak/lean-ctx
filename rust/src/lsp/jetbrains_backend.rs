@@ -782,18 +782,52 @@ mod tests {
     /// Spins up a one-shot TCP server returning a canned HTTP/JSON response,
     /// so we can assert the wire→Location mapping without a real IDE.
     fn mock_once(json_body: &'static str) -> u16 {
+        // Advertised request body size, so we can fully drain the request before
+        // replying. On Windows, dropping a socket that still holds unconsumed
+        // inbound bytes makes the OS RST the connection (os error 10053 / 10054),
+        // which aborts the client mid-response: the request line + headers + body
+        // must all be read first.
+        fn content_length(headers: &[u8]) -> usize {
+            let text = String::from_utf8_lossy(headers);
+            for line in text.lines() {
+                let lower = line.to_ascii_lowercase();
+                if let Some(v) = lower.strip_prefix("content-length:") {
+                    return v.trim().parse().unwrap_or(0);
+                }
+            }
+            0
+        }
+
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
         std::thread::spawn(move || {
             if let Ok((mut stream, _)) = listener.accept() {
+                let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(10)));
+                let mut req: Vec<u8> = Vec::with_capacity(2048);
                 let mut buf = [0u8; 2048];
-                let _ = stream.read(&mut buf); // drain request
+                while let Ok(n) = stream.read(&mut buf) {
+                    if n == 0 {
+                        break;
+                    }
+                    req.extend_from_slice(&buf[..n]);
+                    if let Some(pos) = req.windows(4).position(|w| w == b"\r\n\r\n") {
+                        let body_have = req.len() - (pos + 4);
+                        if body_have >= content_length(&req[..pos]) {
+                            break; // full request consumed
+                        }
+                    }
+                }
                 let resp = format!(
                     "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
                     json_body.len(),
                     json_body
                 );
                 let _ = stream.write_all(resp.as_bytes());
+                let _ = stream.flush();
+                // Half-close and wait for the client to finish reading + close, so
+                // the full response reaches it before the socket is dropped.
+                let _ = stream.shutdown(std::net::Shutdown::Write);
+                let _ = stream.read(&mut buf);
             }
         });
         port
