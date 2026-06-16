@@ -361,7 +361,7 @@ pub fn run() {
                     println!(
                         "  {YELLOW}⚠{RST}  Crash-loop log: {} recent restarts  {DIM}({}){RST}",
                         lines.len(),
-                        log_path.display()
+                        display_user_path(&log_path)
                     );
                 }
             }

@@ -2,8 +2,8 @@ use chrono::Utc;
 use serde::Serialize;
 
 use super::{
-    claude_binary_exists, codebuddy_binary_exists, resolve_lean_ctx_binary, BOLD, DIM, GREEN, RST,
-    WHITE, YELLOW,
+    claude_binary_exists, codebuddy_binary_exists, resolve_lean_ctx_binary, tildify_home, BOLD,
+    DIM, GREEN, RST, WHITE, YELLOW,
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -95,7 +95,11 @@ pub(super) fn run_integrations(opts: &IntegrationsOptions) -> i32 {
                 } else {
                     format!("{YELLOW}✗{RST}")
                 };
-                println!("       {m}  {}  {DIM}{}{RST}", c.name, c.detail);
+                println!(
+                    "       {m}  {}  {DIM}{}{RST}",
+                    c.name,
+                    tildify_home(&c.detail)
+                );
             }
         }
         if !report.ok {

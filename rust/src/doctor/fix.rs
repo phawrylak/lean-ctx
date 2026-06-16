@@ -1,6 +1,8 @@
 use chrono::Utc;
 
-use super::{compact_score, print_compact_status, shell_aliases_outcome, DIM, RST};
+use super::{
+    compact_score, display_user_path, print_compact_status, shell_aliases_outcome, DIM, RST,
+};
 
 pub(super) struct DoctorFixOptions {
     pub json: bool,
@@ -524,7 +526,7 @@ pub(super) fn run_fix(opts: &DoctorFixOptions) -> Result<i32, String> {
     } else {
         let (passed, total) = compact_score();
         print_compact_status(passed, total);
-        println!("  {DIM}report saved:{RST} {}", path.display());
+        println!("  {DIM}report saved:{RST} {}", display_user_path(&path));
     }
 
     Ok(i32::from(!report.success))
