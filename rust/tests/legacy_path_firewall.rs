@@ -36,7 +36,6 @@ const ALLOWLIST: &[&str] = &[
     // Group 2: pre-existing direct home-writers/readers (tracked debt).
     "report.rs",
     "core/slo.rs",
-    "core/context_package/keys.rs",
     "core/providers/config_provider/discovery.rs",
     "cli/wrapped_publish.rs",
     "cli/dispatch/analytics/gain.rs",

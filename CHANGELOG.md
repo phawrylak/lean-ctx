@@ -140,8 +140,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   (`core::agents`), Jira OAuth credentials (`core::providers::jira_oauth`), the
   personal-cloud cache/knowledge readers (`cloud_client` / `cloud_sync`), the
   LaunchAgent proxy logs and scheduled-update logs (`proxy_autostart` /
-  `update_scheduler`), the A2A task store (`core::a2a::task`) and the cloud
-  `mode_stats` reader (`cli::cloud`). All now route through the typed
+  `update_scheduler`), the A2A task store (`core::a2a::task`), the cloud
+  `mode_stats` reader (`cli::cloud`) and the ctxpkg publisher signing key
+  (`core::context_package::keys`). All now route through the typed
   `data_dir()` / `state_dir()` resolvers — the same categories `doctor --fix`
   migrates them to — so a post-migration session reads and writes the XDG dirs,
   while legacy single-dir installs still resolve in place. The source-level

@@ -1,9 +1,9 @@
 //! Publisher signing-key management for ctxpkg (GL #406).
 //!
-//! One ed25519 keypair per machine user, stored as a 32-byte hex seed at
-//! `~/.lean-ctx/keys/ctxpkg-ed25519.key` (mode 0600 on unix). Created lazily
-//! on first `pack export --sign`. The public key identifies the publisher
-//! across releases — registries and clients surface it per version.
+//! One ed25519 keypair per machine user, stored as a 32-byte hex seed under the
+//! XDG data dir at `<data_dir>/keys/ctxpkg-ed25519.key` (mode 0600 on unix).
+//! Created lazily on first `pack export --sign`. The public key identifies the
+//! publisher across releases — registries and clients surface it per version.
 
 use std::path::PathBuf;
 
@@ -11,9 +11,10 @@ use ed25519_dalek::SigningKey;
 
 pub const KEY_REL_PATH: &str = "keys/ctxpkg-ed25519.key";
 
+/// Resolves through the XDG data dir (not a hardcoded `~/.lean-ctx`) so the key
+/// follows the migrated layout and never re-creates the legacy dir (GH #436).
 pub fn key_path() -> Result<PathBuf, String> {
-    let home = dirs::home_dir().ok_or("cannot resolve home directory")?;
-    Ok(home.join(".lean-ctx").join(KEY_REL_PATH))
+    Ok(crate::core::paths::data_dir()?.join(KEY_REL_PATH))
 }
 
 /// Load the signing key, creating it on first use. Returns the key and
