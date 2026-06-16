@@ -43,6 +43,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   model saw two copies of each and paid for the duplicate schemas. The five
   already-overridden tools are now filtered out of the dynamic set; every other
   `ctx_*` tool is still registered dynamically. Thanks @omar-mohamed-khallaf.
+- **Default shell allowlist now includes the C/C++ compilers (#361)** — under
+  `mode=replace`, `ctx_shell` enforces the allowlist, but `gcc`/`cc`/`clang`/
+  `g++`/`c++`/`clang++` were missing even though `rustc`/`go`/`javac` were, so a
+  coding agent could not compile an ad-hoc reproducer (`gcc repro.c`) without an
+  explicit opt-in (reported by the tokbench review, which set
+  `LEAN_CTX_ALLOWLIST_WARN_ONLY=1` to work around it). They are compile-only —
+  executing the produced binary stays gated like any other path — so the security
+  boundary is unchanged.
 
 ### Fixed
 - **`config init --full` no longer resets the existing config to defaults (#443)** —
