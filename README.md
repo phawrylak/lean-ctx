@@ -453,6 +453,14 @@ LeanCTX is a standard **MCP server**, so it works with any MCP-compatible client
 - mostly work in tiny repos and rarely call the shell from your AI tool
 - always need raw/unfiltered logs (you can still use `--raw`, but ROI is lower)
 
+The honest fine print: the payoff depends on three levers — **reach** (own the
+window via the proxy/engine, not just the `ctx_*` tool layer), **context
+lifetime** (one long-lived session vs. a fresh process per phase), and
+**provider pricing** (prompt-cache-priced vs. re-billed every turn). They stack
+into a clear win where they line up and net to **break-even** where they don't.
+See the [win vs. break-even matrix](docs/reference/14-performance-tuning.md#win-vs-break-even-at-a-glance)
+for the full breakdown and how to tune for each case.
+
 <a id="demo"></a>
 
 ## Demo
