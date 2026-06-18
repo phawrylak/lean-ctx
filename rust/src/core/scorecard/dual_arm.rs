@@ -17,7 +17,7 @@
 //!
 //! * Token sizes are **measured**, not assumed: they come from
 //!   [`benchmark::run_project_benchmark`] over the deterministic scorecard corpus
-//!   ([`super::scenarios`]). No magic numbers, no mock data.
+//!   (the private `super::scenarios` matrix). No magic numbers, no mock data.
 //! * `output` tokens are identical across arms (same work), so they are set to 0:
 //!   this is a strict **input-side** comparison of exactly the dimension lean-ctx
 //!   affects. The headline therefore never borrows credit from output pricing.
