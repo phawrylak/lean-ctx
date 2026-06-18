@@ -35,6 +35,18 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   correlates the fix — the gotcha loop now works in the hybrid CLI-shell setup.
 
 ### Added
+- **#673 — context policy packs are now enforced at runtime.** A project pack
+  (`.lean-ctx/policy.toml`, authored from any built-in via `lean-ctx policy show
+  <name> --toml`) is applied at the MCP hot path: `deny_tools`/`allow_tools`
+  gate which tools the agent may call (denied calls return `[POLICY DENIED]` and
+  are audited as `ToolDenied`), `[redaction]` patterns strip matches
+  (`[REDACTED:<name>]`) from tool output before it reaches the model,
+  `default_read_mode` sets the `ctx_read` fallback when the caller omits `mode`,
+  and `max_context_tokens` tightens (never loosens) the session token ceiling.
+  Enforcement is opt-in (no pack → unchanged behavior), fail-open on an invalid
+  pack, and Local-Free — only the agent pipeline is constrained, never a human's
+  own reads. The `ctx`/`ctx_session`/`ctx_policy` meta tools are never gated, so
+  a pack can never lock the operator out.
 - **#454 — `prefer_native_editor` config to opt out of lean-ctx edit operations.**
   Set `prefer_native_editor = true` (or `LEAN_CTX_PREFER_NATIVE_EDITOR=1`) so the
   lean-ctx edit tool (`ctx_edit`) is neither advertised in `list_tools` nor

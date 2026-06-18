@@ -6,8 +6,9 @@ mode, allowed/denied tools, redaction patterns, an audit-retention expectation
 and a context-budget cap. The reduced, solo-viable slice of #377/#403/#404.
 
 v1 ships the **format, validation, resolution, five curated built-ins and the
-`lean-ctx policy` CLI**. Runtime enforcement, pack signing and registry
-distribution are explicit follow-ups (see *Out of scope*).
+`lean-ctx policy` CLI**; **runtime enforcement is wired as of #673** (see
+*Enforcement*). Pack signing and central org distribution remain explicit
+follow-ups (see *Out of scope*).
 
 ## Format
 
@@ -96,15 +97,41 @@ lean-ctx policy show baseline --toml > .lean-ctx/policy.toml
 `UnknownReadMode`, `BadRegex{pattern_name}`, `ZeroMaxTokens`,
 `AllowDenyOverlap`, `UnknownParent`, `ExtendsCycle`, `ExtendsTooDeep`.
 
+## Enforcement (#673)
+
+The resolved project pack (`.lean-ctx/policy.toml`) is applied at the MCP
+server hot path. Enforcement is **opt-in**: with no project pack present nothing
+is gated and behavior is identical to a pack-less install.
+
+| Field | Where it is enforced | Effect |
+|---|---|---|
+| `deny_tools` / `allow_tools` | `server::policy_guard` in `call_tool_guarded`, right after the role guard | a denied tool returns a `[POLICY DENIED]` result and is audited (`ToolDenied`); an `allow_tools` allowlist is exclusive |
+| `[redaction]` | `call_tool_guarded`, before the result reaches the model and the out-of-band archive | each match becomes `[REDACTED:<name>]`, on top of the built-in secret rules |
+| `default_read_mode` | `ctx_read`, only when the caller omits `mode` | the pack default replaces auto/profile selection (an explicit `mode` always wins; line windows may still narrow it) |
+| `max_context_tokens` | `core::budget_tracker::check` | tightens (never loosens) the per-session token ceiling; the agent hits the normal budget warning/exhausted path |
+
+Invariants:
+
+- **No self-lockout** — the meta tools `ctx`, `ctx_session`, `ctx_policy` can
+  never be policy-denied, so an operator can always switch policy back out.
+- **Fail-open on a broken pack** — an invalid `.lean-ctx/policy.toml` is logged
+  and ignored (no enforcement), never bricking the agent; `lean-ctx policy
+  validate` surfaces the same error.
+- **Local-Free Invariant** — enforcement only constrains the *agent* pipeline
+  (the tools the model calls); it never gates a human's own local reads or CLI.
+- The active pack is loaded once and cached (`core::policy::runtime`); call
+  `runtime::reload()` after editing the pack.
+
 ## Out of scope (follow-ups)
 
-1. **Runtime enforcement** — applying read-mode/tool-gating/budget/redaction
-   at the hot path. Deliberately decoupled so v1 carries zero hot-path churn
-   (lands after the in-flight engine refactor merges).
+1. **Central signed org policy distribution + admin** (#674) — v1 enforcement
+   (#673) reads a *project-local* pack only; org-wide rollout and tamper-evident
+   signing land next.
 2. **Signing + trust pipeline**, registry/marketplace distribution (#403/MKT).
-3. **Conformance scoring against live telemetry** — `policy coverage` (v1)
-   is static pack analysis; runtime evidence (actual redaction hits, budget
-   refusals) is the follow-up.
+3. **Conformance scoring against live telemetry** — `policy coverage` (v1) is
+   static pack analysis. Runtime evidence is now *emitted* (denials audited as
+   `ToolDenied`, redaction counts logged); aggregating it into a score is the
+   follow-up.
 4. Multi-file packs, non-built-in parents (`extends` against local files).
 
 ## Module map
@@ -112,6 +139,8 @@ lean-ctx policy show baseline --toml > .lean-ctx/policy.toml
 | Piece | Path |
 |---|---|
 | Types, parse, validate, resolve | `rust/src/core/policy/mod.rs` |
+| Runtime view (load + cache active pack) | `rust/src/core/policy/runtime.rs` |
+| Server-side tool gating + redaction | `rust/src/server/policy_guard.rs` |
 | CGB coverage checks | `rust/src/core/policy/coverage.rs` |
 | Built-in registry | `rust/src/core/policy/builtin.rs` |
 | Built-in pack sources | `rust/src/core/policy/builtin/*.toml` |

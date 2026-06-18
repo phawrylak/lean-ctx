@@ -104,12 +104,34 @@ statically touchable; the rest need the manual assessment (spec repo,
 `assessment/TEMPLATE.md`). Exit code is non-zero when any check fails, so
 you can gate CI on it.
 
-## What v1 does and doesn't do
+## How enforcement works (#673)
 
-v1 is the **format, the curated baselines and the authoring tooling** — your
-policy is reviewable, versioned and resolvable today. Runtime enforcement
-(read-mode defaults, tool gating, budget caps and redaction applied
-automatically) wires in as the follow-up; the resolved policy you see in
-`policy show` is exactly what it will consume.
+Once `.lean-ctx/policy.toml` exists, the resolved pack is enforced for every
+agent tool call:
+
+- **Tool gating** — a tool in `deny_tools` (or absent from an `allow_tools`
+  allowlist) is refused with a `[POLICY DENIED]` message and recorded in the
+  audit trail. The agent sees the refusal and moves on.
+- **Redaction** — every `[redaction]` pattern (plus the built-in secret rules)
+  is applied to tool output *before the model sees it*, replacing matches with
+  `[REDACTED:<name>]`.
+- **Default read mode** — when an agent calls `ctx_read` without a `mode`, your
+  `default_read_mode` is used. An explicit `mode` always wins.
+- **Token cap** — `max_context_tokens` lowers the session token budget; the
+  agent hits the usual budget warning/exhausted path at your ceiling.
+
+Guarantees that keep this safe:
+
+- **Opt-in** — no `.lean-ctx/policy.toml`, no enforcement.
+- **Never locks you out** — `ctx`, `ctx_session` and `ctx_policy` are always
+  allowed, so you can inspect or switch policy even under a strict allowlist.
+- **Fails open** — a pack that doesn't parse is logged and ignored rather than
+  blocking work; fix it with `lean-ctx policy validate`.
+- **Local-Free** — only what the *agent* does is governed. Your own reads, edits
+  and `lean-ctx -c` shell commands are never gated.
+- The pack is cached after first use; restart the session/daemon to pick up
+  edits.
+
+What `policy show` resolves is exactly what gets enforced.
 
 Full contract: `docs/contracts/context-policy-packs-v1.md`.

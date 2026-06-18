@@ -73,9 +73,24 @@ impl BudgetTracker {
         self.tool_calls.store(0, Ordering::Relaxed);
     }
 
+    /// A context policy pack may **tighten** (never loosen) the per-session
+    /// token ceiling (#673). Pure so it can be unit-tested without globals.
+    fn capped_token_limit(role_limit: usize, policy_cap: Option<u32>) -> usize {
+        match policy_cap {
+            Some(cap) => role_limit.min(cap as usize),
+            None => role_limit,
+        }
+    }
+
     pub fn check(&self) -> BudgetSnapshot {
-        let limits = roles::active_role().limits;
+        let mut limits = roles::active_role().limits;
         let role_name = roles::active_role_name();
+
+        // #673 — apply the active context policy pack's token cap (Local-Free:
+        // this only affects agent budget accounting, never a human's own reads).
+        let policy_cap =
+            crate::core::policy::runtime::active().and_then(|p| p.resolved.max_context_tokens);
+        limits.max_context_tokens = Self::capped_token_limit(limits.max_context_tokens, policy_cap);
 
         let tokens = self.tokens_used();
         let shell = self.shell_used();
@@ -273,6 +288,20 @@ mod tests {
         let s = DimensionStatus::evaluate(50_000, 200_000, &limits);
         assert_eq!(s.level, BudgetLevel::Ok);
         assert_eq!(s.percent, 25);
+    }
+
+    #[test]
+    fn policy_cap_tightens_but_never_loosens() {
+        // #673: a policy may only lower the ceiling, and a None cap is a no-op.
+        assert_eq!(
+            BudgetTracker::capped_token_limit(200_000, Some(5_000)),
+            5_000
+        );
+        assert_eq!(
+            BudgetTracker::capped_token_limit(4_000, Some(50_000)),
+            4_000
+        );
+        assert_eq!(BudgetTracker::capped_token_limit(10_000, None), 10_000);
     }
 
     #[test]

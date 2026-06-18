@@ -49,6 +49,19 @@ impl LeanCtxServer {
             return Ok(denied);
         }
 
+        // #673 — context-policy-pack tool gating. Additive to the role guard:
+        // a pack's `allow_tools`/`deny_tools` are enforced here. No-op (allow)
+        // when no policy pack is active, so existing behavior is unchanged.
+        let policy_check = policy_guard::check_tool_access(name);
+        if let Some(denied) = policy_guard::into_call_tool_result(&policy_check) {
+            tracing::warn!(
+                tool = name,
+                policy = ?policy_check.policy_name,
+                "Tool blocked by context policy pack"
+            );
+            return Ok(denied);
+        }
+
         if name != "ctx_workflow" {
             let active = self.workflow.read().await.clone();
             if let Some(run) = active {
@@ -312,6 +325,18 @@ impl LeanCtxServer {
                 &config.sensitivity,
             );
             result_text = enforced.into_text();
+        }
+
+        // #673 — context-policy-pack redaction. Applies the active pack's
+        // `[redaction]` patterns to outbound content before it reaches the model
+        // (and before the out-of-band copy below). No-op when no pack is active,
+        // so existing behavior is unchanged.
+        if crate::core::policy::runtime::is_active() {
+            let (redacted, hits) = policy_guard::redact_result(&result_text);
+            if hits > 0 {
+                tracing::debug!(redactions = hits, "context policy redaction applied");
+                result_text = redacted;
+            }
         }
 
         // Out-of-band archive + optional context firewall for large tool outputs.

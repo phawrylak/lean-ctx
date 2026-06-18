@@ -22,6 +22,7 @@
 
 pub mod builtin;
 pub mod coverage;
+pub mod runtime;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
