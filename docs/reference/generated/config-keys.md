@@ -39,6 +39,7 @@ Top-level configuration keys
 - `output_density` (enum: normal | terse | ultra, default `normal` — env `LEAN_CTX_OUTPUT_DENSITY`) — Controls how dense/compact MCP tool output is formatted
 - `passthrough_urls` (string[], default `[]`) — URLs to pass through without proxy interception
 - `permission_inheritance` (enum: off | on, default `off`) — Mirror the host IDE's permission rules onto lean-ctx tools (v1: OpenCode). When on, ctx_shell honors your bash/rm * rules instead of bypassing them. Override via LEAN_CTX_PERMISSION_INHERITANCE
+- `prefer_native_editor` (bool, default `false`) — Disable lean-ctx edit tools (ctx_edit) so the host's native editor handles edits (#454)
 - `preserve_compact_formats` (string[], default `["toon"]`) — Already-compact output formats preserved verbatim instead of recompressed (e.g. ["toon"]). Set to [] to disable
 - `profile` (string, default `""`) — Persistent profile name. Checked after LEAN_CTX_PROFILE env var. Set via: lean-ctx config set profile passthrough
 - `project_root` (string?, default `null` — env `LEAN_CTX_PROJECT_ROOT`) — Explicit project root directory. Prevents accidental home-directory scans

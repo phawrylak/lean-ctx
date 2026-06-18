@@ -54,6 +54,15 @@ pub const DEFAULT_BM25_PERSIST_MB: u64 = 512;
 // above the old RAM-profile caps (64/128 MB) that starved large repos.
 const _: () = assert!(DEFAULT_BM25_PERSIST_MB >= 512);
 
+/// lean-ctx tools whose sole purpose is editing the user's source files. When
+/// `prefer_native_editor` is set (#454) these are hidden from `list_tools` and
+/// refused at dispatch so the host's native editor handles edits instead.
+///
+/// Deliberately narrow: only the dedicated edit tool is blocked. LSP refactor
+/// (`ctx_refactor`) also exposes read-only sub-actions (references/definition),
+/// so it is left available; users wanting it gone can add it to `disabled_tools`.
+pub const EDIT_TOOL_NAMES: &[&str] = &["ctx_edit"];
+
 /// Global lean-ctx configuration loaded from `config.toml`, merged with project-local overrides.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -115,6 +124,14 @@ pub struct Config {
     /// Empty by default — all tools listed, no behaviour change.
     #[serde(default)]
     pub disabled_tools: Vec<String>,
+    /// Prefer the host agent's native editor over lean-ctx edit operations (#454).
+    /// When true, the lean-ctx edit tool(s) (see [`EDIT_TOOL_NAMES`]) are neither
+    /// advertised in `list_tools` nor dispatchable (direct or via `ctx_call`), so
+    /// the agent falls back to the host's built-in editing UI. Reads / search /
+    /// shell / memory tools are unaffected. Override via
+    /// `LEAN_CTX_PREFER_NATIVE_EDITOR=1`.
+    #[serde(default)]
+    pub prefer_native_editor: bool,
     /// Tool categories to activate by default for dynamic-tool-capable clients.
     /// Values: "core" (always on), "arch", "debug", "memory", "metrics", "session".
     /// Example: `default_tool_categories = ["core", "arch", "memory"]`
@@ -454,6 +471,7 @@ impl Default for Config {
             enable_wakeup_ctx: true,
             redirect_exclude: Vec::new(),
             disabled_tools: Vec::new(),
+            prefer_native_editor: false,
             default_tool_categories: Vec::new(),
             no_degrade: false,
             profile: None,
@@ -606,13 +624,42 @@ impl Config {
             .collect()
     }
 
-    /// Returns the effective disabled tools list, preferring env var over config file.
+    /// Returns the effective disabled tools list, preferring env var over config
+    /// file. When `prefer_native_editor` is active, the lean-ctx edit tools are
+    /// folded in so they are hidden from `list_tools` (#454).
     pub fn disabled_tools_effective(&self) -> Vec<String> {
-        if let Ok(val) = std::env::var("LEAN_CTX_DISABLED_TOOLS") {
+        let mut list = if let Ok(val) = std::env::var("LEAN_CTX_DISABLED_TOOLS") {
             Self::parse_disabled_tools_env(&val)
         } else {
             self.disabled_tools.clone()
+        };
+        if self.prefer_native_editor_effective() {
+            for name in EDIT_TOOL_NAMES {
+                if !list.iter().any(|t| t == name) {
+                    list.push((*name).to_string());
+                }
+            }
         }
+        list
+    }
+
+    /// Whether lean-ctx edit operations are disabled in favour of the host's
+    /// native editor (#454). `LEAN_CTX_PREFER_NATIVE_EDITOR` wins over config.
+    pub fn prefer_native_editor_effective(&self) -> bool {
+        match std::env::var("LEAN_CTX_PREFER_NATIVE_EDITOR") {
+            Ok(raw) => matches!(
+                raw.trim().to_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            ),
+            Err(_) => self.prefer_native_editor,
+        }
+    }
+
+    /// Whether `name` is a lean-ctx edit operation that must be blocked from
+    /// dispatch (direct and via `ctx_call`) when [`Self::prefer_native_editor_effective`]
+    /// is set (#454). Read/search/shell/memory tools are never blocked.
+    pub fn edit_tool_blocked(&self, name: &str) -> bool {
+        self.prefer_native_editor_effective() && EDIT_TOOL_NAMES.contains(&name)
     }
 
     /// Returns `true` if minimal overhead is enabled via env var or config.
@@ -1049,6 +1096,9 @@ impl Config {
         }
         if !local.disabled_tools.is_empty() {
             self.disabled_tools.extend(local.disabled_tools);
+        }
+        if local.prefer_native_editor {
+            self.prefer_native_editor = true;
         }
         if !local.extra_ignore_patterns.is_empty() {
             self.extra_ignore_patterns
