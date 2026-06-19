@@ -10,6 +10,8 @@ use super::ProxyState;
 use super::compress::compress_tool_result;
 use super::forward;
 use super::tool_kind::{self, ToolResultKind, should_protect};
+use super::{cache_safety, prose};
+use crate::core::config::ProseRole;
 
 pub async fn handler(
     State(state): State<ProxyState>,
@@ -32,6 +34,36 @@ fn compress_request_body(parsed: Value, original_size: usize) -> (Vec<u8>, usize
     let mut doc = parsed;
     let mut modified = false;
 
+    // Opt-in per-role prose aggressiveness (#710). Both default to `None`, in
+    // which case nothing below fires and the body is byte-for-byte unchanged.
+    let cfg = crate::core::config::Config::load();
+    let system_aggr = cfg.proxy.resolved_role_aggressiveness(ProseRole::System);
+    let user_aggr = cfg.proxy.resolved_role_aggressiveness(ProseRole::User);
+    let mut prose_segments: u64 = 0;
+
+    // Length of the client's provider-cached message prefix. Needed both for
+    // cache-safe pruning below and to gate top-level system prose: if any
+    // message is client-cached, `system` (which precedes every message) is part
+    // of that cached prefix and must not be rewritten.
+    let cached = doc
+        .get("messages")
+        .and_then(|m| m.as_array())
+        .map_or(0, |m| super::history_prune::cached_prefix_len(m));
+
+    // System prose: only when nothing is client-cached and the `system` field
+    // carries no `cache_control` of its own — otherwise it anchors the cache.
+    if let Some(a) = system_aggr
+        && cached == 0
+        && let Some(system) = doc.get_mut("system")
+        && !prose::value_has_cache_control(system)
+    {
+        let n = prose::compress_system_value(system, a);
+        if n > 0 {
+            prose_segments += u64::from(n);
+            modified = true;
+        }
+    }
+
     if let Some(messages) = doc.get_mut("messages").and_then(|m| m.as_array_mut()) {
         // Resolve tool-call id → tool name so file/source reads can be protected
         // from lossy compression that would force the model to re-read mid-task.
@@ -40,16 +72,13 @@ fn compress_request_body(parsed: Value, original_size: usize) -> (Vec<u8>, usize
         // Prune at a frozen, cache-aware boundary by default: Anthropic's
         // prompt cache matches exact prefixes, so the boundary must not move
         // every turn (see `history_prune::prune_boundary`).
-        let mode = crate::core::config::Config::load()
-            .proxy
-            .resolved_history_mode();
+        let mode = cfg.proxy.resolved_history_mode();
         let boundary = super::history_prune::prune_boundary(mode, messages.len());
         // Never rewrite content the client has marked with `cache_control`:
         // pruning inside the already-cached prefix invalidates Anthropic's
         // prompt cache from the first changed message (#448). Pruning therefore
         // starts after the last breakpoint; with no breakpoint this is 0, i.e.
         // the previous behaviour.
-        let cached = super::history_prune::cached_prefix_len(messages);
         modified |=
             super::history_prune::prune_history_range(messages, cached, boundary, &tool_names);
 
@@ -78,7 +107,30 @@ fn compress_request_body(parsed: Value, original_size: usize) -> (Vec<u8>, usize
                 }
             }
         }
+
+        // Frozen-region user prose: free-text `text` blocks of user turns in
+        // `[cached, boundary)`. Cache-safe by construction — the cached prefix
+        // and the live tail (`>= boundary`) are both left intact, and the
+        // rewrite is content-deterministic so the prefix stays byte-stable.
+        if let Some(a) = user_aggr {
+            let end = boundary.min(messages.len());
+            let start = cached.min(end);
+            for msg in &mut messages[start..end] {
+                if msg.get("role").and_then(|r| r.as_str()) == Some("user")
+                    && let Some(content) = msg.get_mut("content").and_then(|c| c.as_array_mut())
+                {
+                    prose_segments += u64::from(prose::compress_text_blocks(content, a));
+                }
+            }
+        }
     }
+
+    if prose_segments > 0 {
+        modified = true;
+    }
+    // Every rewrite above lands strictly inside the cache-safe frozen window,
+    // so report the activity as cache-safe (the production invariant gauge).
+    cache_safety::record(prose_segments, true);
 
     let out = serde_json::to_vec(&doc).unwrap_or_default();
     let compressed_size = if modified { out.len() } else { original_size };
@@ -231,6 +283,141 @@ mod tests {
         let a = compress_request_body(serde_json::from_slice(&bytes).unwrap(), bytes.len()).0;
         let b = compress_request_body(serde_json::from_slice(&bytes).unwrap(), bytes.len()).0;
         assert_eq!(a, b, "identical input must yield byte-identical output");
+    }
+
+    /// Long, duplicate-rich natural-language prose that compresses cleanly.
+    fn big_prose() -> String {
+        let p = "You are a careful, senior software engineer. You always explain your \
+                 reasoning before making changes, you prefer small reviewable diffs, and \
+                 you never introduce mock data or placeholders into production code. ";
+        [p; 6].join("\n")
+    }
+
+    #[test]
+    fn system_prose_compressed_and_assistant_untouched() {
+        let _iso = crate::core::data_dir::isolated_data_dir();
+        crate::core::config::Config::update_global(|c| {
+            c.proxy.role_aggressiveness.system = Some(0.6);
+            c.proxy.role_aggressiveness.user = Some(0.6);
+        })
+        .unwrap();
+
+        let prose = big_prose();
+        let assistant_text = big_prose();
+        let body = serde_json::json!({
+            "model": "claude-opus-4-8",
+            "system": prose,
+            "messages": [
+                {"role": "user", "content": [{"type": "text", "text": prose}]},
+                {"role": "assistant", "content": assistant_text},
+            ]
+        });
+        let bytes = serde_json::to_vec(&body).unwrap();
+        let (out, _orig, _comp) = compress_request_body(body, bytes.len());
+        let parsed: Value = serde_json::from_slice(&out).unwrap();
+
+        assert!(
+            parsed["system"].as_str().unwrap().len() < prose.len(),
+            "system prose must be compressed when enabled"
+        );
+        assert_eq!(
+            parsed["messages"][1]["content"].as_str().unwrap(),
+            assistant_text,
+            "assistant turns must pass through verbatim (#710)"
+        );
+    }
+
+    #[test]
+    fn user_prose_compressed_only_in_frozen_region() {
+        let _iso = crate::core::data_dir::isolated_data_dir();
+        crate::core::config::Config::update_global(|c| {
+            c.proxy.role_aggressiveness.user = Some(0.7);
+        })
+        .unwrap();
+
+        let prose = big_prose();
+        // 30 messages → cache-aware boundary = ((30-8)/16)*16 = 16.
+        let mut messages = Vec::new();
+        for i in 0..30 {
+            let role = if i % 2 == 0 { "user" } else { "assistant" };
+            messages.push(serde_json::json!({
+                "role": role,
+                "content": [{"type": "text", "text": prose}]
+            }));
+        }
+        let body = serde_json::json!({ "messages": messages });
+        let bytes = serde_json::to_vec(&body).unwrap();
+        let (out, _o, _c) = compress_request_body(body, bytes.len());
+        let parsed: Value = serde_json::from_slice(&out).unwrap();
+
+        let frozen_user = parsed["messages"][0]["content"][0]["text"]
+            .as_str()
+            .unwrap();
+        assert!(
+            frozen_user.len() < prose.len(),
+            "user prose in the frozen region must be compressed"
+        );
+        assert_eq!(
+            parsed["messages"][1]["content"][0]["text"]
+                .as_str()
+                .unwrap(),
+            prose,
+            "assistant prose is never compressed"
+        );
+        let live_tail_user = parsed["messages"][28]["content"][0]["text"]
+            .as_str()
+            .unwrap();
+        assert_eq!(
+            live_tail_user, prose,
+            "user prose in the live tail (>= boundary) must be preserved for quality"
+        );
+    }
+
+    #[test]
+    fn client_cached_prefix_disables_system_prose() {
+        let _iso = crate::core::data_dir::isolated_data_dir();
+        crate::core::config::Config::update_global(|c| {
+            c.proxy.role_aggressiveness.system = Some(0.9);
+        })
+        .unwrap();
+
+        let prose = big_prose();
+        let body = serde_json::json!({
+            "system": prose,
+            "messages": [
+                {"role": "user", "content": [
+                    {"type": "text", "text": "hi", "cache_control": {"type": "ephemeral"}}
+                ]},
+                {"role": "assistant", "content": "ok"}
+            ]
+        });
+        let bytes = serde_json::to_vec(&body).unwrap();
+        let (out, _o, _c) = compress_request_body(body, bytes.len());
+        let parsed: Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(
+            parsed["system"].as_str().unwrap(),
+            prose,
+            "system must stay verbatim when the client caches a message prefix (#448)"
+        );
+    }
+
+    #[test]
+    fn prose_compression_is_deterministic() {
+        let _iso = crate::core::data_dir::isolated_data_dir();
+        crate::core::config::Config::update_global(|c| {
+            c.proxy.role_aggressiveness.system = Some(0.6);
+        })
+        .unwrap();
+        let prose = big_prose();
+        let mk = || serde_json::json!({"system": prose, "messages": [{"role": "user", "content": "hi"}]});
+        let (a, b) = (mk(), mk());
+        let la = serde_json::to_vec(&a).unwrap().len();
+        let lb = serde_json::to_vec(&b).unwrap().len();
+        assert_eq!(
+            compress_request_body(a, la).0,
+            compress_request_body(b, lb).0,
+            "prose compression must be byte-identical for identical input (#498)"
+        );
     }
 
     #[test]

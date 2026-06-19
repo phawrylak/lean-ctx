@@ -1,4 +1,5 @@
 pub mod anthropic;
+pub mod cache_safety;
 pub mod compress;
 pub mod cost;
 pub mod forward;
@@ -9,6 +10,7 @@ pub mod metrics;
 pub mod openai;
 pub mod openai_responses;
 pub mod openai_responses_ws;
+pub mod prose;
 pub mod tool_kind;
 pub mod usage;
 pub mod usage_meter;
@@ -396,6 +398,7 @@ async fn status_handler(State(state): State<ProxyState>) -> impl IntoResponse {
         "bytes_original": s.bytes_original.load(Relaxed),
         "bytes_compressed": s.bytes_compressed.load(Relaxed),
         "compression_ratio_pct": format!("{:.1}", s.compression_ratio()),
+        "cache_safety": cache_safety::snapshot(),
         "per_model": cost::snapshot(),
         "spend": {
             "source": "measured",

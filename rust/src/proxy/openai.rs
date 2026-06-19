@@ -10,6 +10,8 @@ use super::ProxyState;
 use super::compress::compress_tool_result;
 use super::forward;
 use super::tool_kind::{self, ToolResultKind, should_protect};
+use super::{cache_safety, prose};
+use crate::core::config::ProseRole;
 
 pub async fn handler(
     State(state): State<ProxyState>,
@@ -32,14 +34,18 @@ fn compress_request_body(parsed: Value, original_size: usize) -> (Vec<u8>, usize
     let mut doc = parsed;
     let mut modified = false;
 
+    // Opt-in per-role prose aggressiveness (#710); both default `None` → no-op.
+    let cfg = crate::core::config::Config::load();
+    let system_aggr = cfg.proxy.resolved_role_aggressiveness(ProseRole::System);
+    let user_aggr = cfg.proxy.resolved_role_aggressiveness(ProseRole::User);
+    let mut prose_segments: u64 = 0;
+
     if let Some(messages) = doc.get_mut("messages").and_then(|m| m.as_array_mut()) {
         let tool_names = tool_kind::openai_tool_names(messages);
 
         // OpenAI's automatic prompt caching is prefix-based like Anthropic's,
         // so history is pruned at the same frozen, cache-aware boundary.
-        let mode = crate::core::config::Config::load()
-            .proxy
-            .resolved_history_mode();
+        let mode = cfg.proxy.resolved_history_mode();
         let boundary = super::history_prune::prune_boundary(mode, messages.len());
         // Mirror the Anthropic guard: never rewrite content behind a client
         // `cache_control` breakpoint (#448). OpenAI requests carry none, so this
@@ -76,7 +82,34 @@ fn compress_request_body(parsed: Value, original_size: usize) -> (Vec<u8>, usize
                 }
             }
         }
+
+        // Frozen-region prose: system anchors (deterministic rewrite keeps the
+        // auto-cached prefix byte-stable, so safe at any position outside the
+        // client-cached prefix) and user turns in `[cached, boundary)`. The
+        // `assistant` and `tool` roles are never touched (passthrough). Both
+        // knobs default off, so this is inert unless an operator opts in.
+        if system_aggr.is_some() || user_aggr.is_some() {
+            for (i, msg) in messages.iter_mut().enumerate() {
+                if i < cached {
+                    continue;
+                }
+                let role = msg.get("role").and_then(|r| r.as_str()).unwrap_or("");
+                let aggr = match role {
+                    "system" | "developer" => system_aggr,
+                    "user" if i < boundary => user_aggr,
+                    _ => None,
+                };
+                if let Some(a) = aggr {
+                    prose_segments += u64::from(prose::compress_message_content(msg, a));
+                }
+            }
+        }
     }
+
+    if prose_segments > 0 {
+        modified = true;
+    }
+    cache_safety::record(prose_segments, true);
 
     // Ask OpenAI to append a final usage chunk so the proxy can meter real
     // spend. Not counted as compression (it slightly grows the body), so it
@@ -175,6 +208,69 @@ mod tests {
             doc["stream_options"]["include_usage"],
             Value::Bool(false),
             "an explicit client value must be preserved"
+        );
+    }
+
+    fn big_prose() -> String {
+        let p = "You are a careful, senior software engineer. You always explain your \
+                 reasoning before making changes, you prefer small reviewable diffs, and \
+                 you never introduce mock data or placeholders into production code. ";
+        [p; 6].join("\n")
+    }
+
+    #[test]
+    fn system_message_compressed_and_assistant_untouched() {
+        let _iso = crate::core::data_dir::isolated_data_dir();
+        crate::core::config::Config::update_global(|c| {
+            c.proxy.role_aggressiveness.system = Some(0.6);
+        })
+        .unwrap();
+
+        let prose = big_prose();
+        let body = serde_json::json!({
+            "model": "gpt-5",
+            "messages": [
+                {"role": "system", "content": prose},
+                {"role": "user", "content": "hi"},
+                {"role": "assistant", "content": prose},
+            ]
+        });
+        let bytes = serde_json::to_vec(&body).unwrap();
+        let (out, _o, _c) = compress_request_body(body, bytes.len());
+        let parsed: Value = serde_json::from_slice(&out).unwrap();
+
+        assert!(
+            parsed["messages"][0]["content"].as_str().unwrap().len() < prose.len(),
+            "system message prose must be compressed when enabled"
+        );
+        assert_eq!(
+            parsed["messages"][2]["content"].as_str().unwrap(),
+            prose,
+            "assistant turns must pass through verbatim (#710)"
+        );
+    }
+
+    #[test]
+    fn openai_prose_compression_is_deterministic() {
+        let _iso = crate::core::data_dir::isolated_data_dir();
+        crate::core::config::Config::update_global(|c| {
+            c.proxy.role_aggressiveness.system = Some(0.6);
+        })
+        .unwrap();
+        let prose = big_prose();
+        let mk = || {
+            serde_json::json!({
+                "model": "gpt-5",
+                "messages": [{"role": "system", "content": prose}, {"role": "user", "content": "hi"}]
+            })
+        };
+        let (a, b) = (mk(), mk());
+        let la = serde_json::to_vec(&a).unwrap().len();
+        let lb = serde_json::to_vec(&b).unwrap().len();
+        assert_eq!(
+            compress_request_body(a, la).0,
+            compress_request_body(b, lb).0,
+            "identical input must yield byte-identical output (#498)"
         );
     }
 }

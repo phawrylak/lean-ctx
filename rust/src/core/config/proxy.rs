@@ -21,6 +21,37 @@ pub struct ProxyConfig {
     /// trailing usage chunk. Anthropic/Gemini/OpenAI-Responses report usage
     /// without any request change, so this only affects Chat Completions.
     pub meter_openai_usage: Option<bool>,
+    /// Opt-in per-role prose compression for the proxy's frozen request region
+    /// (#710). `None` for a role (the default) leaves that role untouched —
+    /// today's behaviour. See [`RoleAggressiveness`].
+    pub role_aggressiveness: RoleAggressiveness,
+}
+
+/// Per-role prose-compression intensity for the proxy's frozen request region.
+///
+/// Each value is a `0.0–1.0` aggressiveness level reusing the same mapping as
+/// the `ctx_read` knob (#708): `0.0` keeps everything, `1.0` is most aggressive.
+/// `None` (the default) means "do not compress this role's prose" so the proxy
+/// stays byte-for-byte unchanged until an operator opts in. The `assistant`
+/// role is never represented here — model turns are always passed through
+/// verbatim (the #710 passthrough guarantee).
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct RoleAggressiveness {
+    /// Aggressiveness for system prompts (Anthropic `system` / OpenAI `system`
+    /// messages / Gemini `systemInstruction`). `None` = leave untouched.
+    pub system: Option<f64>,
+    /// Aggressiveness for user prose (free-text user turns, never tool results).
+    /// `None` = leave untouched.
+    pub user: Option<f64>,
+}
+
+/// The conversation roles whose prose the proxy may compress in the frozen
+/// region. Deliberately excludes `assistant` — model turns are never rewritten.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProseRole {
+    System,
+    User,
 }
 
 /// How the proxy prunes old tool results from conversation history.
@@ -69,6 +100,28 @@ impl ProxyConfig {
     /// in config.toml, default `true`.
     pub fn meters_openai_usage(&self) -> bool {
         self.meter_openai_usage.unwrap_or(true)
+    }
+
+    /// Resolved prose-compression aggressiveness for `role`, clamped to `[0,1]`,
+    /// or `None` when prose compression is off for that role (the default).
+    ///
+    /// Precedence: the role's env override (`LEAN_CTX_PROXY_SYSTEM_AGGR` /
+    /// `LEAN_CTX_PROXY_USER_AGGR`) wins, then `[proxy.role_aggressiveness]` in
+    /// config.toml. An unparseable or blank env value is ignored so a typo can
+    /// never silently disable the configured behaviour.
+    #[must_use]
+    pub fn resolved_role_aggressiveness(&self, role: ProseRole) -> Option<f64> {
+        let (env_var, configured) = match role {
+            ProseRole::System => (
+                "LEAN_CTX_PROXY_SYSTEM_AGGR",
+                self.role_aggressiveness.system,
+            ),
+            ProseRole::User => ("LEAN_CTX_PROXY_USER_AGGR", self.role_aggressiveness.user),
+        };
+        let from_env = std::env::var(env_var)
+            .ok()
+            .and_then(|v| v.trim().parse::<f64>().ok());
+        from_env.or(configured).map(|a| a.clamp(0.0, 1.0))
     }
 
     /// Whether a non-loopback plaintext `http://` upstream is allowed. Opt-in
@@ -490,5 +543,76 @@ mod tests {
             diagnose_drift(None, "https://api.openai.com", "https://api.openai.com"),
             None
         );
+    }
+
+    #[test]
+    fn role_aggressiveness_defaults_to_off() {
+        // Opt-in: a fresh config compresses no prose, so the proxy stays
+        // byte-for-byte unchanged until an operator sets a value (#710).
+        let cfg = ProxyConfig::default();
+        // Isolate from a developer shell that may export the override.
+        let _lock = crate::core::data_dir::test_env_lock();
+        crate::test_env::remove_var("LEAN_CTX_PROXY_SYSTEM_AGGR");
+        crate::test_env::remove_var("LEAN_CTX_PROXY_USER_AGGR");
+        assert_eq!(cfg.resolved_role_aggressiveness(ProseRole::System), None);
+        assert_eq!(cfg.resolved_role_aggressiveness(ProseRole::User), None);
+    }
+
+    #[test]
+    fn role_aggressiveness_reads_config_and_clamps() {
+        let _lock = crate::core::data_dir::test_env_lock();
+        crate::test_env::remove_var("LEAN_CTX_PROXY_SYSTEM_AGGR");
+        crate::test_env::remove_var("LEAN_CTX_PROXY_USER_AGGR");
+        let cfg = ProxyConfig {
+            role_aggressiveness: RoleAggressiveness {
+                system: Some(0.7),
+                user: Some(1.5),
+            },
+            ..Default::default()
+        };
+        assert_eq!(
+            cfg.resolved_role_aggressiveness(ProseRole::System),
+            Some(0.7)
+        );
+        // Out-of-range config values are clamped into [0,1].
+        assert_eq!(cfg.resolved_role_aggressiveness(ProseRole::User), Some(1.0));
+    }
+
+    #[test]
+    fn role_aggressiveness_env_overrides_config() {
+        let _lock = crate::core::data_dir::test_env_lock();
+        crate::test_env::set_var("LEAN_CTX_PROXY_SYSTEM_AGGR", "0.25");
+        let cfg = ProxyConfig {
+            role_aggressiveness: RoleAggressiveness {
+                system: Some(0.9),
+                user: None,
+            },
+            ..Default::default()
+        };
+        assert_eq!(
+            cfg.resolved_role_aggressiveness(ProseRole::System),
+            Some(0.25),
+            "env override must win over the configured value"
+        );
+        crate::test_env::remove_var("LEAN_CTX_PROXY_SYSTEM_AGGR");
+    }
+
+    #[test]
+    fn role_aggressiveness_ignores_blank_env() {
+        let _lock = crate::core::data_dir::test_env_lock();
+        crate::test_env::set_var("LEAN_CTX_PROXY_USER_AGGR", "  ");
+        let cfg = ProxyConfig {
+            role_aggressiveness: RoleAggressiveness {
+                system: None,
+                user: Some(0.4),
+            },
+            ..Default::default()
+        };
+        assert_eq!(
+            cfg.resolved_role_aggressiveness(ProseRole::User),
+            Some(0.4),
+            "a blank/garbage env value must fall back to config, not disable it"
+        );
+        crate::test_env::remove_var("LEAN_CTX_PROXY_USER_AGGR");
     }
 }

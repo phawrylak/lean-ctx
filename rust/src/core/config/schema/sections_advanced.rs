@@ -66,6 +66,33 @@ pub(super) fn build(sections: &mut BTreeMap<String, SectionSchema>) {
         },
     );
 
+    let mut role_aggr = BTreeMap::new();
+    role_aggr.insert(
+        "system".into(),
+        key_with_env(
+            "f64",
+            serde_json::json!(cfg.proxy.role_aggressiveness.system),
+            "Opt-in prose compression intensity (0.0–1.0) for system prompts in the proxy's frozen request region. Unset = leave untouched. Higher = more aggressive. Cache-safe (deterministic, never touches the client-cached prefix)",
+            "LEAN_CTX_PROXY_SYSTEM_AGGR",
+        ),
+    );
+    role_aggr.insert(
+        "user".into(),
+        key_with_env(
+            "f64",
+            serde_json::json!(cfg.proxy.role_aggressiveness.user),
+            "Opt-in prose compression intensity (0.0–1.0) for free-text user turns (never tool results) in the proxy's frozen request region. Unset = leave untouched",
+            "LEAN_CTX_PROXY_USER_AGGR",
+        ),
+    );
+    sections.insert(
+        "proxy.role_aggressiveness".into(),
+        SectionSchema {
+            description: "Opt-in per-role prose compression for the proxy's frozen request region (#710). Assistant turns are always passed through verbatim".into(),
+            keys: role_aggr,
+        },
+    );
+
     let mut cost = BTreeMap::new();
     cost.insert(
         "default_model".into(),

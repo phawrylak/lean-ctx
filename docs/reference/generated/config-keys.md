@@ -295,6 +295,13 @@ Proxy upstream configuration for API routing
 - `meter_openai_usage` (bool, default `true`) — Inject stream_options.include_usage into streamed OpenAI Chat Completions so the final chunk reports real token usage for the measured spend meter. Default true
 - `openai_upstream` (string?, default `null`) — Custom upstream URL for OpenAI API proxy
 
+## `[proxy.role_aggressiveness]`
+
+Opt-in per-role prose compression for the proxy's frozen request region (#710). Assistant turns are always passed through verbatim
+
+- `system` (f64, default `null` — env `LEAN_CTX_PROXY_SYSTEM_AGGR`) — Opt-in prose compression intensity (0.0–1.0) for system prompts in the proxy's frozen request region. Unset = leave untouched. Higher = more aggressive. Cache-safe (deterministic, never touches the client-cached prefix)
+- `user` (f64, default `null` — env `LEAN_CTX_PROXY_USER_AGGR`) — Opt-in prose compression intensity (0.0–1.0) for free-text user turns (never tool results) in the proxy's frozen request region. Unset = leave untouched
+
 ## `[search]`
 
 Hybrid search weights for ctx_semantic_search (BM25 + dense vector + SPLADE + graph proximity)

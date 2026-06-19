@@ -10,6 +10,8 @@ use super::ProxyState;
 use super::compress::compress_tool_result;
 use super::forward;
 use super::tool_kind::{self, ToolResultKind, should_protect};
+use super::{cache_safety, prose};
+use crate::core::config::ProseRole;
 
 pub async fn handler(
     State(state): State<ProxyState>,
@@ -32,19 +34,43 @@ fn compress_request_body(parsed: Value, original_size: usize) -> (Vec<u8>, usize
     let mut doc = parsed;
     let mut modified = false;
 
+    // Opt-in per-role prose aggressiveness (#710); both default `None` → no-op.
+    let cfg = crate::core::config::Config::load();
+    let system_aggr = cfg.proxy.resolved_role_aggressiveness(ProseRole::System);
+    let user_aggr = cfg.proxy.resolved_role_aggressiveness(ProseRole::User);
+    let mut prose_segments: u64 = 0;
+
+    // System prose: the top-level `systemInstruction` anchor. Gemini has no
+    // client `cache_control`, and the rewrite is deterministic, so the implicit
+    // prefix cache stays byte-stable across turns — cache-safe by construction.
+    if let Some(a) = system_aggr {
+        for key in ["systemInstruction", "system_instruction"] {
+            if let Some(parts) = doc
+                .get_mut(key)
+                .and_then(|si| si.get_mut("parts"))
+                .and_then(|p| p.as_array_mut())
+            {
+                prose_segments += u64::from(prose::compress_gemini_text_parts(parts, a));
+            }
+        }
+    }
+
     if let Some(contents) = doc.get_mut("contents").and_then(|c| c.as_array_mut()) {
         // Gemini's implicit prompt cache is prefix-based, so the frozen OLD
         // region is pruned at the same monotone staircase boundary as every
         // other rail. We never remove a `contents` entry — only rewrite the
         // `functionResponse` text in place — so the conversation structure
         // (and any `functionCall` ↔ `functionResponse` correspondence) is intact.
-        let mode = crate::core::config::Config::load()
-            .proxy
-            .resolved_history_mode();
+        let mode = cfg.proxy.resolved_history_mode();
         let boundary = super::history_prune::prune_boundary(mode, contents.len());
 
         for (idx, content) in contents.iter_mut().enumerate() {
             let in_old_region = idx < boundary;
+            // Own the role before the mutable `parts` borrow below.
+            let role = content
+                .get("role")
+                .and_then(|r| r.as_str())
+                .map(String::from);
             let Some(parts) = content.get_mut("parts").and_then(|p| p.as_array_mut()) else {
                 continue;
             };
@@ -72,8 +98,23 @@ fn compress_request_body(parsed: Value, original_size: usize) -> (Vec<u8>, usize
                     };
                 }
             }
+
+            // Frozen-region user prose: free-text `text` parts of user turns in
+            // the old region `[0, boundary)`. Model turns (assistant) and tool
+            // I/O parts are never touched.
+            if in_old_region
+                && role.as_deref() == Some("user")
+                && let Some(a) = user_aggr
+            {
+                prose_segments += u64::from(prose::compress_gemini_text_parts(parts, a));
+            }
         }
     }
+
+    if prose_segments > 0 {
+        modified = true;
+    }
+    cache_safety::record(prose_segments, true);
 
     let out = serde_json::to_vec(&doc).unwrap_or_default();
     let compressed_size = if modified { out.len() } else { original_size };
@@ -243,6 +284,72 @@ mod tests {
         let (out_a, _, _) = compress_request_body(a, la);
         let (out_b, _, _) = compress_request_body(b, lb);
         assert_eq!(out_a, out_b, "identical input must yield identical bytes");
+    }
+
+    fn big_prose() -> String {
+        let p = "You are a careful, senior software engineer. You always explain your \
+                 reasoning before making changes, you prefer small reviewable diffs, and \
+                 you never introduce mock data or placeholders into production code. ";
+        [p; 6].join("\n")
+    }
+
+    #[test]
+    fn system_instruction_compressed_and_model_untouched() {
+        let _iso = crate::core::data_dir::isolated_data_dir();
+        crate::core::config::Config::update_global(|c| {
+            c.proxy.role_aggressiveness.system = Some(0.6);
+        })
+        .unwrap();
+
+        let prose = big_prose();
+        let body = serde_json::json!({
+            "systemInstruction": {"parts": [{"text": prose}]},
+            "contents": [
+                {"role": "user", "parts": [{"text": "hi"}]},
+                {"role": "model", "parts": [{"text": prose}]},
+            ]
+        });
+        let bytes = serde_json::to_vec(&body).unwrap();
+        let (out, _o, _c) = compress_request_body(body, bytes.len());
+        let parsed: Value = serde_json::from_slice(&out).unwrap();
+
+        assert!(
+            parsed["systemInstruction"]["parts"][0]["text"]
+                .as_str()
+                .unwrap()
+                .len()
+                < prose.len(),
+            "systemInstruction prose must be compressed when enabled"
+        );
+        assert_eq!(
+            parsed["contents"][1]["parts"][0]["text"].as_str().unwrap(),
+            prose,
+            "model (assistant) turns must pass through verbatim (#710)"
+        );
+    }
+
+    #[test]
+    fn gemini_prose_compression_is_deterministic() {
+        let _iso = crate::core::data_dir::isolated_data_dir();
+        crate::core::config::Config::update_global(|c| {
+            c.proxy.role_aggressiveness.system = Some(0.6);
+        })
+        .unwrap();
+        let prose = big_prose();
+        let mk = || {
+            serde_json::json!({
+                "systemInstruction": {"parts": [{"text": prose}]},
+                "contents": [{"role": "user", "parts": [{"text": "hi"}]}]
+            })
+        };
+        let (a, b) = (mk(), mk());
+        let la = serde_json::to_vec(&a).unwrap().len();
+        let lb = serde_json::to_vec(&b).unwrap().len();
+        assert_eq!(
+            compress_request_body(a, la).0,
+            compress_request_body(b, lb).0,
+            "identical input must yield byte-identical output (#498)"
+        );
     }
 
     #[test]
