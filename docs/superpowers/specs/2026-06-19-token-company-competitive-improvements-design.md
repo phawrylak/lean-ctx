@@ -631,6 +631,30 @@ cold vs. warm billed tokens über mehrere Modelle; das explizite Verhältnis als
 `cache_preservation_ratio` in den Scorecard-Output heben und in
 `scorecard/mod.rs` (`determinism_digest`-Nachbarschaft) mitführen.
 
+### 5.2-STATUS (umgesetzt, #712)
+Realitäts-Check gegen den Code (analog Epic 4): Teile von 5.2 waren bereits da.
+
+- **(a) #730 — umgesetzt.** `rust/eval/accuracy-suite.ndjson` (Needle /
+  Long-Context-QA / Code-Edit) + Korpus unter `rust/eval/accuracy/`. Jede Golden
+  Answer ist ein realer lean-ctx-Fakt (kein Mock). Zusätzlich ein **modellfreier**
+  Determinismus-Test (`eval_ab/mod.rs::accuracy_suite_tests`): für jeden QA-Task
+  muss die lean-ctx-`assemble(LeanCtx)`-Kontextfassung die Antwort noch enthalten
+  (SQuAD-Containment über den Kontext selbst) — die deterministische Untergrenze
+  der „komprimiert ≥ roh"-Aussage, in `cargo test` erzwungen. Der Code-Task wird
+  mit Referenzlösung gegen das committete Unit-Test bewiesen.
+- **(b) #731 — bereits vorhanden, jetzt belegt.** `--gate` *und* `--margin` waren
+  schon verdrahtet: `--margin` → `ReportConfig.noninferiority_margin`, das
+  `verdict_for` (`report.rs`) gegen die Bootstrap-CI-Untergrenze prüft; `--gate`
+  beendet bei `Regressed` non-zero (`cli/eval_cmd.rs`). Das Gate ist sogar
+  **CI-enforced** (`.github/workflows/ci.yml`, committetes Recording). Es fehlte
+  nur die Suite (a). Ticket mit Evidenz geschlossen.
+- **(c) #732 — umgesetzt, korrigierter Ort.** `cache_preservation_ratio` lebt in
+  `DualArmScorecard` (dort liegen die cold/warm-Tokens), nicht in
+  `scorecard/mod.rs` (dessen Scorecard kennt keine Cache-Tokens). Da
+  `arm_b_cache_read`/`write` bereits im `determinism_digest` stehen, ist die Ratio
+  davon abgeleitet → additiv, **digest-stabil** (#498). Sichtbar in `to_human` +
+  JSON.
+
 ### 5.3 Determinismus
 `eval_ab` produziert bereits signierte, reproduzierbare Artefakte
 (`SignedAbReportV1`). Suite-Dateien sind statisch → reproduzierbar.

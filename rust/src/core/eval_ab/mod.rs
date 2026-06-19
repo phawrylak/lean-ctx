@@ -214,3 +214,84 @@ mod tests {
         let _ = PathBuf::new();
     }
 }
+
+#[cfg(test)]
+mod accuracy_suite_tests {
+    //! Guards the committed accuracy suite (`rust/eval/accuracy-suite.ndjson`, #730)
+    //! in-process so a corpus/answer drift fails in `cargo test` — i.e. during
+    //! `dev-install` — not only when someone runs the live gate.
+
+    use super::*;
+    use std::path::Path;
+    use suite::Domain;
+
+    fn load_accuracy_suite() -> EvalSuite {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("eval/accuracy-suite.ndjson");
+        EvalSuite::load(&path).expect("committed accuracy suite must load + validate")
+    }
+
+    /// The suite covers all three TTC-relevant shapes (needle, long-context QA, code).
+    #[test]
+    fn accuracy_suite_has_all_three_shapes() {
+        let suite = load_accuracy_suite();
+        let qa = suite
+            .tasks
+            .iter()
+            .filter(|t| t.domain == Domain::Qa)
+            .count();
+        let code = suite
+            .tasks
+            .iter()
+            .filter(|t| t.domain == Domain::Code)
+            .count();
+        assert!(qa >= 2, "need needle + long-context QA, got {qa}");
+        assert!(code >= 1, "need a code-edit task, got {code}");
+    }
+
+    /// Model-free accuracy floor (#730): for every QA task, lean-ctx's own
+    /// retrieve+compress context must still CONTAIN a gold answer at the default
+    /// budget — compression preserves the answer-bearing signal. We reuse the SQuAD
+    /// containment scorer over the assembled context itself, so this is the
+    /// deterministic lower bound of the "compressed ≥ raw" claim with no live model.
+    #[test]
+    fn lean_ctx_compression_preserves_every_qa_answer() {
+        let suite = load_accuracy_suite();
+        let budget = AbRunConfig::default().budget_tokens;
+        let qa = suite.tasks.iter().filter(|t| t.domain == Domain::Qa);
+        for task in qa {
+            let ws = task.workspace_path(&suite.dir);
+            let ctx = assemble(Condition::LeanCtx, &ws, task.query(), budget)
+                .unwrap_or_else(|e| panic!("assemble {}: {e:#}", task.id));
+            let score = score_task(task, &ctx.text, &ws)
+                .unwrap_or_else(|e| panic!("score {}: {e:#}", task.id));
+            assert!(
+                score.passed,
+                "lean-ctx compression dropped the answer for '{}' ({})",
+                task.id, score.detail
+            );
+        }
+    }
+
+    /// The code-edit task must be genuinely solvable: a correct reference solution
+    /// passes the committed unit test and the shipped failing stub does not. Proves
+    /// the harness end-to-end (sandbox copy + `test_cmd`) with zero model calls.
+    #[test]
+    fn code_task_is_solvable_and_stub_fails() {
+        let suite = load_accuracy_suite();
+        let task = suite
+            .tasks
+            .iter()
+            .find(|t| t.domain == Domain::Code)
+            .expect("code task present");
+        let ws = task.workspace_path(&suite.dir);
+
+        let reference = "factorial() { n=$1; [ \"$n\" -le 1 ] && { echo 1; return; }; \
+             r=1; i=2; while [ \"$i\" -le \"$n\" ]; do r=$((r * i)); i=$((i + 1)); done; echo \"$r\"; }";
+        let good = score_task(task, reference, &ws).unwrap();
+        assert!(good.passed, "reference solution must pass: {}", good.detail);
+
+        let stub = "factorial() { echo 0; }";
+        let bad = score_task(task, stub, &ws).unwrap();
+        assert!(!bad.passed, "wrong solution must fail the unit test");
+    }
+}

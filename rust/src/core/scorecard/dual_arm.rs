@@ -96,6 +96,12 @@ pub struct DualArmScorecard {
     /// the comparison rests on identical work.
     pub total_raw_input_tokens: u64,
     pub total_lean_prefix_tokens: u64,
+    /// Share of the long-lived arm's carried context billed from the prompt cache
+    /// (`cache_read / (cache_read + cache_write)`), in `[0,1]`. The
+    /// cache-preservation USP made explicit (#732): `1.0` ⇒ the whole carried
+    /// prefix is cache-stable; near `0` ⇒ the prefix churns every turn. Pricing-
+    /// independent (pure token ratio), so it is one number for the whole card.
+    pub cache_preservation_ratio: f64,
     /// Stable fingerprint over every priced number (#498).
     pub determinism_digest: String,
     pub results: Vec<DualArmResult>,
@@ -247,9 +253,22 @@ fn run_for_dir(scenario: &str, root: &std::path::Path) -> DualArmScorecard {
         turns: turns.len(),
         total_raw_input_tokens: tokens.arm_a_input,
         total_lean_prefix_tokens: tokens.total_lean_prefix,
+        cache_preservation_ratio: cache_preservation_ratio(&tokens),
         determinism_digest,
         results,
     }
+}
+
+/// Fraction of the long-lived arm's carried context billed from the prompt cache:
+/// `cache_read / (cache_read + cache_write)`. Already implied by the digest (which
+/// fixes `b_cr` and `b_cw`), so surfacing it changes no fingerprint — it just lifts
+/// the cache-preservation story out of the per-model rows into one headline number.
+fn cache_preservation_ratio(t: &ArmTokens) -> f64 {
+    let billed = t.arm_b_cache_read + t.arm_b_cache_write;
+    if billed == 0 {
+        return 0.0;
+    }
+    round4(t.arm_b_cache_read as f64 / billed as f64)
 }
 
 /// Run the dual-arm self-verify bench on the committed `medium` scenario.
@@ -276,8 +295,12 @@ impl DualArmScorecard {
         out.push_str(&format!("tokenizer: {}\n", self.tokenizer));
         out.push_str(&format!("digest:    {}\n", self.determinism_digest));
         out.push_str(&format!(
-            "workload:  {} raw input tok (phase-isolated)  vs  {} lean prefix tok (long-lived)\n\n",
+            "workload:  {} raw input tok (phase-isolated)  vs  {} lean prefix tok (long-lived)\n",
             self.total_raw_input_tokens, self.total_lean_prefix_tokens
+        ));
+        out.push_str(&format!(
+            "cache:     {:.1}% of the carried context is billed from cache (preservation ratio)\n\n",
+            self.cache_preservation_ratio * 100.0
         ));
         out.push_str(
             "model               cache?   phase-isolated $   long-lived $    saved $   saved%\n",
@@ -413,6 +436,44 @@ mod tests {
         let json: serde_json::Value = serde_json::from_str(&sc.to_json()).unwrap();
         assert!(json["results"].as_array().unwrap().len() >= 5);
         assert_eq!(json["schema_version"], 1);
+    }
+
+    #[test]
+    fn cache_preservation_ratio_is_cache_read_share() {
+        // Closed form: cache_read=140, cache_write=113 → 140 / 253 of the carried
+        // context is billed from cache (every persisted token re-billed cheaply).
+        let turns = vec![
+            Turn { raw: 100, lean: 40 },
+            Turn { raw: 200, lean: 60 },
+            Turn { raw: 50, lean: 13 },
+        ];
+        let t = accumulate(&turns);
+        assert_eq!(cache_preservation_ratio(&t), round4(140.0 / 253.0));
+        assert_eq!(
+            cache_preservation_ratio(&ArmTokens {
+                arm_a_input: 0,
+                arm_b_cache_read: 0,
+                arm_b_cache_write: 0,
+                total_lean_prefix: 0,
+            }),
+            0.0
+        );
+    }
+
+    #[test]
+    fn cache_preservation_ratio_surfaces_on_real_scorecard() {
+        let sc = scorecard();
+        assert!(
+            (0.0..=1.0).contains(&sc.cache_preservation_ratio),
+            "ratio out of range: {}",
+            sc.cache_preservation_ratio
+        );
+        // A multi-turn session carries a growing prefix, so cache_read dominates
+        // cache_write → the preservation ratio is strictly positive and surfaced.
+        assert!(sc.cache_preservation_ratio > 0.0);
+        assert!(sc.to_human().contains("preservation ratio"));
+        let json: serde_json::Value = serde_json::from_str(&sc.to_json()).unwrap();
+        assert!(json["cache_preservation_ratio"].is_number());
     }
 
     #[test]
