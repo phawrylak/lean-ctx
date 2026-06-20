@@ -69,25 +69,45 @@ fn user_config_override(model: &str) -> Option<usize> {
         .copied()
 }
 
-fn registry_lookup(model: &str, registry: &Registry) -> Option<usize> {
-    let m = model.to_lowercase();
-
+/// Exact, then delimiter-anchored prefix match (e.g. "gpt-5.5-0513" → "gpt-5.5").
+fn exact_or_prefix(m: &str, registry: &Registry) -> Option<usize> {
     // Exact match
-    if let Some(entry) = registry.models.get(&m) {
+    if let Some(entry) = registry.models.get(m) {
         return Some(entry.context_window);
     }
 
     // Prefix match: "gpt-5.5-0513" should match "gpt-5.5"
     let mut best_match: Option<(usize, usize)> = None; // (key_len, window)
     for (key, entry) in &registry.models {
-        if m.starts_with(key.as_str()) && m[key.len()..].starts_with(['-', '_', '.']) || m == *key {
+        if m.starts_with(key.as_str()) && m[key.len()..].starts_with(['-', '_', '.'])
+            || m == key.as_str()
+        {
             let key_len = key.len();
             if best_match.is_none_or(|(bl, _)| key_len > bl) {
                 best_match = Some((key_len, entry.context_window));
             }
         }
     }
-    if let Some((_, window)) = best_match {
+    best_match.map(|(_, w)| w)
+}
+
+fn registry_lookup(model: &str, registry: &Registry) -> Option<usize> {
+    let m = model.to_lowercase();
+
+    if let Some(window) = exact_or_prefix(&m, registry) {
+        return Some(window);
+    }
+
+    // Claude ids are hyphenated (claude-3-5-sonnet, claude-opus-4-8). A dotted variant
+    // like "claude-opus-4.8" is non-canonical but appears in some traffic; retry with
+    // dots normalized to hyphens. Scoped to "claude" so GPT/Gemini keys that legitimately
+    // use dots (gpt-4.1, gemini-1.5-pro) are left untouched. The element order differs by
+    // generation (claude-3-5-sonnet is version-first, claude-opus-4-8 is family-first), but
+    // normalization only swaps the separator within a single id, so both orderings resolve.
+    if m.starts_with("claude")
+        && m.contains('.')
+        && let Some(window) = exact_or_prefix(&m.replace('.', "-"), registry)
+    {
         return Some(window);
     }
 
@@ -217,5 +237,35 @@ mod tests {
             context_window_for_model("claude-opus-4-8-20260601"),
             1_000_000
         );
+    }
+
+    // Dotted, non-canonical Claude ids normalize to their hyphenated key.
+    // family-first ordering (4.x): "claude-opus-4.8" → "claude-opus-4-8".
+    #[test]
+    fn claude_opus_48_dotted_is_1m() {
+        assert_eq!(context_window_for_model("claude-opus-4.8"), 1_000_000);
+    }
+
+    #[test]
+    fn claude_sonnet_46_dotted_is_1m() {
+        assert_eq!(context_window_for_model("claude-sonnet-4.6"), 1_000_000);
+    }
+
+    #[test]
+    fn claude_haiku_45_dotted_is_200k() {
+        assert_eq!(context_window_for_model("claude-haiku-4.5"), 200_000);
+    }
+
+    // version-first ordering (3.x): "claude-3.5-sonnet" → "claude-3-5-sonnet".
+    #[test]
+    fn claude_35_sonnet_dotted_is_200k() {
+        assert_eq!(context_window_for_model("claude-3.5-sonnet"), 200_000);
+    }
+
+    // Dot normalization is scoped to claude: GPT keys that legitimately use dots
+    // must NOT be hyphen-normalized (gpt-4.1 stays gpt-4.1, not gpt-4-1).
+    #[test]
+    fn gpt_41_dotted_unaffected_by_claude_normalization() {
+        assert_eq!(context_window_for_model("gpt-4.1"), 1_047_576);
     }
 }

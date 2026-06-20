@@ -47,7 +47,13 @@ def context_length_for(model: Optional[str]) -> Optional[int]:
     if not model:
         return None
     needle = model.lower()
+    # Claude ids are hyphenated; a dotted variant ("claude-opus-4.8") is non-canonical
+    # but appears in some traffic. Also match a dot->hyphen normalized form, scoped to
+    # claude so GPT/Gemini keys that legitimately use dots (gpt-4.1) are left alone.
+    needles = [needle]
+    if needle.startswith("claude") and "." in needle:
+        needles.append(needle.replace(".", "-"))
     for key in sorted(_PRESETS, key=len, reverse=True):
-        if key in needle:
+        if any(key in n for n in needles):
             return _PRESETS[key]
     return None
