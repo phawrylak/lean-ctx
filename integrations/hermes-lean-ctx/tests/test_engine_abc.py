@@ -58,8 +58,8 @@ def test_update_model_explicit_and_preset(engine):
     engine.update_model("custom", context_length=32_000)
     assert engine.context_length == 32_000
     assert engine.threshold_tokens == 24_000
-    engine.update_model("claude-4-opus")  # preset -> 200k
-    assert engine.context_length == 200_000
+    engine.update_model("claude-opus-4-8")  # preset -> 1M (real Anthropic id)
+    assert engine.context_length == 1_000_000
 
 
 def test_get_status_shape(engine):

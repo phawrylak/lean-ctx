@@ -176,4 +176,46 @@ mod tests {
             200_000
         );
     }
+
+    // Regression: the modern Claude family must report its real 1M window, not
+    // the stale 200k that the old reversed-convention / prefix-trap keys forced.
+    #[test]
+    fn claude_opus_48_is_1m() {
+        assert_eq!(context_window_for_model("claude-opus-4-8"), 1_000_000);
+    }
+
+    #[test]
+    fn claude_opus_46_is_1m() {
+        assert_eq!(context_window_for_model("claude-opus-4-6"), 1_000_000);
+    }
+
+    #[test]
+    fn claude_sonnet_46_is_1m() {
+        assert_eq!(context_window_for_model("claude-sonnet-4-6"), 1_000_000);
+    }
+
+    #[test]
+    fn claude_fable_5_is_1m() {
+        assert_eq!(context_window_for_model("claude-fable-5"), 1_000_000);
+    }
+
+    #[test]
+    fn claude_haiku_45_is_200k() {
+        assert_eq!(context_window_for_model("claude-haiku-4-5"), 200_000);
+    }
+
+    // 4-5 must stay 200k even though 4-8/4-6 are now 1M (no prefix bleed).
+    #[test]
+    fn claude_opus_45_is_200k() {
+        assert_eq!(context_window_for_model("claude-opus-4-5"), 200_000);
+    }
+
+    // Dated/snapshot variants resolve via prefix match to the base id.
+    #[test]
+    fn claude_opus_48_dated_variant_is_1m() {
+        assert_eq!(
+            context_window_for_model("claude-opus-4-8-20260601"),
+            1_000_000
+        );
+    }
 }
