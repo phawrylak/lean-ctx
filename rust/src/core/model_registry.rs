@@ -91,6 +91,27 @@ fn exact_or_prefix(m: &str, registry: &Registry) -> Option<usize> {
     best_match.map(|(_, w)| w)
 }
 
+/// '-'-delimited tokens, sorted — a multiset key for order-independent comparison.
+fn sorted_tokens(s: &str) -> Vec<&str> {
+    let mut t: Vec<&str> = s.split('-').filter(|p| !p.is_empty()).collect();
+    t.sort_unstable();
+    t
+}
+
+/// Match a Claude id regardless of element order. The family/version order flipped
+/// between generations (version-first `claude-3-5-sonnet` vs family-first
+/// `claude-opus-4-8`), so e.g. `claude-4-6-opus` should still resolve to
+/// `claude-opus-4-6`. Every Claude key has a distinct token multiset, so a match is
+/// unambiguous. Caller guarantees `m` starts with "claude".
+fn claude_reordered_match(m: &str, registry: &Registry) -> Option<usize> {
+    let want = sorted_tokens(m);
+    registry
+        .models
+        .iter()
+        .find(|(key, _)| key.starts_with("claude") && sorted_tokens(key) == want)
+        .map(|(_, entry)| entry.context_window)
+}
+
 fn registry_lookup(model: &str, registry: &Registry) -> Option<usize> {
     let m = model.to_lowercase();
 
@@ -98,17 +119,23 @@ fn registry_lookup(model: &str, registry: &Registry) -> Option<usize> {
         return Some(window);
     }
 
-    // Claude ids are hyphenated (claude-3-5-sonnet, claude-opus-4-8). A dotted variant
-    // like "claude-opus-4.8" is non-canonical but appears in some traffic; retry with
-    // dots normalized to hyphens. Scoped to "claude" so GPT/Gemini keys that legitimately
-    // use dots (gpt-4.1, gemini-1.5-pro) are left untouched. The element order differs by
-    // generation (claude-3-5-sonnet is version-first, claude-opus-4-8 is family-first), but
-    // normalization only swaps the separator within a single id, so both orderings resolve.
-    if m.starts_with("claude")
-        && m.contains('.')
-        && let Some(window) = exact_or_prefix(&m.replace('.', "-"), registry)
-    {
-        return Some(window);
+    // Two robustness passes for Claude, beyond the canonical exact/prefix match above.
+    // Scoped to "claude" so GPT/Gemini keys that legitimately use dots (gpt-4.1,
+    // gemini-1.5-pro) are left untouched.
+    if m.starts_with("claude") {
+        // 1. Dotted variants ("claude-opus-4.8") — normalize dots to hyphens. Keeps
+        //    prefix matching for dotted dated snapshots ("claude-opus-4.8-20260601").
+        let normalized = m.replace('.', "-");
+        if normalized != m
+            && let Some(window) = exact_or_prefix(&normalized, registry)
+        {
+            return Some(window);
+        }
+        // 2. Element order flipped between generations — accept either ordering
+        //    ("claude-4-6-opus" == "claude-opus-4-6") via token-multiset match.
+        if let Some(window) = claude_reordered_match(&normalized, registry) {
+            return Some(window);
+        }
     }
 
     // Family match (substring)
@@ -267,5 +294,26 @@ mod tests {
     #[test]
     fn gpt_41_dotted_unaffected_by_claude_normalization() {
         assert_eq!(context_window_for_model("gpt-4.1"), 1_047_576);
+    }
+
+    // Order-independent: element order flipped between generations, so a reversed
+    // ordering must still resolve. family-first id written version-first:
+    // "claude-4-8-opus" == "claude-opus-4-8".
+    #[test]
+    fn claude_opus_48_reversed_order_is_1m() {
+        assert_eq!(context_window_for_model("claude-4-8-opus"), 1_000_000);
+    }
+
+    // version-first id written family-first: "claude-sonnet-3-5" == "claude-3-5-sonnet".
+    #[test]
+    fn claude_35_sonnet_reversed_order_is_200k() {
+        assert_eq!(context_window_for_model("claude-sonnet-3-5"), 200_000);
+    }
+
+    // The old registry's own convention (reversed AND dotted) now resolves correctly:
+    // "claude-4.6-opus" -> normalize dots -> reorder -> "claude-opus-4-6" -> 1M.
+    #[test]
+    fn claude_46_opus_reversed_dotted_is_1m() {
+        assert_eq!(context_window_for_model("claude-4.6-opus"), 1_000_000);
     }
 }

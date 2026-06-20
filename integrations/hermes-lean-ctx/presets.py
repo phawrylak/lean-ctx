@@ -53,6 +53,15 @@ def context_length_for(model: Optional[str]) -> Optional[int]:
     needles = [needle]
     if needle.startswith("claude") and "." in needle:
         needles.append(needle.replace(".", "-"))
+    # Order-independent match for full claude ids: the family/version order flipped
+    # between generations (version-first claude-3-5-sonnet vs family-first
+    # claude-opus-4-8), so accept either ordering (claude-4-8-opus == claude-opus-4-8).
+    # Runs before the substring pass so a reversed id isn't shadowed by claude-3/claude-4.
+    if needle.startswith("claude"):
+        want = sorted(t for t in needle.replace(".", "-").split("-") if t)
+        for key, val in _PRESETS.items():
+            if key.startswith("claude") and key.count("-") >= 2 and sorted(key.split("-")) == want:
+                return val
     for key in sorted(_PRESETS, key=len, reverse=True):
         if any(key in n for n in needles):
             return _PRESETS[key]
