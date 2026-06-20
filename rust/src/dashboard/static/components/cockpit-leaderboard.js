@@ -31,6 +31,11 @@ class CockpitLeaderboard extends HTMLElement {
     this._busy = null; // 'submit' | 'auto' while a write is in flight
     this._notice = null;
     this._name = '';
+    // Public board (#466 item 2) — loaded independently so a board outage never
+    // blocks the submit/auto controls.
+    this._board = null;
+    this._boardLoading = true;
+    this._boardError = null;
     this._onRefresh = this._onRefresh.bind(this);
   }
 
@@ -79,6 +84,28 @@ class CockpitLeaderboard extends HTMLElement {
       this._error = e && e.error ? String(e.error) : 'failed to load leaderboard status';
       this.render();
     }
+    // Load the public board in parallel — never gates the controls above.
+    this._loadBoard();
+  }
+
+  async _loadBoard() {
+    var fetchJson = api();
+    if (!fetchJson) return;
+    this._boardError = null;
+    try {
+      var resp = await fetchJson('/api/leaderboard', { timeoutMs: 12000 });
+      var entries = (resp && resp.entries) || [];
+      // Drop entries the server flagged for review (anomalous / under audit).
+      this._board = entries.filter(function (e) {
+        return e && e.flagged !== true;
+      });
+      this._boardLoading = false;
+    } catch (e) {
+      this._boardLoading = false;
+      this._boardError = e && e.error ? String(e.error) : 'could not load the board';
+    }
+    this.render();
+    this._bind();
   }
 
   async _submit() {
@@ -173,6 +200,7 @@ class CockpitLeaderboard extends HTMLElement {
       this._renderNotice(esc) +
       '<div style="display:grid;gap:14px">' +
       this._renderStanding(esc) +
+      this._renderBoard(esc) +
       this._renderSubmit(esc) +
       this._renderAuto(esc) +
       '</div>' +
@@ -257,6 +285,84 @@ class CockpitLeaderboard extends HTMLElement {
       rows +
       '</div>'
     );
+  }
+
+  _renderBoard(esc) {
+    var F = fmtLib();
+    var head =
+      '<div class="card-header"><h3>Community leaderboard</h3></div>' +
+      '<p class="hs" style="margin:0 0 10px;font-size:12px;opacity:.8">' +
+      'Top contributors by all-time tokens saved \u2014 the opt-in public board at ' +
+      '<code>leanctx.com/metrics</code>.</p>';
+
+    var inner;
+    if (this._boardLoading && !this._board) {
+      inner = '<div class="loading-state">Loading the board\u2026</div>';
+    } else if (this._boardError && !this._board) {
+      inner =
+        '<p class="hs" style="margin:0;color:var(--yellow);font-size:12px">' +
+        'Couldn\u2019t load the board: ' +
+        esc(this._boardError) +
+        '</p>';
+    } else if (!this._board || this._board.length === 0) {
+      inner = '<p class="hs" style="margin:0;opacity:.7;font-size:12px">No entries yet \u2014 be the first to submit.</p>';
+    } else {
+      inner = this._boardTable(esc, F);
+    }
+    return '<div class="card">' + head + inner + '</div>';
+  }
+
+  _boardTable(esc, F) {
+    var myUrl = this._status && this._status.url ? String(this._status.url) : null;
+    var fmtNum = F.fmt || function (n) { return String(n); };
+    var self = this;
+    var rows = this._board
+      .slice(0, 100)
+      .map(function (e) {
+        var mine = myUrl && e.url === myUrl;
+        var name = e.display_name ? esc(String(e.display_name)) : '<span style="opacity:.6">anonymous</span>';
+        var nameCell = e.url
+          ? '<a href="' + esc(String(e.url)) + '" target="_blank" rel="noopener noreferrer" style="color:inherit;text-decoration:none">' + name + '</a>'
+          : name;
+        var youTag = mine
+          ? ' <span style="font-size:10px;font-weight:700;color:var(--green);border:1px solid var(--green);border-radius:4px;padding:0 4px;margin-left:4px">YOU</span>'
+          : '';
+        var rowStyle =
+          'border-top:1px solid var(--border,#222)' +
+          (mine ? ';background:rgba(34,197,94,.08)' : '');
+        var td = 'padding:7px 8px;font-size:12px';
+        return (
+          '<tr style="' + rowStyle + '">' +
+          '<td style="' + td + ';opacity:.6;width:38px">' + esc(String(e.rank != null ? e.rank : '')) + '</td>' +
+          '<td style="' + td + ';font-weight:600">' + nameCell + youTag + '</td>' +
+          '<td style="' + td + ';text-align:right;font-variant-numeric:tabular-nums">' + esc(fmtNum(Number(e.tokens_saved) || 0)) + '</td>' +
+          '<td style="' + td + ';text-align:right;font-variant-numeric:tabular-nums;opacity:.85">' + esc(self._fmtUsd(Number(e.cost_avoided_usd) || 0)) + '</td>' +
+          '<td style="' + td + ';text-align:right;opacity:.75">' + esc(String(Math.round(Number(e.compression_rate_pct) || 0))) + '%</td>' +
+          '</tr>'
+        );
+      })
+      .join('');
+
+    var th = 'padding:6px 8px;font-size:10px;text-transform:uppercase;letter-spacing:.04em;opacity:.55;font-weight:600';
+    return (
+      '<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse">' +
+      '<thead><tr>' +
+      '<th style="' + th + ';text-align:left">#</th>' +
+      '<th style="' + th + ';text-align:left">Name</th>' +
+      '<th style="' + th + ';text-align:right">Tokens saved</th>' +
+      '<th style="' + th + ';text-align:right">Saved</th>' +
+      '<th style="' + th + ';text-align:right">Compr.</th>' +
+      '</tr></thead><tbody>' +
+      rows +
+      '</tbody></table></div>'
+    );
+  }
+
+  /** Compact USD: whole-dollar with separators above $100, cents below. */
+  _fmtUsd(a) {
+    if (!Number.isFinite(a)) return '$0';
+    if (a >= 100) return '$' + Math.round(a).toLocaleString('en-US');
+    return '$' + a.toFixed(2);
   }
 
   _renderSubmit(esc) {

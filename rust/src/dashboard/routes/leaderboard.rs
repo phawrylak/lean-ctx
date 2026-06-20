@@ -27,6 +27,7 @@ pub(super) fn handle(
     body: &str,
 ) -> Option<(&'static str, &'static str, String)> {
     match path {
+        "/api/leaderboard" => Some(get_board()),
         "/api/leaderboard/status" => Some(get_status()),
         "/api/leaderboard/submit" if method.eq_ignore_ascii_case("POST") => Some(post_submit(body)),
         "/api/leaderboard/submit" => Some(method_not_allowed("submit a leaderboard entry")),
@@ -44,6 +45,22 @@ fn method_not_allowed(action: &str) -> (&'static str, &'static str, String) {
         "application/json",
         json_err(&format!("use POST to {action}")),
     )
+}
+
+/// Same-origin proxy for the public community board (`GET /api/leaderboard`).
+/// The dashboard CSP pins `connect-src` to `'self'`, so the browser cannot fetch
+/// `api.leanctx.com` directly — we fetch it here and pass the JSON straight
+/// through. A 502 (with the upstream error) lets the UI show "couldn't load the
+/// board" without breaking the rest of the view.
+fn get_board() -> (&'static str, &'static str, String) {
+    match crate::cloud_client::fetch_leaderboard() {
+        Ok(json) => ("200 OK", "application/json", json.to_string()),
+        Err(e) => (
+            "502 Bad Gateway",
+            "application/json",
+            json_err(&format!("could not load leaderboard: {e}")),
+        ),
+    }
 }
 
 fn get_status() -> (&'static str, &'static str, String) {
@@ -192,6 +209,22 @@ mod tests {
         let (status, _mime, _body) =
             handle("/api/leaderboard/submit", "", "POST", "{bad").expect("route matches");
         assert_eq!(status, "400 Bad Request");
+    }
+
+    /// The board proxy is wired and degrades gracefully: pointed at an
+    /// unreachable upstream it returns a well-formed 502 JSON instead of
+    /// hanging or panicking (no real network needed — the connection refuses
+    /// immediately).
+    #[test]
+    fn board_proxy_is_wired_and_degrades_to_502() {
+        crate::test_env::set_var("LEAN_CTX_API_URL", "http://127.0.0.1:1");
+        let res = handle("/api/leaderboard", "", "GET", "");
+        crate::test_env::remove_var("LEAN_CTX_API_URL");
+        let (status, mime, body) = res.expect("route matches /api/leaderboard");
+        assert_eq!(mime, "application/json");
+        assert_eq!(status, "502 Bad Gateway");
+        let v: serde_json::Value = serde_json::from_str(&body).expect("valid JSON error");
+        assert!(v["error"].is_string(), "502 must carry an error message");
     }
 
     #[test]
