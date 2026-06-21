@@ -16,6 +16,18 @@ let lastBody: Record<string, unknown> | undefined;
 
 beforeAll(async () => {
   server = createServer((req, res) => {
+    if (req.method === "GET" && req.url?.startsWith("/v1/references/")) {
+      const referenceId = req.url.slice("/v1/references/".length);
+      res.setHeader("content-type", "text/plain");
+      if (referenceId === "missing") {
+        res.statusCode = 404;
+        res.end("Reference expired or not found");
+        return;
+      }
+      res.statusCode = 200;
+      res.end(`ORIGINAL[${referenceId}]`);
+      return;
+    }
     if (req.url !== "/v1/compress" || req.method !== "POST") {
       res.statusCode = 404;
       res.end();
@@ -125,5 +137,20 @@ describe("ProxyClient transport", () => {
     await expect(
       compress([{ role: "user", content: "y".repeat(40) }], { baseUrl, token: TOKEN }),
     ).rejects.toBeInstanceOf(LeanCtxError);
+  });
+
+  it("resolveReference returns the original content", async () => {
+    const client = new ProxyClient({ baseUrl, token: TOKEN });
+    expect(await client.resolveReference("abc123")).toBe("ORIGINAL[abc123]");
+  });
+
+  it("resolveReference rejects a missing reference", async () => {
+    const client = new ProxyClient({ baseUrl, token: TOKEN });
+    await expect(client.resolveReference("missing")).rejects.toBeInstanceOf(LeanCtxError);
+  });
+
+  it("resolveReference rejects an empty id", async () => {
+    const client = new ProxyClient({ baseUrl, token: TOKEN });
+    await expect(client.resolveReference("")).rejects.toBeInstanceOf(TypeError);
   });
 });

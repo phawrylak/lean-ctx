@@ -70,9 +70,40 @@ export class ProxyClient {
     };
   }
 
+  /**
+   * Return the original content behind a lean-ctx reference id.
+   *
+   * lean-ctx replaces oversized omitted content with a durable reference; this
+   * fetches it back via `GET /v1/references/{id}`. Rejects with `LeanCtxError`
+   * when the reference is unknown or expired.
+   */
+  async resolveReference(referenceId: string): Promise<string> {
+    if (!referenceId) {
+      throw new TypeError("referenceId must be a non-empty string");
+    }
+    const response = await this.request(`/v1/references/${encodeURIComponent(referenceId)}`, {
+      method: "GET",
+    });
+    return response.text();
+  }
+
   private async post(path: string, payload: Record<string, unknown>): Promise<unknown> {
+    const response = await this.request(path, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    try {
+      return await response.json();
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      throw new LeanCtxError(`invalid JSON response from ${this.baseUrl}${path}: ${reason}`);
+    }
+  }
+
+  private async request(path: string, init: RequestInit): Promise<Response> {
     const url = `${this.baseUrl}${path}`;
-    const headers: Record<string, string> = { "Content-Type": "application/json" };
+    const headers: Record<string, string> = { ...((init.headers as Record<string, string>) ?? {}) };
     if (this.token) headers.Authorization = `Bearer ${this.token}`;
 
     const controller = new AbortController();
@@ -80,12 +111,7 @@ export class ProxyClient {
 
     let response: Response;
     try {
-      response = await fetch(url, {
-        method: "POST",
-        headers,
-        body: JSON.stringify(payload),
-        signal: controller.signal,
-      });
+      response = await fetch(url, { ...init, headers, signal: controller.signal });
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error);
       throw new LeanCtxConnectionError(
@@ -104,14 +130,9 @@ export class ProxyClient {
     }
     if (!response.ok) {
       const detail = (await response.text()).trim();
-      throw new LeanCtxError(`POST ${path} failed (HTTP ${response.status}): ${detail}`);
+      throw new LeanCtxError(`${init.method ?? "GET"} ${path} failed (HTTP ${response.status}): ${detail}`);
     }
-    try {
-      return await response.json();
-    } catch (error) {
-      const reason = error instanceof Error ? error.message : String(error);
-      throw new LeanCtxError(`invalid JSON response from ${url}: ${reason}`);
-    }
+    return response;
   }
 }
 

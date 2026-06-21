@@ -59,6 +59,24 @@ class _CompressHandler(BaseHTTPRequestHandler):
             },
         )
 
+    def do_GET(self):  # noqa: N802 (BaseHTTPRequestHandler API)
+        if not self.path.startswith("/v1/references/"):
+            self.send_error(404)
+            return
+        reference_id = self.path.rsplit("/", 1)[-1]
+        if reference_id == "missing":
+            self._text(404, "Reference expired or not found")
+            return
+        self._text(200, f"ORIGINAL[{reference_id}]")
+
+    def _text(self, status, text):
+        data = text.encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "text/plain")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
     def _json(self, status, payload):
         data = json.dumps(payload).encode("utf-8")
         self.send_response(status)
@@ -152,3 +170,22 @@ def test_malformed_response_raises(server):
             base_url=base_url,
             token=EXPECTED_TOKEN,
         )
+
+
+def test_resolve_reference_returns_content(server):
+    httpd, base_url = server
+    client = ProxyClient(base_url=base_url, token=EXPECTED_TOKEN)
+    assert client.resolve_reference("abc123") == "ORIGINAL[abc123]"
+
+
+def test_resolve_reference_missing_raises(server):
+    httpd, base_url = server
+    client = ProxyClient(base_url=base_url, token=EXPECTED_TOKEN)
+    with pytest.raises(LeanCtxError):
+        client.resolve_reference("missing")
+
+
+def test_resolve_reference_empty_id_rejected():
+    client = ProxyClient(base_url="http://127.0.0.1:1", token="t")
+    with pytest.raises(ValueError):
+        client.resolve_reference("")
