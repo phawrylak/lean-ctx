@@ -502,6 +502,18 @@ pub fn run() {
                 super::cmd_allow(&rest);
                 return;
             }
+            "security" => {
+                super::cmd_security(&rest);
+                return;
+            }
+            "yolo" => {
+                super::cmd_yolo(&rest);
+                return;
+            }
+            "secure" | "lockdown" => {
+                super::cmd_secure(&rest);
+                return;
+            }
             "trust" => {
                 super::cmd_trust(&rest);
                 return;

@@ -282,6 +282,11 @@ pub fn run() {
     let workspace_trust = workspace_trust_outcome();
     board.check(&workspace_trust);
 
+    // 5b3b) Secret/.env redaction — the exfiltration-defense plane, independent
+    // of the jail + shell gating above (#507).
+    let secret_detection = secret_detection_outcome();
+    board.check(&secret_detection);
+
     // 5b4) Cognition v2 activation (science subsystems wired + active)
     let cognition = cognition_activity_outcome();
     board.check(&cognition);

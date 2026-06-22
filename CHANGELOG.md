@@ -6,6 +6,22 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 ## [Unreleased]
 
 ### Added
+- **Unified security posture + `lean-ctx yolo` / `secure` master switches (#507).**
+  Decouples lean-ctx's two independent security planes and makes them discoverable:
+  **containment** (path jail + shell gating — protects the machine from the agent)
+  vs **secret defense** (`.env`/credential redaction — protects secrets from the LLM
+  provider). `lean-ctx security status` prints a posture board (and a coarse
+  STRICT / RELAXED / OPEN label) reused by `lean-ctx doctor`, which now also shows a
+  dedicated **Secret redaction** line. `lean-ctx yolo` (alias `security open`) drops
+  containment in one step — writes `path_jail = false` + `shell_security = "off"`,
+  takes effect immediately, and **deliberately keeps secret redaction on**;
+  `lean-ctx secure` (alias `security strict` / `lockdown`) restores the secure
+  defaults. The standalone `.env` switch is `lean-ctx security secrets <on|off>`.
+  `path_jail` is now a first-class, schema-documented config key (the blanket
+  "any path" opt-out, equivalent to `allow_paths = ["/"]`), so granular re-enabling
+  via `lean-ctx config set …` / `lean-ctx allow <cmd>` composes cleanly after a
+  `yolo`. Disabling either plane requires a confirmation (or `--yes`) and refuses to
+  run non-interactively, so an agent can never silently weaken security.
 - **Observation tier — synthesized, recall-prioritized entity summaries (GL #802).**
   A 9th cognition-loop step distils clusters of related facts into compact,
   per-entity *observations* (Hindsight-inspired). Synthesis is **deterministic by

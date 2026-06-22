@@ -226,6 +226,42 @@ pub(super) fn workspace_trust_outcome() -> Outcome {
     }
 }
 
+/// Reports secret/`.env` redaction — the exfiltration-defense plane that is
+/// deliberately independent of the path jail + shell gating (#507). A user
+/// can run `lean-ctx yolo` (containment off) and still have this on, so it gets
+/// its own line: "are my API keys masked before they reach the LLM provider?".
+pub(super) fn secret_detection_outcome() -> Outcome {
+    let cfg = crate::core::config::Config::load();
+    let sd = &cfg.secret_detection;
+    if !sd.enabled {
+        return Outcome {
+            ok: true,
+            line: format!(
+                "{BOLD}Secret redaction{RST}  {YELLOW}off{RST}  {DIM}(secret_detection.enabled=false — .env/API keys can reach the provider; re-enable: lean-ctx security secrets on){RST}"
+            ),
+        };
+    }
+    if !sd.redact {
+        return Outcome {
+            ok: true,
+            line: format!(
+                "{BOLD}Secret redaction{RST}  {YELLOW}detect-only{RST}  {DIM}(secrets flagged but not masked — set secret_detection.redact=true to mask){RST}"
+            ),
+        };
+    }
+    let custom = if sd.custom_patterns.is_empty() {
+        String::new()
+    } else {
+        format!(" + {} custom pattern(s)", sd.custom_patterns.len())
+    };
+    Outcome {
+        ok: true,
+        line: format!(
+            "{BOLD}Secret redaction{RST}  {GREEN}on{RST}  {DIM}(.env/API keys masked before the model sees them{custom}){RST}"
+        ),
+    }
+}
+
 /// Reports the format-aware passthrough (#342): output already in a compact,
 /// token-oriented format (TOON by default) is preserved verbatim instead of
 /// recompressed, so an agent's proof-of-output-shape survives intact.

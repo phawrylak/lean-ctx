@@ -36,6 +36,59 @@ but you cannot accidentally turn off the baseline.
 
 ---
 
+## 0.1 See and flip the whole posture — `lean-ctx security`
+
+lean-ctx's guardrails fall into **two independent planes**. Keeping them separate
+is deliberate: a usability-first user can let the agent do anything on a trusted
+machine **without** ever leaking secrets to the model provider.
+
+| Plane | Protects | Controls |
+|-------|----------|----------|
+| **Containment** | your *machine* from the agent | PathJail + shell gating |
+| **Secret defense** | your *secrets* from the LLM provider | `.env` / credential redaction |
+
+One command shows the live posture and how to change it:
+
+```bash
+lean-ctx security status        # posture board: jail, shell, secret redaction
+```
+
+Two master switches flip **containment** in one step — secret redaction is never
+touched by them:
+
+```bash
+lean-ctx yolo                   # OPEN: any path + any command (containment off)
+lean-ctx secure                 # STRICT: restore the secure defaults
+```
+
+`yolo` writes `path_jail = false` and `shell_security = "off"` to your global
+config and takes effect immediately (no restart). It is fully reversible, and you
+re-enable pieces **granularly** afterwards — the array/blanket dichotomy works in
+both directions:
+
+```bash
+lean-ctx config set shell_security warn   # log violations, block nothing
+lean-ctx config set path_jail true        # re-enable the filesystem jail
+lean-ctx allow acli                       # permit one extra command (additive)
+```
+
+Secret/`.env` redaction is a **separate** toggle — `yolo` leaves it on:
+
+```bash
+lean-ctx security secrets off   # stop masking secrets (NOT recommended)
+lean-ctx security secrets on    # re-enable masking
+```
+
+`lean-ctx security status` (and `lean-ctx doctor`) print a coarse label —
+**STRICT** (both planes enforced), **RELAXED** (partially loosened), or **OPEN**
+(containment fully off) — so the active posture can never hide.
+
+> Mental model: **containment** is "what the agent may touch on this machine";
+> **secret defense** is "what may leave this machine for the provider". `yolo`
+> only drops the first.
+
+---
+
 ## 1. PathJail — stay inside the project
 
 **What it does:** confines file access to the resolved project root. Absolute
@@ -47,6 +100,12 @@ path-traversal `../../` cannot escape the workspace.
   path into another tree.
 - Multi-root setups (`lean-ctx serve --root a:A --root b:B`) jail each root
   independently (`server/multi_path.rs`).
+- **Widen it (array):** add trusted roots with `allow_paths` / `extra_roots`
+  (or `LEAN_CTX_ALLOW_PATH`) — reads/writes resolve under those prefixes too.
+- **Disable it (blanket):** set `path_jail = false` to allow *any* path — the
+  blanket equivalent of `allow_paths = ["/"]`, for containers/sandboxes where the
+  boundary is already external. `lean-ctx yolo` sets this for you, and
+  `lean-ctx doctor` flags it loudly while it is active.
 
 This is the foundation every other layer assumes.
 
@@ -136,6 +195,8 @@ shell_security = "enforce"   # default — secure
 - **`off` is the "YOLO" escape hatch.** It disables *command gating* only; it does
   **not** lift the read-only-output doctrine in `ctx_shell` (no `>`/`tee`/heredoc
   file writes — use the native write tool). Compression is unaffected in every mode.
+  Set it together with `path_jail = false` in one step via `lean-ctx yolo`
+  (and revert both with `lean-ctx secure`).
 - `lean-ctx doctor` surfaces the active mode whenever it is not `enforce`, so a
   relaxed posture can never hide.
 - This supersedes the CLI-only `LEAN_CTX_ALLOWLIST_WARN_ONLY` (which still works
@@ -278,6 +339,8 @@ which controls address which risks — useful when answering a security review.
 
 | Goal | Control |
 |------|---------|
+| See / flip the whole posture | `lean-ctx security status` · `yolo` · `secure` |
+| Disable containment for a trusted machine | `lean-ctx yolo` (keeps secret redaction on) |
 | Keep file access in-project | PathJail (on by default) |
 | Gate a cloned repo's `.lean-ctx.toml` | Workspace trust (`lean-ctx trust`) |
 | Restrict which commands run | `shell_allowlist` + `shell_strict_mode` |

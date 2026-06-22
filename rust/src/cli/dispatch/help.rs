@@ -194,6 +194,11 @@ COMMANDS:
     overview [task]                Project overview (task-contextualized if given)
     compress [--signatures]        Context compression checkpoint
     config                         Show/edit configuration (~/.lean-ctx/config.toml)
+    security [status]              Show security posture (containment + secret defense)
+    yolo                           Disable containment: any path + any command (keeps secret redaction on)
+    secure                         Restore secure defaults (path jail + shell gating + secret redaction)
+    security secrets <on|off>      Toggle secret/.env redaction (separate from containment)
+    allow <cmd>                    Allow one shell command (additive; granular re-enable after yolo)
     tools [minimal|standard|power|show|list]  How many MCP tools your agent sees
     profile [list|show|diff|create|set]  Manage context profiles (compression/read modes)
     theme [list|set|export|import] Customize terminal colors and themes

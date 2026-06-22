@@ -524,6 +524,14 @@ pub(super) fn build(sections: &mut BTreeMap<String, SectionSchema>) {
         ),
     );
     root.insert(
+        "path_jail".into(),
+        key(
+            "bool?",
+            serde_json::json!(null),
+            "Filesystem path jail. null/true = enforced (tools confined to the project root + allow_paths). false = the blanket \"any path\" opt-out — every tool path is allowed (for containers/sandboxes where the boundary is external). Compression and secret redaction are unaffected. Flip both planes at once with `lean-ctx yolo` / `lean-ctx secure`",
+        ),
+    );
+    root.insert(
         "sandbox_level".into(),
         key_with_env(
             "u8",
