@@ -202,7 +202,7 @@ COMMANDS:
     security secrets <on|off>      Toggle secret/.env redaction (separate from containment)
     allow <cmd>                    Allow one shell command (additive; granular re-enable after yolo)
     tools [minimal|standard|power|show|list]  How many MCP tools your agent sees
-    profile [list|show|diff|create|set]  Manage context profiles (compression/read modes)
+    profile [list|show|diff|create|set|suggest]  Manage context profiles (suggest = recommend from repo)
     theme [list|set|export|import] Customize terminal colors and themes
     tee [list|clear|show <file>|last] Manage output tee files (~/.lean-ctx/tee/)
     compression [off|lite|standard|max]  Set compression level (saves 25-65% tokens; alias: terse)

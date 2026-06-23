@@ -413,6 +413,7 @@ pub mod persona;
 pub mod pipeline;
 pub mod plugins;
 pub mod portable_binary;
+pub mod profile_suggest;
 pub mod profiles;
 pub mod project_hash;
 pub mod protocol;

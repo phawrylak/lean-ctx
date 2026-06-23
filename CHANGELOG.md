@@ -6,6 +6,18 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 ## [Unreleased]
 
 ### Added
+- **Repo-stack-aware profile recommendation — `lean-ctx profile suggest` (#851).**
+  Scans the current repo for deterministic, local signals (languages + source-file
+  count, monorepo layout via `pathutil::has_multi_repo_children` + workspace
+  markers, build/CI markers, configured LLM providers) and recommends a context
+  profile plus key settings (`profile`, `output_density`, `proxy.history_mode`;
+  `proxy.effort` is left off — it is never inferred from a repo). Prints the exact
+  `export` / `config set` commands to apply it, plus task-oriented alternatives
+  (`ci-debug` first when CI is detected, then `hotfix`/`bugfix`/`review`). Strictly
+  **read-only** — it never writes config. `--json` for scripting. The mapping
+  (`core::profile_suggest::suggest`) is a pure, unit-tested function separated from
+  the gitignore-aware scan, so the suggestion is a deterministic function of the
+  repo + environment (no network, no telemetry).
 - **Review-before-overwrite for consequential CLI writes (#852).** State-mutating
   writes that could clobber existing state now print a before→after diff plus a
   risk note and require confirmation (or `--yes`) — mirroring the `yolo` / `secure`

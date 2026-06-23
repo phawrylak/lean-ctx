@@ -49,6 +49,7 @@ pub fn cmd_profile(args: &[String]) {
             }
             cmd_profile_set(&args[1]);
         }
+        "suggest" => cmd_profile_suggest(&args[1..]),
         _ => {
             if profiles::load_profile(action).is_some() {
                 cmd_profile_show(action);
@@ -56,6 +57,133 @@ pub fn cmd_profile(args: &[String]) {
                 print_profile_help();
                 std::process::exit(1);
             }
+        }
+    }
+}
+
+/// `lean-ctx profile suggest [--json] [--root <path>]` (#851).
+///
+/// Read-only: scans the repo, prints a recommended profile + settings and the
+/// exact commands to apply them. Never writes config.
+fn cmd_profile_suggest(args: &[String]) {
+    use crate::core::profile_suggest;
+
+    let root = super::common::detect_project_root(args);
+    let signals = profile_suggest::analyze(&root);
+    let suggestion = profile_suggest::suggest(&signals);
+
+    if args.iter().any(|a| a == "--json") {
+        let payload = serde_json::json!({ "signals": signals, "suggestion": suggestion });
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&payload).unwrap_or_else(|_| "{}".to_string())
+        );
+        return;
+    }
+
+    render_profile_suggestion(&signals, &suggestion);
+}
+
+fn render_profile_suggestion(
+    signals: &crate::core::profile_suggest::RepoSignals,
+    suggestion: &crate::core::profile_suggest::Suggestion,
+) {
+    const BOLD: &str = "\x1b[1m";
+    const DIM: &str = "\x1b[2m";
+    const CYAN: &str = "\x1b[36m";
+    const RST: &str = "\x1b[0m";
+
+    println!(
+        "{BOLD}Profile suggestion{RST} {DIM}for {}{RST}",
+        signals.root
+    );
+    println!();
+
+    let langs = if signals.languages.is_empty() {
+        "(none detected)".to_string()
+    } else {
+        signals
+            .languages
+            .iter()
+            .take(6)
+            .map(|l| format!("{} {}", l.language, l.files))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    println!("  {BOLD}Detected{RST}");
+    println!("    languages   {langs}");
+    println!("    files       {} source files", signals.source_files);
+    println!(
+        "    monorepo    {}",
+        if signals.monorepo {
+            let m = if signals.workspace_markers.is_empty() {
+                "nested project roots".to_string()
+            } else {
+                signals.workspace_markers.join(", ")
+            };
+            format!("yes ({m})")
+        } else {
+            "no".to_string()
+        }
+    );
+    if !signals.build_markers.is_empty() {
+        println!("    build       {}", signals.build_markers.join(", "));
+    }
+    println!("    CI          {}", if signals.ci { "yes" } else { "no" });
+    let providers = if signals.providers.is_empty() {
+        "(none detected)".to_string()
+    } else {
+        signals.providers.join(", ")
+    };
+    println!("    providers   {providers}");
+    println!();
+
+    println!(
+        "  {BOLD}Suggested profile:{RST} {CYAN}{}{RST}",
+        suggestion.profile
+    );
+    for reason in &suggestion.rationale {
+        println!("    • {reason}");
+    }
+    println!();
+
+    println!("  {BOLD}Recommended settings{RST}");
+    println!("    profile          {}", suggestion.profile);
+    if let Some(hm) = &suggestion.settings.history_mode {
+        println!("    proxy.history_mode  {hm}");
+    }
+    println!(
+        "    output_density   {}",
+        suggestion.settings.output_density
+    );
+    match &suggestion.settings.effort {
+        Some(e) => println!("    proxy.effort     {e}"),
+        None => println!("    proxy.effort     {DIM}off (opt-in; raise per task){RST}"),
+    }
+    println!();
+
+    println!("  {BOLD}Apply{RST} {DIM}(you choose — nothing is changed automatically){RST}");
+    println!(
+        "    {DIM}# session-only:{RST} export LEAN_CTX_PROFILE={}",
+        suggestion.profile
+    );
+    println!(
+        "    {DIM}# persistent: {RST} lean-ctx config set profile {}",
+        suggestion.profile
+    );
+    if let Some(hm) = &suggestion.settings.history_mode {
+        println!("    lean-ctx config set proxy.history_mode {hm}");
+    }
+    println!(
+        "    lean-ctx config set output_density {}",
+        suggestion.settings.output_density
+    );
+    println!();
+
+    if !suggestion.alternatives.is_empty() {
+        println!("  {BOLD}Task profiles you can switch to{RST}");
+        for alt in &suggestion.alternatives {
+            println!("    {:<9} {DIM}— {}{RST}", alt.profile, alt.when);
         }
     }
 }
@@ -419,6 +547,7 @@ CONTEXT PROFILES — how lean-ctx compresses and reads (this command):
   lean-ctx profile active       Show the currently active context profile
   lean-ctx profile diff <a> <b> Compare two context profiles side by side
   lean-ctx profile create <name> [--from <base>] [--global]
-  lean-ctx profile set <name>   Show how to activate a context profile"
+  lean-ctx profile set <name>   Show how to activate a context profile
+  lean-ctx profile suggest      Recommend a profile from repo signals (read-only) [--json]"
     );
 }
