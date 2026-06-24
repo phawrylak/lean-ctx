@@ -3,6 +3,24 @@
 All notable changes to lean-ctx are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [Unreleased]
+
+### Changed
+- **Leaderboard — no top-50 cap, real pagination, everyone findable.** The
+  community leaderboard previously truncated to the top 50 accounts, so most
+  contributors never appeared and the headline community energy could silently
+  drop when the cut-off shifted. `GET /api/leaderboard` now paginates
+  (`?page`, `?per_page`, default 50 / max 200) and supports case-insensitive
+  name search (`?q=`), while two new fields — `total_tokens_saved` and
+  `total_cost_avoided_usd` — report the **uncapped** community totals across all
+  opted-in accounts, independent of the displayed page or any filter. The
+  server-rendered `/leaderboard` page and the website `/metrics` page gained
+  matching search + pagination controls; the landing-page hero energy stat and
+  the in-app cockpit now read the uncapped totals so headline numbers stay
+  stable. Global ranks are preserved across pages. Pagination, ranking, totals
+  and search are pure, unit-tested functions (`paginate`, `all_ranked_cards`).
+  (gitlab #868–#871)
+
 ## [3.8.12] — 2026-06-24
 
 ### Added

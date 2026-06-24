@@ -93,7 +93,9 @@ class CockpitLeaderboard extends HTMLElement {
     if (!fetchJson) return;
     this._boardError = null;
     try {
-      var resp = await fetchJson('/api/leaderboard', { timeoutMs: 12000 });
+      // The public board is paginated now; pull a generous first page for the
+      // in-app view and link out to the full board for everyone beyond it.
+      var resp = await fetchJson('/api/leaderboard?per_page=100', { timeoutMs: 12000 });
       var entries = (resp && resp.entries) || [];
       // Drop entries the server flagged for review (anomalous / under audit).
       this._board = entries.filter(function (e) {
@@ -307,7 +309,11 @@ class CockpitLeaderboard extends HTMLElement {
     } else if (!this._board || this._board.length === 0) {
       inner = '<p class="hs" style="margin:0;opacity:.7;font-size:12px">No entries yet \u2014 be the first to submit.</p>';
     } else {
-      inner = this._boardTable(esc, F);
+      inner =
+        this._boardTable(esc, F) +
+        '<p class="hs" style="margin:12px 0 0;font-size:12px">' +
+        '<a href="https://leanctx.com/metrics" target="_blank" rel="noopener noreferrer">' +
+        'See the full leaderboard \u2192</a></p>';
     }
     return '<div class="card">' + head + inner + '</div>';
   }
