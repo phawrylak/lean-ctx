@@ -189,7 +189,8 @@ tree-sitter-swift = { version = "0.7", optional = true }
 tree-sitter-php = { version = "0.24", optional = true }
 ureq = "3.3"
 # PDF → text extraction for ctx_url_read (research context layer).
-pdf-extract = "0.10"
+# 0.12 pulls lopdf >=0.42 (RUSTSEC-2026-0187: stack overflow on deeply nested PDFs).
+pdf-extract = "0.12"
 tar = "0.4"
 zip = "8.6"
 tree-sitter-bash = { version = "0.25", optional = true }
