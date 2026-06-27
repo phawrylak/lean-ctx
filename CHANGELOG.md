@@ -3,7 +3,7 @@
 All notable changes to lean-ctx are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
-## [3.8.14] — unreleased
+## [3.8.14] — 2026-06-27
 
 ### Added
 - **Write-time memory admission — dedup-merge + salience floor (gitlab #969/#970).**
@@ -140,6 +140,30 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   live model — that the crush keeps every gold answer while packing it in strictly
   fewer tokens than the raw baseline. This is the deterministic accuracy floor of
   the "crushed >= raw" claim, guarding against a future over-aggressive change.
+- **Per-upstream proxy compression stats + ChatGPT Codex support (#582).** The
+  proxy `/status` and `lean-ctx proxy status` now break compression down per
+  upstream — Anthropic, OpenAI, ChatGPT, Gemini — each with its own request /
+  byte / token-saved counters, so you can see exactly where the savings come
+  from. The split is purely additive: the existing top-level totals are
+  unchanged, and an unknown label is still counted in the totals but never
+  misattributed to a bucket. ChatGPT Codex traffic
+  (`/backend-api/codex/responses`) is recorded under its own `ChatGPT` label
+  while reusing the OpenAI Responses compression, usage, introspection and
+  holdout paths, and JSON-encoded tool-result envelopes inside Responses output
+  are now compressed/pruned without dropping items or breaking `function_call` /
+  `function_call_output` pairing (shrink-only, respects `should_protect`). The
+  research-prose squeeze cap is tunable via `LEAN_CTX_RESEARCH_PROSE_CAP`
+  (default 20000). Thanks to community contributor @ousatov-ua.
+- **Self-observability + self-curation tooling (gitlab #959–#964).** A cluster of
+  measurement-first additions that let lean-ctx report on — and tune — its own
+  context footprint: a `doctor` injected-context linter plus a budget-gated
+  per-session overhead report (#960/#964); a `health` per-tool value signal that
+  recommends disabling tools that never earn their tokens (#961); knowledge-decay
+  pruning and an ACTIVE-SESSION token budget so the injected session block stays
+  bounded (#962); a shadow-minimal rules block that trims re-teaching (#963); and
+  a deterministic footprint delta-eval harness for injected context (#959). All
+  are diagnostic/state-only — no tool-output body changes — so output determinism
+  (#498) is preserved.
 
 ### Changed
 - **`json_schema::compress` is now crush-backed (gitlab #936).** The generic JSON
@@ -177,6 +201,33 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   does not pay, it drops near-unique high-entropy columns (timestamps, UUIDs) and
   persists the verbatim original under `json_<hash>`, embedding a content-addressed
   `ctx_expand` handle so a dropped datum is never irrecoverable.
+- **`ctx_search` absorbs `ctx_semantic_search` and `ctx_symbol` (#509).** Search
+  collapses to a single action-routed `ctx_search`: an `action` argument
+  (`regex` default, `semantic`, `symbol`, `reindex`, `find_related`) routes to
+  the same engines as before, and a missing `action` is inferred so existing
+  calls keep working. The two former tools become deprecated aliases — hidden
+  from `tools/list` but still callable for one release — which trims the
+  advertised surface (Standard 17→15 tools, Minimal 6→5) so a model picks the
+  right search on the first try. Underlying search behavior is unchanged; this is
+  the final step of the #509 read/search consolidation begun in 3.8.12/3.8.13.
+- **Parallel BM25 index build and incremental rebuild (gitlab #933, #581).** The
+  full index build now tokenizes across a rayon pool and merges deterministically
+  (#933); the edit-loop incremental rebuild — changed/new/removed files on a warm
+  index — does the same (#581). Both paths are byte-for-byte identical to the
+  sequential result (covered by determinism tests and a CI build-time regression
+  gate), so first-index and reindex-after-edit are faster with no change to what
+  search returns. Credit to the #581 reference work by @ousatov-ua.
+- **Generated dependency lockfiles are excluded from the index (#585).** npm/pnpm
+  lockfiles (`package-lock.json`, `npm-shrinkwrap.json`, `pnpm-lock.yaml`) carry
+  ingestible `.json`/`.yaml` extensions and used to slip into the index, where a
+  retrieval surface (`ctx_compose`, BM25 search) would inline a large
+  auto-generated dependency pin — a pure token sink. They are now dropped at the
+  ingestion front-door via a new non-ingestible `IngestKind::Generated`, joining
+  the `*.lock`/`*.lockb` files already excluded there (the scattered `"lock"`
+  extension check is removed so detection lives in one place). Detection is by
+  file *name*, so it is depth-independent — a monorepo's
+  `frontend/package-lock.json` is caught too, unlike a root-anchored ignore glob.
+  An explicit `ctx_read`/`ctx_tree`/`ctx_glob` of a lockfile is unaffected.
 
 ### Fixed
 - **CI on `main` was red on all three `Test` jobs — a stale source-grep test
@@ -256,6 +307,35 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   centralized in one `resolve_scope` (previously the namespace logic was duplicated
   across three call sites). `GRAPH_ENGINE_VERSION` is bumped (3→4) so stale graphs
   self-heal. (gitlab #920–#924)
+- **Project-root resolution unified for search and the MCP path jail (#580,
+  #948).** An index built at the git root but searched from a sub-directory
+  resolved to a different namespace hash and returned *zero* hits; separately, an
+  MCP server launched from an agent-config directory (`.copilot` / `.cursor` /
+  `.windsurf` / `.gemini`) adopted that directory as the project root and then
+  rejected in-tree reads with "path escapes project root". A single
+  git-promotion resolver is now the one source of truth for the root, an explicit
+  sub-directory becomes a result *filter* rather than its own namespace, and an
+  agent-config CWD auto-reroots to the real project. PathJail enforcement is
+  unchanged — only root derivation is corrected. Adopted from reference PR #581
+  by @ousatov-ua.
+- **`lean-ctx call ctx_tools …` panicked on the CLI `call` path (#583).** Invoking
+  the `ctx_tools` meta-tool from the CLI crashed with "there is no reactor
+  running" because the runtime was resolved via `Handle::current()`, which only
+  exists on the MCP path (handlers there run inside `block_in_place`). It now
+  uses `Handle::try_current()`: the ambient handle is reused on the MCP path and
+  a one-shot runtime is built on the CLI path. Pure control-flow fix — MCP
+  behavior and output bytes are unchanged.
+- **`ctx_shell` could silently drop output when a child held the pipe open
+  (gitlab #945).** A process that kept the write end of the pipe open past its
+  own exit truncated the captured output; the reader now drains to EOF so the
+  full output is compressed and returned.
+- **`lean-ctx update` failed with `UnknownIssuer` behind TLS-inspecting proxies
+  (#578).** The updater now validates TLS against the OS trust store via ureq's
+  `PlatformVerifier`, so corporate roots installed in the system keychain/store
+  are honored.
+- **`gain --deep` reported "Daemon: offline" on Windows while the daemon was
+  running (#576).** The footer's daemon-status probe used a Unix-only check; it
+  now reports the daemon state correctly on Windows too.
 
 ## [3.8.13] — 2026-06-26
 
