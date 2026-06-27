@@ -100,6 +100,15 @@ pub(crate) fn persist_json(content: &str) -> Option<String> {
     persist_with(content, "json")
 }
 
+/// Persist a tabular (CSV/TSV) crusher's verbatim original (#982) under the
+/// `tbl_` prefix and return its `{state}/tee/tbl_{hash}.log` handle. Used by the
+/// lossy column-drop stage so a dropped column is always recoverable out-of-band
+/// via [`resolve_tee`] / `ctx_expand`, never reconstructed from the (lossy) text.
+/// Shares the content-address and best-effort write contract of [`persist`].
+pub(crate) fn persist_tabular(content: &str) -> Option<String> {
+    persist_with(content, "tbl")
+}
+
 fn persist_with(content: &str, prefix: &str) -> Option<String> {
     if content.len() < MIN_TEE_BYTES {
         return None;
@@ -132,9 +141,9 @@ fn is_hex(s: &str, len: usize) -> bool {
     s.len() == len && s.bytes().all(|b| b.is_ascii_hexdigit())
 }
 
-/// Canonical `{prefix}_{16hex}.log` name for a proxy / json / bare-hash id, or
-/// `None`. A bare 16-hex id defaults to the `proxy_` store (back-compat: that is
-/// the only form pre-#936 stubs carry).
+/// Canonical `{prefix}_{16hex}.log` name for a proxy / json / tbl / bare-hash id,
+/// or `None`. A bare 16-hex id defaults to the `proxy_` store (back-compat: that
+/// is the only form pre-#936 stubs carry).
 fn canonical_tee_name(name: &str) -> Option<String> {
     let stem = name.strip_suffix(".log").unwrap_or(name);
     if let Some(hash) = stem.strip_prefix("proxy_") {
@@ -142,6 +151,9 @@ fn canonical_tee_name(name: &str) -> Option<String> {
     }
     if let Some(hash) = stem.strip_prefix("json_") {
         return is_hex(hash, TEE_HASH_LEN).then(|| format!("json_{hash}.log"));
+    }
+    if let Some(hash) = stem.strip_prefix("tbl_") {
+        return is_hex(hash, TEE_HASH_LEN).then(|| format!("tbl_{hash}.log"));
     }
     is_hex(stem, TEE_HASH_LEN).then(|| format!("proxy_{stem}.log"))
 }
@@ -421,6 +433,37 @@ mod tests {
                     .to_string_lossy(),
                 json,
                 "json form {form} -> {json}"
+            );
+        }
+    }
+
+    #[test]
+    fn persist_tabular_is_distinct_prefix_and_resolvable() {
+        let _lock = crate::core::data_dir::test_env_lock();
+        let content = big("tabular crusher original");
+        let json = persist_json(&content).expect("json persisted");
+        let tbl = persist_tabular(&content).expect("tbl persisted");
+        assert!(
+            tbl.contains("tbl_"),
+            "tabular handle uses tbl_ prefix: {tbl}"
+        );
+        assert_ne!(
+            json, tbl,
+            "same content gets distinct files per producer prefix"
+        );
+
+        let hash = crate::core::hasher::hash_short(&content);
+        for form in [
+            tbl.clone(),
+            format!("tbl_{hash}.log"),
+            format!("tbl_{hash}"),
+        ] {
+            assert_eq!(
+                resolve_tee(&form)
+                    .expect("tbl form resolves")
+                    .to_string_lossy(),
+                tbl,
+                "tbl form {form} -> {tbl}"
             );
         }
     }

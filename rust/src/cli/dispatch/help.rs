@@ -197,6 +197,7 @@ COMMANDS:
     overview [task]                Project overview (task-contextualized if given)
     explore <query> [--citation]   Iterative code exploration → file:line citations
     compress [--signatures]        Context compression checkpoint
+    compress diff <file|-> [--shell \"cmd\"] [--json]  Preview compression: original vs emitted + token diff
     config                         Show/edit configuration (~/.lean-ctx/config.toml)
     security [status]              Show security posture (containment + secret defense)
     yolo                           Disable containment: any path + any command (keeps secret redaction on)

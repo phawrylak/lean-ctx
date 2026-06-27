@@ -10,6 +10,7 @@ pub mod auto_findings;
 pub mod codebook;
 #[cfg(target_os = "macos")]
 pub mod codesign;
+pub mod compress_preview;
 pub mod compression_safety;
 pub mod compressor;
 pub mod datadog_push;
@@ -35,6 +36,7 @@ pub mod rules_channel;
 pub mod rules_overhead;
 pub mod structural_tokenizer;
 pub mod structured_read;
+pub mod tabular_crush;
 
 /// Convenience re-export: all compression-related modules.
 pub mod compression {

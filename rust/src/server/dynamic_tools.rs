@@ -78,7 +78,7 @@ pub fn categorize_tool(name: &str) -> ToolCategory {
 
         // Debug/Verify: on-demand quality analysis
         "ctx_benchmark" | "ctx_verify" | "ctx_analyze" | "ctx_profile" | "ctx_proof"
-        | "ctx_review" => ToolCategory::Debug,
+        | "ctx_review" | "ctx_compare" => ToolCategory::Debug,
 
         // Provider + URL/Git readers + the MCP gateway are Core: gateways to
         // external context (GitHub issues, Jira, Postgres, web pages, YouTube,
@@ -208,6 +208,7 @@ pub fn is_readonly_tool(name: &str) -> bool {
             | "ctx_cost"
             | "ctx_gain"
             | "ctx_heatmap"
+            | "ctx_compare"
     )
 }
 

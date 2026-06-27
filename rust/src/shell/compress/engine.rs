@@ -116,6 +116,66 @@ pub(crate) fn verbatim_json_crush_lossy(
     ))
 }
 
+/// Try the columnar crusher with the comma then the tab delimiter, returning the
+/// first that crushes. Shell output carries no file extension, so the delimiter
+/// is inferred by trying the two common ones; the crusher self-guards (returns
+/// `None` unless the text is a genuinely redundant rectangular table).
+fn tabular_delim_crush<T>(output: &str, crush: impl Fn(&str, char) -> Option<T>) -> Option<T> {
+    [',', '\t'].into_iter().find_map(|d| crush(output, d))
+}
+
+/// Opt-in (#982) lossless crush of a *verbatim* command's delimited (CSV/TSV)
+/// output, tried after the JSON crush did not pay. Hoists constant columns via
+/// the columnar crusher — fully reconstructible, so no CCR handle is needed.
+/// Returns a footer'd reshape only when `enabled` and the crush both pays (at
+/// least halves the bytes) and clears the token floor; otherwise `None`.
+pub(crate) fn verbatim_tabular_crush(
+    output: &str,
+    original_tokens: usize,
+    min_output_tokens: usize,
+    enabled: bool,
+) -> Option<String> {
+    if !enabled {
+        return None;
+    }
+    let crushed =
+        tabular_delim_crush(output, crate::core::tabular_crush::crush_text_if_beneficial)?;
+    let crushed_tokens = count_tokens(&crushed);
+    (crushed_tokens >= min_output_tokens && crushed_tokens < original_tokens)
+        .then(|| shell_savings_footer(&crushed, original_tokens, crushed_tokens))
+}
+
+/// Opt-in (#982) **lossy** escalation for a verbatim command's CSV/TSV output,
+/// used only after [`verbatim_tabular_crush`] (lossless) did not pay. Drops
+/// near-unique high-entropy columns and — because data is then lost — persists
+/// the verbatim original to the shared CCR store, appending a `ctx_expand` handle
+/// so a dropped datum is always recoverable out-of-band (never from the text).
+/// The embedded handle is content-addressed, so the output stays byte-stable
+/// across turns (#448/#498).
+pub(crate) fn verbatim_tabular_crush_lossy(
+    output: &str,
+    original_tokens: usize,
+    min_output_tokens: usize,
+    enabled: bool,
+) -> Option<String> {
+    if !enabled {
+        return None;
+    }
+    let res = tabular_delim_crush(output, |text, delim| {
+        crate::core::tabular_crush::crush_text_lossy_if_beneficial(text, delim, LOSSY_DROP_ENTROPY)
+    })?;
+    let crushed_tokens = count_tokens(&res.text);
+    if crushed_tokens < min_output_tokens || crushed_tokens >= original_tokens {
+        return None;
+    }
+    let handle = crate::proxy::ccr::persist_tabular(output)?;
+    let body = shell_savings_footer(&res.text, original_tokens, crushed_tokens);
+    Some(format!(
+        "{body}\n[lean-ctx: high-entropy column(s) dropped — full data at {handle}, \
+         ctx_expand(id=\"{handle}\", search=\"…\") for a slice]"
+    ))
+}
+
 pub(crate) fn compress_if_beneficial(command: &str, output: &str) -> String {
     if output.trim().is_empty() {
         return String::new();
@@ -188,6 +248,18 @@ pub(crate) fn compress_if_beneficial(command: &str, output: &str) -> String {
             }
             if let Some(crushed) =
                 verbatim_json_crush_lossy(output, original_tokens, min_output_tokens, enabled)
+            {
+                return crushed;
+            }
+            // Non-JSON delimited data (CSV/TSV): same lossless-then-lossy ladder,
+            // self-guarding so only a genuinely redundant table is ever reshaped.
+            if let Some(crushed) =
+                verbatim_tabular_crush(output, original_tokens, min_output_tokens, enabled)
+            {
+                return crushed;
+            }
+            if let Some(crushed) =
+                verbatim_tabular_crush_lossy(output, original_tokens, min_output_tokens, enabled)
             {
                 return crushed;
             }

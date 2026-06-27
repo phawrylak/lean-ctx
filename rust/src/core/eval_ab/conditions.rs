@@ -43,6 +43,12 @@ pub enum Condition {
     /// structured data. Used to measure json_crush's token savings and its
     /// answer-preservation floor in isolation (#942).
     JsonCrush,
+    /// Treatment variant that routes CSV/TSV through the columnar
+    /// [`crate::core::tabular_crush`] core (lossless constant-column hoisting)
+    /// instead of the line-based compaction the generic [`aggressive_compress`]
+    /// applies to delimited data. Measures tabular_crush's token savings and its
+    /// answer-preservation floor in isolation (#982).
+    TabularCrush,
 }
 
 impl Condition {
@@ -52,6 +58,7 @@ impl Condition {
             Condition::Baseline => "baseline",
             Condition::LeanCtx => "lean_ctx",
             Condition::JsonCrush => "json_crush",
+            Condition::TabularCrush => "tabular_crush",
         }
     }
 }
@@ -80,6 +87,7 @@ pub fn assemble(
         Condition::Baseline => baseline_entries(workspace),
         Condition::LeanCtx => lean_ctx_entries(workspace, query),
         Condition::JsonCrush => json_crush_entries(workspace, query),
+        Condition::TabularCrush => tabular_crush_entries(workspace, query),
     };
     Ok(pack(&entries, budget))
 }
@@ -107,6 +115,21 @@ fn json_crush_entries(workspace: &Path, query: &str) -> Vec<(String, String)> {
             .unwrap_or_else(|| aggressive_compress(content, ext)),
         _ => aggressive_compress(content, ext),
     })
+}
+
+/// Like [`lean_ctx_entries`], but CSV/TSV files go through the columnar
+/// `tabular_crush` core (lossless) when it pays, instead of line-based
+/// compaction. Every other file uses the same `aggressive_compress` path.
+fn tabular_crush_entries(workspace: &Path, query: &str) -> Vec<(String, String)> {
+    ranked_entries(
+        workspace,
+        query,
+        |content, ext| match crate::core::compressor::tabular_delimiter(ext) {
+            Some(delim) => crate::core::tabular_crush::crush_text_if_beneficial(content, delim)
+                .unwrap_or_else(|| aggressive_compress(content, ext)),
+            None => aggressive_compress(content, ext),
+        },
+    )
 }
 
 /// Shared BM25-ranked assembly: rank `workspace` files by `query`, render each
@@ -296,6 +319,31 @@ mod tests {
         assert_eq!(
             crushed.digest, again.digest,
             "json_crush assembly is deterministic"
+        );
+    }
+
+    #[test]
+    fn tabular_crush_condition_beats_baseline_and_is_deterministic() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut csv = String::from("id,name,status,region,tier\n");
+        for i in 0..40 {
+            csv.push_str(&format!("{i},user{i},active,eu-central-1,standard\n"));
+        }
+        fs::write(dir.path().join("roster.csv"), csv).unwrap();
+
+        let crushed = assemble(Condition::TabularCrush, dir.path(), "roster status", 4000).unwrap();
+        let baseline = assemble(Condition::Baseline, dir.path(), "roster status", 4000).unwrap();
+        assert!(
+            crushed.tokens < baseline.tokens,
+            "tabular crush {} must beat baseline {}",
+            crushed.tokens,
+            baseline.tokens
+        );
+
+        let again = assemble(Condition::TabularCrush, dir.path(), "roster status", 4000).unwrap();
+        assert_eq!(
+            crushed.digest, again.digest,
+            "tabular_crush assembly is deterministic"
         );
     }
 

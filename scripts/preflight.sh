@@ -60,6 +60,7 @@ classify_changes() {
   RUST_CHANGED=0
   GENERATED_DOCS_CHANGED=0
   CONTRACT_CHANGED=0
+  CCR_CHANGED=0
   TEST_SIGNAL=0
   CHANGED_COUNT=0
   CLASSIFY_OK=1
@@ -93,6 +94,11 @@ classify_changes() {
     esac
     case "$f" in
       rust/src/proxy/*|rust/src/tools/*|rust/src/core/config/schema/*) CONTRACT_CHANGED=1 ;;
+    esac
+    # CCR recovery surface (#983): a change here must keep the robustness suite
+    # green, so flag it for the change-aware `cargo test --lib ccr_robustness` gate.
+    case "$f" in
+      rust/src/proxy/ccr.rs|rust/src/proxy/ccr_robustness_tests.rs|rust/src/tools/ctx_expand.rs|rust/src/tools/registered/ctx_retrieve.rs|rust/src/core/read_stub_index.rs|rust/src/core/tabular_crush.rs) CCR_CHANGED=1 ;;
     esac
     case "$f" in
       rust/tests/*|*/tests/*|*test*.rs|*tests.rs) TEST_SIGNAL=1 ;;
@@ -216,6 +222,16 @@ if [[ "$RUN_RUST" -eq 1 ]]; then
   fi
 else
   skip "Windows cross-compile ($WIN_TARGET)" "no Rust/Cargo files changed (docs-only)"
+fi
+
+# CCR robustness gate (#983) — change-aware: `full` already runs every lib test,
+# so only `fast` needs this focused build, and only when the recovery surface
+# changed. A test build is otherwise kept out of `fast` by design.
+if [[ "$LEVEL" != "full" && "$RUN_RUST" -eq 1 && "$CCR_CHANGED" -eq 1 ]]; then
+  step "CCR robustness regression (cargo test --lib ccr_robustness)" \
+    env RUSTFLAGS=-Dwarnings cargo test --lib --all-features ccr_robustness
+elif [[ "$LEVEL" != "full" ]]; then
+  skip "CCR robustness regression" "no CCR recovery files changed"
 fi
 
 if [[ "$LEVEL" = "full" ]]; then

@@ -3,6 +3,8 @@ pub mod cache_aligner;
 pub mod cache_breakpoint;
 pub mod cache_safety;
 pub mod ccr;
+#[cfg(test)]
+mod ccr_robustness_tests;
 pub mod chatgpt;
 pub mod chatgpt_cookies;
 pub mod cold_prefix;

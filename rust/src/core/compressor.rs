@@ -50,6 +50,16 @@ pub fn aggressive_compress(content: &str, ext: Option<&str>) -> String {
         return compacted;
     }
 
+    // Tabular data (CSV/TSV, #982): a redundant table with constant columns
+    // compacts losslessly through the columnar crusher far better than the
+    // line-based path below. Fires only when it at least halves the input;
+    // otherwise fall through. The exact bytes stay recoverable via a full re-read.
+    if let Some(delim) = tabular_delimiter(ext)
+        && let Some(crushed) = crate::core::tabular_crush::crush_text_if_beneficial(content, delim)
+    {
+        return crushed;
+    }
+
     let mut result: Vec<String> = Vec::new();
     let is_python = matches!(ext, Some("py"));
     let is_html = matches!(ext, Some("html" | "htm" | "xml" | "svg"));
@@ -188,6 +198,15 @@ pub fn safeguard_ratio(original: &str, compressed: &str) -> String {
         original.to_string()
     } else {
         compressed.to_string()
+    }
+}
+
+/// Delimiter for a delimited-table extension, or `None` for non-tabular files.
+pub(crate) fn tabular_delimiter(ext: Option<&str>) -> Option<char> {
+    match ext {
+        Some("csv") => Some(','),
+        Some("tsv" | "tab") => Some('\t'),
+        _ => None,
     }
 }
 

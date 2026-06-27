@@ -6,6 +6,35 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 ## [Unreleased]
 
 ### Added
+- **Columnar crusher for CSV/TSV — reads and shell output (#982).** A new
+  `core/tabular_crush` rewrites row-oriented delimited data into a columnar JSON
+  shape: constant columns are hoisted once into `_const`, varying columns stay
+  positional in `_rows`, so a table whose values repeat down a column stops
+  paying for that column on every line. It is wired into the aggressive read path
+  (`compressor`, `ctx_read`) for `.csv`/`.tsv` and into shell-output compression
+  (`shell/compress/engine`), and only fires when it clears a 25 % size gate
+  (columnar JSON quoting has overhead, so the bar is tuned below the JSON
+  crusher's 50 %). The lossless mode round-trips exactly; an opt-in lossy mode
+  drops high-entropy columns into `_dropped` with full CCR recovery (`tbl_`
+  tee-store prefix, `<lc_expand:…>` handle). Deterministic (#498) and never
+  inflates. A `Condition::TabularCrush` arm in the A/B harness measures the win.
+- **CCR robustness regression suite (#983).** Nine focused tests
+  (`proxy/ccr_robustness_tests`) lock down the content-addressed-recovery path
+  against the failure classes seen in comparable context layers: a lossy rewrite
+  that emits a handle it cannot back, retrieval after the tee file is gone past
+  its TTL, an in-band splice on a streaming-shaped request, the tee store
+  colliding with read-stub bookkeeping, path-traversal / non-tee / bad-hex
+  handles, and the cold stub index resurrecting content across a restart. A
+  change-aware preflight gate runs them on `fast` whenever the recovery surface
+  changes and on every `full` run, so the guarantees stay green without slowing
+  unrelated work.
+- **See compression before it ships — `compress diff` + `ctx_compare` (#984).** A
+  read-only `core/compress_preview` renders original-vs-emitted side by side with
+  byte and token accounting, the saved-token delta and ratio, and a unified diff,
+  reusing the real read/shell pipelines (no separate code path to drift). Exposed
+  as the CLI `lean-ctx compress diff <file|-> [--shell "cmd"] [--json]` and the
+  read-only MCP tool `ctx_compare` (Debug category). Deterministic and
+  self-describing, so an agent can decide whether a rewrite is worth it.
 - **`ctx_outline` levels up — directory outline, deterministic JSON, name filter,
   verifiable AST backend (gitlab #981).** A public review (the ast-grep author,
   comparing his new `ast-grep outline`) called our outline *"fishy"* — fair only as

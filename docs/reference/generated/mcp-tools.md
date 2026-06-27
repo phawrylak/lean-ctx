@@ -4,7 +4,7 @@
 
 Source of truth: `rust/src/server/registry.rs` and the tool definitions it registers.
 
-lean-ctx registers **78 MCP tools** (granular profile). Each entry below lists the tool name, what it does, and its parameters (`*` marks required).
+lean-ctx registers **79 MCP tools** (granular profile). Each entry below lists the tool name, what it does, and its parameters (`*` marks required).
 
 ## `ctx_agent`
 
@@ -94,6 +94,15 @@ diff from=... to=... (compare checkpoints), restore ref=... (revert files).
 ANTIPATTERN: Never touches the user's repository — completely isolated shadow history.
 
 Parameters: `action`, `from`, `limit`, `message`, `path`, `ref`, `to`
+
+## `ctx_compare`
+
+Preview compression — original vs the bytes lean-ctx would emit, with token counts + line diff.
+INPUT (pick one): path=<file> (read pipeline) | content=<text> [+ ext=rs|json|csv] (read pipeline) | command=<cmd> + output=<text> (shell pipeline).
+Read-only: never changes files, cache, or session. Use to decide whether a mode/pipeline is worth it.
+ANTIPATTERN: not for reading files (use ctx_read) or restoring archived output (use ctx_expand).
+
+Parameters: `command`, `content`, `ext`, `output`, `path`
 
 ## `ctx_compile`
 

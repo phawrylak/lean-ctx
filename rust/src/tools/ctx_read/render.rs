@@ -374,6 +374,25 @@ pub(crate) fn process_mode_tuned(
                 }
             }
 
+            // Tabular data (CSV/TSV, #982): a redundant table hoists its constant
+            // columns once through the columnar crusher (lossless); the exact
+            // bytes stay recoverable via a `full`/`raw` re-read.
+            if let Some(delim) = compressor::tabular_delimiter(Some(ext))
+                && let Some(crushed) =
+                    crate::core::tabular_crush::crush_text_if_beneficial(content, delim)
+            {
+                let header = build_header(file_ref, short, ext, content, line_count, true);
+                let body = format!("{header}\n{crushed}");
+                let sent = count_tokens(&body);
+                if sent < original_tokens {
+                    let savings = protocol::format_savings(original_tokens, sent);
+                    return (
+                        append_compressed_hint(&format!("{body}\n{savings}"), file_path),
+                        sent,
+                    );
+                }
+            }
+
             #[cfg(feature = "tree-sitter")]
             let ast_pruned = crate::core::signatures_ts::ast_prune(content, ext);
             #[cfg(not(feature = "tree-sitter"))]
