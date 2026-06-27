@@ -179,7 +179,7 @@ ctx_workflow action=transition to=verify
 
 ## 6. Dynamic tool loading — keep the surface small
 
-You don't need all 78 tools loaded to use one. Lazy clients (and `minimal`/
+You don't need all 79 tools loaded to use one. Lazy clients (and `minimal`/
 `standard` profiles) reach deeper tools on demand:
 
 ```text
@@ -204,6 +204,7 @@ runtime.
 | `ctx_feedback` | — | Record LLM output tokens + latency for harness feedback |
 | `ctx_benchmark` | `lean-ctx benchmark` | Benchmark compression modes for a file/project |
 | `ctx_analyze` | — | Entropy analysis → recommends the optimal compression mode |
+| `ctx_compare` | — | Preview compression — original vs the bytes lean-ctx would emit (read-only) |
 
 ```bash
 lean-ctx benchmark run            # compare read modes on this repo

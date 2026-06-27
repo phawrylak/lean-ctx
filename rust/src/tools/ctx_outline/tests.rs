@@ -143,14 +143,20 @@ fn no_match_message_is_informative() {
 
 #[test]
 #[cfg(unix)]
-fn symlink_is_rejected() {
+fn symlink_in_tree_is_followed() {
+    // `run` outlines the symlink's real target; escape protection (a symlink
+    // pointing outside the project root) is the resolution layer's job and is
+    // covered by the PathJail tests in `server::tool_trait`. Here we lock in that
+    // an *in-tree* symlink is treated like the file it points at, not rejected
+    // with a misleading "skipped for security" message that never fires on the
+    // live MCP path.
     let tmp = tempfile::tempdir().unwrap();
     let target = tmp.path().join("real.rs");
-    std::fs::write(&target, "pub fn a() {}\n").unwrap();
+    std::fs::write(&target, "pub fn alpha() {}\n").unwrap();
     let link = tmp.path().join("link.rs");
     std::os::unix::fs::symlink(&target, &link).unwrap();
     let (out, _) = run(link.to_str().unwrap(), &OutlineOpts::default());
-    assert!(out.contains("symlink"), "{out}");
+    assert!(out.contains("alpha"), "{out}");
 }
 
 // --- directory -----------------------------------------------------------

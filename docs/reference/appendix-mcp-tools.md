@@ -1,4 +1,4 @@
-# Appendix — MCP Tool Map (all 78 tools)
+# Appendix — MCP Tool Map (all 79 tools)
 
 Every tool lean-ctx registers via `rust/src/server/registry.rs`. Your AI editor
 calls these instead of its native file/search tools. The **Profile** column
@@ -96,6 +96,7 @@ shows the smallest tool profile that exposes the tool (`M` minimal, `S` standard
 | `ctx_heatmap` | File-access heatmap | status\|directory\|cold\|json | P |
 | `ctx_benchmark` | Benchmark compression modes for a file/project | `path`*, `action`, `format` | P |
 | `ctx_analyze` | Entropy analysis — recommends optimal compression mode | `path`* | P |
+| `ctx_compare` | Preview compression — original vs the bytes lean-ctx would emit, with token counts + line diff (read-only) | `path` \| `content`+`ext` \| `command`+`output` | P |
 | `ctx_feedback` | Harness feedback for LLM output tokens & latency | record\|report\|reset | P |
 | `ctx_discover` | Find missed compression opportunities in shell history | `limit` | P |
 | `ctx_verify` | Verification observability + ContextProofV2 | stats\|proof\|v2 | P |
@@ -138,9 +139,9 @@ shows the smallest tool profile that exposes the tool (`M` minimal, `S` standard
 
 ## Notes
 
-1. `power` enables all 78 tools; `ToolProfile::is_tool_enabled()` returns `true`
+1. `power` enables all 79 tools; `ToolProfile::is_tool_enabled()` returns `true`
    for everything under power.
 2. `ctx_load_tools` controls *dynamic* categories (`arch`, `debug`, `memory`,
    `metrics`, `session`) independently of the static profile filter.
 3. Lazy clients use `ctx_call` + `ctx_discover_tools` + `ctx_load_tools` to reach
-   tools not in their active profile without listing all 78 upfront.
+   tools not in their active profile without listing all 79 upfront.

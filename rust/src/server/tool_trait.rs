@@ -115,6 +115,17 @@ pub trait McpTool: Send + Sync {
     /// `ctx` provides access to resolved paths and project state.
     fn handle(&self, args: &Map<String, Value>, ctx: &ToolContext)
     -> Result<ToolOutput, ErrorData>;
+
+    /// Whether *this* invocation yields a machine-readable payload (e.g. JSON)
+    /// that must reach the client byte-exact and parseable. When `true`, the
+    /// dispatch pipeline suppresses every human-oriented decoration
+    /// (auto-context briefing, verify footer, hints, checkpoints, deprecation
+    /// notices) and terse compression for this call, returning the pure body.
+    /// Keyed on `args` because most tools emit machine-readable output only for
+    /// an opt-in format flag (e.g. `format=json`); defaults to `false` (#990).
+    fn produces_machine_readable(&self, _args: Option<&Map<String, Value>>) -> bool {
+        false
+    }
 }
 
 /// Context passed to tool handlers. Contains pre-resolved values that

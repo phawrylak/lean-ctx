@@ -21,7 +21,7 @@ This catalog is the single feature inventory for LeanCTX at release/runtime leve
 
 ## Runtime Surface (Current)
 
-- Granular MCP tools: **78**
+- Granular MCP tools: **79**
 - Unified MCP tools: **5**
 - MCP Resources: **5**
 - MCP Prompts: **5**
@@ -43,7 +43,7 @@ This catalog is the single feature inventory for LeanCTX at release/runtime leve
 
 ---
 
-## Granular MCP Tools (78)
+## Granular MCP Tools (79)
 
 ### A) Read / Search / IO Surface
 
@@ -123,6 +123,7 @@ Import supports three formats: native `ProjectKnowledge` JSON, simple `[{categor
 - `ctx_gain` _(actions: wrapped, summary, delta)_
 - `ctx_execute`
 - `ctx_benchmark`
+- `ctx_compare` _(preview compression — original vs the bytes lean-ctx would emit + token counts and line diff, read-only)_
 - `ctx_response`
 - `ctx_tools` _(MCP Tool-Catalog Gateway — actions: find, call, list, refresh; routes/proxies unlimited downstream MCP servers at constant context cost)_
 

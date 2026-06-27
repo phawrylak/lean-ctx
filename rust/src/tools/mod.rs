@@ -96,7 +96,15 @@ mod resolve_path_tests {
 
     #[cfg(not(feature = "no-jail"))]
     #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
     async fn resolve_path_can_reroot_to_trusted_startup_root_when_session_root_is_stale() {
+        // #991: serialize via `isolated_data_dir` (holds `test_env_lock`) so the
+        // `LEAN_CTX_ALLOW_REROOT` set below cannot be removed by a sibling
+        // reroot test running in parallel (e.g. the `remove_var` in
+        // `..._without_opt_in`) between set and `resolve_path` — which would
+        // silently disable rerooting and flake this assertion. Cleaned up at the
+        // end so the opt-in never leaks to other tests.
+        let _iso = crate::core::data_dir::isolated_data_dir();
         crate::test_env::set_var("LEAN_CTX_ALLOW_REROOT", "1");
         let tmp = tempfile::tempdir().unwrap();
         let stale = tmp.path().join("stale");
@@ -128,6 +136,8 @@ mod resolve_path_tests {
         let session = server.session.read().await;
         assert_eq!(session.project_root.as_deref(), Some(real_root.as_str()));
         assert_eq!(session.shell_cwd.as_deref(), Some(real_root.as_str()));
+        drop(session);
+        crate::test_env::remove_var("LEAN_CTX_ALLOW_REROOT");
     }
 
     #[cfg(not(feature = "no-jail"))]

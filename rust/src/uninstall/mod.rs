@@ -655,6 +655,13 @@ mod tests {
 
     #[test]
     fn data_dirs_to_remove_covers_canonical_xdg_categories() {
+        // `core::paths::*_dir()` reads the (test-sandboxed) data-dir env, which a
+        // parallel `isolated_data_dir()` repoints under `test_env_lock`. We resolve
+        // those dirs twice — once inside `data_dirs_to_remove` and once in the
+        // assertion loop — so without the lock the value can flip between the two
+        // reads (override active → dropped) and the set won't contain the second
+        // value. Hold the lock so the env stays fixed across both reads (#991).
+        let _lock = crate::core::data_dir::test_env_lock();
         let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/home/tester"));
         let dirs = data_dirs_to_remove(&home);
 

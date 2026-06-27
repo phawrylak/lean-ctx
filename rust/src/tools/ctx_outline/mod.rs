@@ -44,15 +44,15 @@ struct FileSymbols {
 /// where `original_tokens` is the full-read baseline used for savings reporting.
 #[must_use]
 pub fn run(path: &str, opts: &OutlineOpts) -> (String, usize) {
+    // Path containment is enforced upstream by the resolution layer
+    // (`require_resolved_path` → `resolve_path`), the sole caller of `run` on the
+    // live MCP path: an escaping path (absolute, `..`, or a symlink whose target
+    // leaves the project root) is rejected before we are reached. An in-tree
+    // symlink therefore arrives already resolved to its real, in-jail target and
+    // is outlined like any other file — so we deliberately do not second-guess it
+    // here with a misleading "skipped for security" message that never fires on
+    // the live path. `metadata()` (not `symlink_metadata()`) follows the link.
     let p = std::path::Path::new(path);
-    if p.symlink_metadata()
-        .is_ok_and(|m| m.file_type().is_symlink())
-    {
-        return (
-            format!("ERROR: {path} is a symlink (skipped for security)"),
-            0,
-        );
-    }
     match p.metadata() {
         Ok(m) if m.is_dir() => dir::outline_dir(path, opts),
         Ok(_) => outline_file(path, opts),
