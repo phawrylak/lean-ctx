@@ -264,6 +264,16 @@ pub struct Config {
     /// Override via LEAN_CTX_READ_ONLY_ROOTS env var (path-list separator).
     #[serde(default)]
     pub read_only_roots: Vec<String>,
+    /// Extra trusted roots OUTSIDE `$HOME` that lean-ctx may follow when an agent
+    /// config file/dir (`~/.claude.json`, `~/.codex/config.toml`, …) is a symlink
+    /// pointing there (#596). Empty by default → the strict `$HOME`-only boundary
+    /// stays in force (a planted symlink can never redirect a config write out of
+    /// the user's home, preserving the GL#442 symlink-hijack protection). Add a
+    /// parent like `/opt/dotfiles` only for a location you own and trust. Like
+    /// `extra_roots`, security-sensitive: stripped from untrusted project-local
+    /// configs. Override via LEAN_CTX_ALLOW_SYMLINK_ROOTS env var (path-list sep).
+    #[serde(default)]
+    pub allow_symlink_roots: Vec<String>,
     /// Enable content-defined chunking (Rabin-Karp) for cache-optimal output ordering.
     /// Stable chunks are emitted first to maximize prompt cache hits.
     #[serde(default)]
@@ -603,6 +613,7 @@ impl Default for Config {
             allow_ide_config_dirs: None,
             extra_roots: Vec::new(),
             read_only_roots: Vec::new(),
+            allow_symlink_roots: Vec::new(),
             content_defined_chunking: false,
             minimal_overhead: true,
             symbol_map_auto: false,
@@ -714,6 +725,10 @@ fn strip_sensitive_overrides(local: &mut Config) -> Vec<&'static str> {
     if !local.extra_roots.is_empty() {
         local.extra_roots.clear();
         withheld.push("extra_roots");
+    }
+    if !local.allow_symlink_roots.is_empty() {
+        local.allow_symlink_roots.clear();
+        withheld.push("allow_symlink_roots");
     }
     if !local.custom_aliases.is_empty() {
         local.custom_aliases.clear();
@@ -1616,6 +1631,11 @@ impl Config {
         // boundary), never remove them — merge mirrors extra_roots (#475).
         if !local.read_only_roots.is_empty() {
             self.read_only_roots.extend(local.read_only_roots);
+        }
+        // Symlink write-through roots (#596) follow extra_roots: a *trusted*
+        // workspace may add roots, an untrusted one is stripped above.
+        if !local.allow_symlink_roots.is_empty() {
+            self.allow_symlink_roots.extend(local.allow_symlink_roots);
         }
         if local.minimal_overhead {
             self.minimal_overhead = true;
