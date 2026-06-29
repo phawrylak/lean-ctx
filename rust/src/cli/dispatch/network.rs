@@ -388,7 +388,7 @@ fn vscode_fallback_open_mode(no_open: bool) -> &'static str {
 pub(super) fn cmd_dashboard(rest: &[String]) {
     if rest.iter().any(|a| a == "--help" || a == "-h") {
         println!(
-            "Usage: lean-ctx dashboard [--port=N] [--host=H] [--base-path=PREFIX] [--auth-token=TOKEN] [--project=PATH] [--vscode] [--export]"
+            "Usage: lean-ctx dashboard [--port=N] [--host=H] [--base-path=PREFIX] [--auth-token=TOKEN] [--no-auth] [--project=PATH] [--vscode] [--export]"
         );
         println!("Examples:");
         println!("  lean-ctx dashboard");
@@ -399,6 +399,18 @@ pub(super) fn cmd_dashboard(rest: &[String]) {
         );
         println!(
             "  lean-ctx dashboard --auth-token=<token>     Pin the Bearer token (alias --token; overrides LEAN_CTX_HTTP_TOKEN)"
+        );
+        println!(
+            "  lean-ctx dashboard --no-auth                Run without a Bearer token (alias --auth=false)."
+        );
+        println!(
+            "                                              Cross-origin/CSRF + DNS-rebinding stay blocked via"
+        );
+        println!(
+            "                                              Sec-Fetch-Site/Origin/Host checks. Best on loopback;"
+        );
+        println!(
+            "                                              for Docker publish to 127.0.0.1 (-p 127.0.0.1:PORT:PORT)."
         );
         println!("  lean-ctx dashboard --export        Export HTML report (replaces visualize)");
         println!(
@@ -419,6 +431,12 @@ pub(super) fn cmd_dashboard(rest: &[String]) {
         );
         println!(
             "  LEAN_CTX_SCRAPE_TOKEN=<token> Read-only token accepted ONLY for GET /metrics — hand this to Prometheus/Datadog agents instead of the dashboard token (docs/integrations/datadog.md)."
+        );
+        println!(
+            "  LEAN_CTX_DASHBOARD_AUTH=true|false  Require the Bearer token (default true). false = no-auth mode (overridden by --no-auth/--auth=). Also settable via `lean-ctx config set dashboard_auth`."
+        );
+        println!(
+            "  LEAN_CTX_DASHBOARD_ALLOWED_HOSTS=host:port,…  Extra Host header values accepted in no-auth mode (loopback + bound host are always allowed)."
         );
         return;
     }
@@ -474,6 +492,22 @@ pub(super) fn cmd_dashboard(rest: &[String]) {
                 .or_else(|| p.strip_prefix("--token="))
         })
         .map(String::from);
+    // `--no-auth` / `--auth=<bool>`: run the dashboard without a Bearer token.
+    // No-auth is not unprotected — cross-origin/CSRF and DNS-rebinding are blocked
+    // by request-header checks (Sec-Fetch-Site/Origin/Host allowlist). Precedence:
+    // this flag > LEAN_CTX_DASHBOARD_AUTH env > `dashboard_auth` config > true.
+    // `None` = "not given on the CLI" so the env/config decides.
+    let auth_enabled = if rest.iter().any(|a| a == "--no-auth") {
+        Some(false)
+    } else {
+        rest.iter()
+            .find_map(|p| p.strip_prefix("--auth="))
+            .and_then(|v| match v.trim().to_ascii_lowercase().as_str() {
+                "true" | "1" | "yes" | "on" => Some(true),
+                "false" | "0" | "no" | "off" => Some(false),
+                _ => None,
+            })
+    };
     // `--open=<browser|none|vscode>`: how to reveal the URL once the server is
     // up. `--no-open` is shorthand for `--open=none` (#424). Overrides
     // LEAN_CTX_DASHBOARD_OPEN.
@@ -533,7 +567,12 @@ pub(super) fn cmd_dashboard(rest: &[String]) {
     crate::core::layout_pin::heal();
     super::spawn_proxy_if_needed();
     super::run_async(dashboard::start(
-        port, host, base_path, auth_token, open_mode,
+        port,
+        host,
+        base_path,
+        auth_token,
+        open_mode,
+        auth_enabled,
     ));
 }
 

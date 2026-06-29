@@ -75,6 +75,7 @@ pub async fn start(
     base_path: Option<String>,
     auth_token: Option<String>,
     open_mode: Option<String>,
+    auth_enabled: Option<bool>,
 ) {
     // How to reveal the URL once the server is up: --open= flag > env > browser.
     let open = resolve_open_mode(open_mode.as_deref());
@@ -102,6 +103,18 @@ pub async fn start(
 
     let addr = format!("{host}:{port}");
     let is_local = host == "127.0.0.1" || host == "localhost" || host == "::1";
+
+    // Whether the dashboard requires a Bearer token. Precedence:
+    // `--no-auth`/`--auth=` flag > LEAN_CTX_DASHBOARD_AUTH env > `dashboard_auth`
+    // config > default `true`. When disabled, no token is generated and the
+    // sensitive endpoints (`/api/*`, `/metrics`) are guarded by request-header
+    // checks (Sec-Fetch-Site / Origin / Host allowlist) instead — see
+    // `no_auth_request_ok`.
+    let auth_required = resolve_auth_enabled(auth_enabled);
+
+    // Host values accepted in no-auth mode (anti-DNS-rebinding allowlist). Built
+    // once and shared with every connection.
+    let allowed_hosts = Arc::new(build_allowed_hosts(&host, port));
 
     // Resolve any *requested* fixed token (flag > LEAN_CTX_HTTP_TOKEN) up-front;
     // `None` means "generate a random one". Done before the already-running check
@@ -132,10 +145,21 @@ pub async fn start(
         return;
     }
 
-    // Always enable auth (even on loopback) to prevent cross-origin reads of /api/*
-    // from a malicious website (CORS is not a reliable boundary for localhost services).
-    let t = requested_token.unwrap_or_else(generate_token);
-    let token = Some(Arc::new(t));
+    // Auth defaults on (even on loopback) to prevent cross-origin reads of /api/*
+    // from a malicious website (CORS is not a reliable boundary for localhost
+    // services). When explicitly disabled, run token-less: cross-origin/CSRF and
+    // DNS-rebinding attacks are blocked by `no_auth_request_ok` instead.
+    let token = if auth_required {
+        let t = requested_token.unwrap_or_else(generate_token);
+        Some(Arc::new(t))
+    } else {
+        if requested_token.is_some() {
+            eprintln!(
+                "  \x1b[33m⚠\x1b[0m Ignoring the pinned token ({token_src}) — auth is disabled."
+            );
+        }
+        None
+    };
 
     // Bind BEFORE persisting the token: two racing `lean-ctx dashboard` starts
     // both used to write their fresh token, the bind loser exited — leaving a
@@ -177,6 +201,22 @@ pub async fn start(
                  Browser URL:  http://<your-ip>:{port}{base_path}/?token={t}"
             );
         }
+    } else if is_local {
+        // No-auth on loopback: header-based CSRF protection is the boundary.
+        println!("  Auth: \x1b[1;33mDISABLED\x1b[0m (no-auth) — CSRF protected via Sec-Fetch-Site/Origin/Host");
+        println!("  Browser URL:  http://localhost:{port}{base_path}/");
+    } else {
+        // No-auth + non-loopback bind (e.g. Docker --host=0.0.0.0). Browser
+        // cross-origin/CSRF is still blocked, but non-browser clients that can
+        // reach the address have unauthenticated access — warn loudly.
+        eprintln!(
+            "  \x1b[33m⚠\x1b[0m Auth \x1b[1;31mDISABLED\x1b[0m and binding to {host} (not loopback).\n  \
+             Browser cross-origin/CSRF stays blocked (Sec-Fetch-Site/Origin/Host),\n  \
+             but ANY non-browser client that can reach {host}:{port} has full access.\n  \
+             Docker: publish only to the host loopback → -p 127.0.0.1:{port}:{port}\n  \
+             Add reachable hostnames via LEAN_CTX_DASHBOARD_ALLOWED_HOSTS=host:port,…\n  \
+             Browser URL:  http://<your-ip>:{port}{base_path}/"
+        );
     }
 
     let stats_path = crate::core::data_dir::lean_ctx_data_dir().map_or_else(
@@ -223,7 +263,8 @@ pub async fn start(
         if let Ok((stream, _)) = listener.accept().await {
             let token_ref = token.clone();
             let base_ref = base_path.clone();
-            tokio::spawn(handle_request(stream, token_ref, base_ref));
+            let allowed_ref = allowed_hosts.clone();
+            tokio::spawn(handle_request(stream, token_ref, base_ref, allowed_ref));
         }
     }
 }
@@ -233,6 +274,106 @@ const HTTP_TOKEN_ENV: &str = "LEAN_CTX_HTTP_TOKEN";
 /// Read-only token accepted **only** for `GET /metrics` (GL #401) so
 /// monitoring agents never hold the full dashboard credential.
 const SCRAPE_TOKEN_ENV: &str = "LEAN_CTX_SCRAPE_TOKEN";
+/// Toggles dashboard Bearer-token auth. `false`/`0`/`no`/`off` disable it.
+const DASHBOARD_AUTH_ENV: &str = "LEAN_CTX_DASHBOARD_AUTH";
+/// Extra `Host` header values accepted in no-auth mode (CSV, e.g.
+/// `box.local:3333,10.0.0.5:3333`). Extends the loopback/bound-host allowlist
+/// for Docker/reverse-proxy setups reached via a custom hostname.
+const ALLOWED_HOSTS_ENV: &str = "LEAN_CTX_DASHBOARD_ALLOWED_HOSTS";
+
+/// Parse a human boolean (`true/false/1/0/yes/no/on/off`, case-insensitive).
+fn parse_human_bool(s: &str) -> Option<bool> {
+    match s.trim().to_ascii_lowercase().as_str() {
+        "true" | "1" | "yes" | "on" => Some(true),
+        "false" | "0" | "no" | "off" => Some(false),
+        _ => None,
+    }
+}
+
+/// Resolve whether the dashboard requires Bearer-token auth. Precedence:
+/// `--no-auth`/`--auth=` flag > `LEAN_CTX_DASHBOARD_AUTH` env > `dashboard_auth`
+/// config > default `true`.
+fn resolve_auth_enabled(flag: Option<bool>) -> bool {
+    if let Some(v) = flag {
+        return v;
+    }
+    if let Ok(raw) = std::env::var(DASHBOARD_AUTH_ENV)
+        && let Some(v) = parse_human_bool(&raw)
+    {
+        return v;
+    }
+    crate::core::config::Config::load().dashboard_auth
+}
+
+/// Build the `Host` header allowlist for no-auth mode (anti-DNS-rebinding).
+/// Always includes the loopback aliases for `port` (localhost is the intended
+/// audience), the actual bound `host:port`, and any `LEAN_CTX_DASHBOARD_ALLOWED_HOSTS`
+/// entries. Bare-host forms (no port) are added too so non-browser clients that
+/// omit the port aren't rejected. `0.0.0.0` is never added — browsers don't send
+/// `Host: 0.0.0.0`; operators expose reachable names via the env allowlist.
+fn build_allowed_hosts(host: &str, port: u16) -> Vec<String> {
+    let mut allowed: Vec<String> = Vec::new();
+    let mut push = |h: String| {
+        if !h.is_empty() && !allowed.iter().any(|e| e.eq_ignore_ascii_case(&h)) {
+            allowed.push(h);
+        }
+    };
+    for base in ["127.0.0.1", "localhost", "[::1]", "::1"] {
+        push(base.to_string());
+        push(format!("{base}:{port}"));
+    }
+    if host != "0.0.0.0" && host != "::" {
+        push(host.to_string());
+        push(format!("{host}:{port}"));
+    }
+    if let Ok(raw) = std::env::var(ALLOWED_HOSTS_ENV) {
+        for entry in raw.split(',') {
+            push(entry.trim().to_string());
+        }
+    }
+    allowed
+}
+
+/// Is the request `Host` header in the allowlist (case-insensitive)?
+fn host_allowed(host: &str, allowed: &[String]) -> bool {
+    allowed.iter().any(|a| a.eq_ignore_ascii_case(host))
+}
+
+/// Token-free request gate for no-auth dashboards. Applied to the same sensitive
+/// endpoints the Bearer token guards (`/api/*`, `/metrics`). Blocks browser
+/// cross-origin/CSRF and DNS-rebinding without a credential:
+///  * `Sec-Fetch-Site`, when sent, must be `same-origin` or `none` (the header is
+///    set by the browser and cannot be forged by page JS).
+///  * `Host` must be in `allowed_hosts` (missing `Host` is rejected).
+///  * `Origin`, when sent and not `null`, must be same-origin as `Host`.
+///
+/// Non-browser clients (curl, Prometheus) omit `Sec-Fetch-Site`/`Origin` and pass
+/// those checks — they only need to target an allowlisted `Host`.
+fn no_auth_request_ok(header_section: &str, allowed_hosts: &[String]) -> bool {
+    if let Some(sfs) = header_line_value(header_section, "Sec-Fetch-Site") {
+        let sfs = sfs.trim();
+        if !sfs.is_empty()
+            && !sfs.eq_ignore_ascii_case("same-origin")
+            && !sfs.eq_ignore_ascii_case("none")
+        {
+            return false;
+        }
+    }
+    let Some(host) = header_line_value(header_section, "Host") else {
+        return false;
+    };
+    if !host_allowed(host, allowed_hosts) {
+        return false;
+    }
+    if let Some(origin) = header_line_value(header_section, "Origin")
+        && !origin.is_empty()
+        && !origin.eq_ignore_ascii_case("null")
+        && !origin_matches_dashboard_host(origin, host)
+    {
+        return false;
+    }
+    true
+}
 
 /// Resolve the dashboard Bearer token.
 ///
@@ -558,6 +699,7 @@ async fn handle_request(
     mut stream: tokio::net::TcpStream,
     token: Option<Arc<String>>,
     base_path: Arc<String>,
+    allowed_hosts: Arc<Vec<String>>,
 ) {
     let is_loopback = stream.peer_addr().is_ok_and(|a| a.ip().is_loopback());
 
@@ -673,6 +815,21 @@ async fn handle_request(
             let _ = stream.write_all(response.as_bytes()).await;
             return;
         }
+    } else if requires_auth && !no_auth_request_ok(&header_text, &allowed_hosts) {
+        // No-auth mode: the Bearer token is gone, so cross-origin/CSRF and
+        // DNS-rebinding are blocked by request-header validation instead.
+        let body = r#"{"error":"forbidden"}"#;
+        let response = format!(
+            "HTTP/1.1 403 Forbidden\r\n\
+             Content-Type: application/json\r\n\
+             Content-Length: {}\r\n\
+             Connection: close\r\n\
+             \r\n\
+             {body}",
+            body.len()
+        );
+        let _ = stream.write_all(response.as_bytes()).await;
+        return;
     }
 
     // Route handlers are synchronous and a few (graph/index builds) do seconds
@@ -1087,5 +1244,113 @@ mod tests {
         crate::test_env::remove_var(HTTP_TOKEN_ENV);
         assert_eq!(src, HTTP_TOKEN_ENV);
         assert_eq!(token.as_deref(), Some("lctx_fromenv"));
+    }
+
+    #[test]
+    fn parse_human_bool_accepts_common_forms() {
+        for s in ["true", "TRUE", "1", "yes", "on", " On "] {
+            assert_eq!(parse_human_bool(s), Some(true), "{s}");
+        }
+        for s in ["false", "FALSE", "0", "no", "off", " Off "] {
+            assert_eq!(parse_human_bool(s), Some(false), "{s}");
+        }
+        assert_eq!(parse_human_bool("maybe"), None);
+    }
+
+    #[test]
+    fn build_allowed_hosts_covers_loopback_and_bound_host() {
+        let _g = ENV_LOCK.lock().expect("env lock");
+        crate::test_env::remove_var(ALLOWED_HOSTS_ENV);
+        let allowed = build_allowed_hosts("0.0.0.0", 3333);
+        assert!(host_allowed("127.0.0.1:3333", &allowed));
+        assert!(host_allowed("localhost:3333", &allowed));
+        assert!(host_allowed("[::1]:3333", &allowed));
+        assert!(host_allowed("127.0.0.1", &allowed)); // bare host, no port
+        // 0.0.0.0 binds all interfaces but is never a valid browser Host.
+        assert!(!host_allowed("0.0.0.0:3333", &allowed));
+        assert!(!host_allowed("evil.com", &allowed));
+    }
+
+    #[test]
+    fn build_allowed_hosts_honors_env_extra_hosts() {
+        let _g = ENV_LOCK.lock().expect("env lock");
+        crate::test_env::set_var(ALLOWED_HOSTS_ENV, "box.local:3333, 10.0.0.5:3333");
+        let allowed = build_allowed_hosts("127.0.0.1", 3333);
+        crate::test_env::remove_var(ALLOWED_HOSTS_ENV);
+        assert!(host_allowed("box.local:3333", &allowed));
+        assert!(host_allowed("10.0.0.5:3333", &allowed));
+    }
+
+    fn allowed_loopback() -> Vec<String> {
+        vec![
+            "127.0.0.1:3333".into(),
+            "localhost:3333".into(),
+            "127.0.0.1".into(),
+            "localhost".into(),
+        ]
+    }
+
+    #[test]
+    fn no_auth_allows_non_browser_client() {
+        // curl: no Sec-Fetch-Site, no Origin, just a loopback Host.
+        let req = "GET /api/stats HTTP/1.1\r\nHost: 127.0.0.1:3333\r\n\r\n";
+        assert!(no_auth_request_ok(req, &allowed_loopback()));
+    }
+
+    #[test]
+    fn no_auth_allows_same_origin_browser_request() {
+        let req = "GET /api/stats HTTP/1.1\r\nHost: localhost:3333\r\n\
+                   Origin: http://localhost:3333\r\nSec-Fetch-Site: same-origin\r\n\r\n";
+        assert!(no_auth_request_ok(req, &allowed_loopback()));
+    }
+
+    #[test]
+    fn no_auth_allows_direct_navigation() {
+        // Top-level navigation carries Sec-Fetch-Site: none and no Origin.
+        let req = "GET /api/stats HTTP/1.1\r\nHost: 127.0.0.1:3333\r\nSec-Fetch-Site: none\r\n\r\n";
+        assert!(no_auth_request_ok(req, &allowed_loopback()));
+    }
+
+    #[test]
+    fn no_auth_rejects_cross_site_fetch() {
+        let req = "GET /api/stats HTTP/1.1\r\nHost: 127.0.0.1:3333\r\n\
+                   Sec-Fetch-Site: cross-site\r\n\r\n";
+        assert!(!no_auth_request_ok(req, &allowed_loopback()));
+    }
+
+    #[test]
+    fn no_auth_rejects_same_site_fetch() {
+        let req = "GET /api/stats HTTP/1.1\r\nHost: 127.0.0.1:3333\r\n\
+                   Sec-Fetch-Site: same-site\r\n\r\n";
+        assert!(!no_auth_request_ok(req, &allowed_loopback()));
+    }
+
+    #[test]
+    fn no_auth_rejects_foreign_origin() {
+        let req = "POST /api/settings HTTP/1.1\r\nHost: 127.0.0.1:3333\r\n\
+                   Origin: http://evil.com\r\n\r\n";
+        assert!(!no_auth_request_ok(req, &allowed_loopback()));
+    }
+
+    #[test]
+    fn no_auth_rejects_dns_rebinding_host() {
+        // After DNS rebinding the browser sends the attacker's hostname as Host.
+        let req = "GET /api/stats HTTP/1.1\r\nHost: evil.com\r\n\
+                   Sec-Fetch-Site: same-origin\r\n\r\n";
+        assert!(!no_auth_request_ok(req, &allowed_loopback()));
+    }
+
+    #[test]
+    fn no_auth_rejects_missing_host() {
+        let req = "GET /api/stats HTTP/1.1\r\n\r\n";
+        assert!(!no_auth_request_ok(req, &allowed_loopback()));
+    }
+
+    #[test]
+    fn no_auth_allows_null_origin() {
+        // Some sandboxed/file contexts send Origin: null — not attributable to a
+        // site, and the Host + Sec-Fetch-Site checks still apply.
+        let req = "GET /api/stats HTTP/1.1\r\nHost: 127.0.0.1:3333\r\nOrigin: null\r\n\r\n";
+        assert!(no_auth_request_ok(req, &allowed_loopback()));
     }
 }

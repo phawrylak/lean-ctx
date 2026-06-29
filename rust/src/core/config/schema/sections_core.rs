@@ -575,6 +575,14 @@ pub(super) fn build(sections: &mut BTreeMap<String, SectionSchema>) {
         ),
     );
     root.insert(
+        "dashboard_auth".into(),
+        key(
+            "bool",
+            serde_json::json!(cfg.dashboard_auth),
+            "Require Bearer-token auth for the dashboard (default true). Set false for no-auth mode protected by Sec-Fetch-Site/Origin/Host checks. Override per-run with --no-auth or LEAN_CTX_DASHBOARD_AUTH",
+        ),
+    );
+    root.insert(
         "response_verbosity".into(),
         key_enum_with_env(
             &["normal", "compact", "minimal"],

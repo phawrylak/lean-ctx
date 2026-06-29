@@ -136,6 +136,18 @@ pub struct Config {
     /// require the token; clients must then send `Authorization: Bearer <token>`.
     #[serde(default)]
     pub proxy_require_token: bool,
+    /// Require Bearer-token authentication for the dashboard. Default `true`:
+    /// the dashboard generates (or uses the pinned) token and rejects `/api/*`
+    /// and `/metrics` without it. Set to `false` to run the dashboard with **no
+    /// auth token** — useful for a local/Docker setup where managing a token is
+    /// inconvenient. No-auth mode is not unprotected: cross-origin and CSRF
+    /// attacks from a malicious local website are blocked by request-header
+    /// validation instead (`Sec-Fetch-Site`, `Origin`/`Host` same-origin, and a
+    /// `Host` allowlist against DNS rebinding — see `dashboard::no_auth_request_ok`).
+    /// Override per-run via the `--no-auth` / `--auth=<bool>` flag or the
+    /// `LEAN_CTX_DASHBOARD_AUTH` env var.
+    #[serde(default = "serde_defaults::default_true")]
+    pub dashboard_auth: bool,
     #[serde(default = "serde_defaults::default_buddy_enabled")]
     pub buddy_enabled: bool,
     #[serde(default = "serde_defaults::default_true")]
@@ -592,6 +604,7 @@ impl Default for Config {
             proxy_port: None,
             proxy_timeout_ms: None,
             proxy_require_token: false,
+            dashboard_auth: true,
             buddy_enabled: serde_defaults::default_buddy_enabled(),
             enable_wakeup_ctx: true,
             redirect_exclude: Vec::new(),
