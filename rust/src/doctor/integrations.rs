@@ -1052,48 +1052,85 @@ fn check_codex_toml(path: &std::path::Path, binary: &str) -> NamedCheck {
     }
 }
 
-/// #597: a pre-fix install pinned the top-level `model_provider` to lean-ctx's
-/// proxy provider (`leanctx-chatgpt`). Codex scopes its local conversation history
-/// by the active provider id, so that pin hid every prior `openai` conversation
-/// from `/resume`/`fork`/history. Detect the lingering pin (only a top-level key
-/// counts — a per-profile `model_provider` is the user's own choice) and point at
-/// the heal. Resolved automatically on the next `lean-ctx proxy enable`.
+/// #597 + the #603/#616 opt-in. A pre-#597 install pinned the top-level
+/// `model_provider` to lean-ctx's proxy provider (`leanctx-chatgpt`); Codex scopes
+/// local history by the active provider id, so that pin hid every prior `openai`
+/// conversation from `/resume`/`fork`/history. The opt-in `codex_chatgpt_proxy`
+/// instead routes a ChatGPT subscription through the proxy with a bare top-level
+/// `chatgpt_base_url` and NO `model_provider`, so history stays under the native
+/// provider — that rail is sanctioned while the opt-in is on and a stale artifact
+/// once it is off. Only top-level keys count (a per-profile entry is the user's own
+/// choice). Artifacts heal automatically on the next `lean-ctx proxy enable`.
 fn check_codex_history_visibility(home: &std::path::Path) -> NamedCheck {
     let codex_dir = crate::core::home::resolve_codex_dir().unwrap_or_else(|| home.join(".codex"));
     let path = codex_dir.join("config.toml");
     let content = std::fs::read_to_string(&path).unwrap_or_default();
-    let artifact = codex_chatgpt_proxy_artifact(&content);
-    NamedCheck {
-        name: "Codex config".to_string(),
-        ok: !artifact,
-        detail: if artifact {
+    let optin = crate::core::config::Config::load()
+        .proxy
+        .codex_chatgpt_proxy_enabled();
+    let (ok, detail) = match classify_codex_proxy_entries(&content, optin) {
+        CodexProxyState::Artifact => (
+            false,
             format!(
                 "lean-ctx ChatGPT-proxy entries hide past conversations and break codex cloud/remote (#597) — run `lean-ctx proxy enable` to heal ({})",
                 path.display()
-            )
-        } else {
-            "native — history visible, cloud/remote intact".to_string()
-        },
+            ),
+        ),
+        CodexProxyState::OptInRouted => (
+            true,
+            "ChatGPT subscription routed through proxy (opt-in #603) — model turns compressed, history & cloud/remote intact".to_string(),
+        ),
+        CodexProxyState::Native => (true, "native — history visible, cloud/remote intact".to_string()),
+    };
+    NamedCheck {
+        name: "Codex config".to_string(),
+        ok,
+        detail,
     }
 }
 
-/// True when a *top-level* lean-ctx ChatGPT-proxy artifact is present. lean-ctx
-/// only ever wrote these for a ChatGPT-subscription login, and they both hide
-/// Codex history (the `leanctx-chatgpt` provider) and route Codex's cloud,
-/// remote and login traffic through the proxy (#597). The API-key rail
-/// (`openai_base_url` to `/v1`) is legitimate and never matched; a per-profile
-/// entry (inside a `[table]`) is the user's own choice and ignored.
-fn codex_chatgpt_proxy_artifact(config: &str) -> bool {
-    config
+/// Classification of the *top-level* lean-ctx Codex proxy entries in config.toml.
+/// Only top-level keys count — a per-profile entry (inside a `[table]`) is the
+/// user's own choice and ignored, and the API-key rail (`openai_base_url` to
+/// `/v1`) is legitimate and never matched.
+#[derive(Debug, PartialEq, Eq)]
+enum CodexProxyState {
+    /// No lean-ctx proxy entry (or only the legitimate API-key `/v1` rail).
+    Native,
+    /// The sanctioned opt-in rail (#603/#616): a bare `chatgpt_base_url` pointing at
+    /// the proxy backend-api while `codex_chatgpt_proxy` is enabled. History stays
+    /// under the native provider, so model turns are compressed without the #597 loss.
+    OptInRouted,
+    /// A #597 artifact: a history-hiding `model_provider = leanctx-chatgpt` pin, a
+    /// wrong-rail `openai_base_url`/backend-api override, or a stale
+    /// `chatgpt_base_url` while the opt-in is off.
+    Artifact,
+}
+
+fn classify_codex_proxy_entries(config: &str, optin: bool) -> CodexProxyState {
+    let mut chatgpt_rail = false;
+    for t in config
         .lines()
         .map(str::trim_start)
         .take_while(|t| !t.starts_with('['))
-        .any(|t| {
-            let local = t.contains("127.0.0.1") || t.contains("localhost");
-            (t.starts_with("model_provider") && t.contains("leanctx-chatgpt"))
-                || (t.starts_with("chatgpt_base_url") && local)
-                || (t.starts_with("openai_base_url") && local && t.contains("/backend-api"))
-        })
+    {
+        let local = t.contains("127.0.0.1") || t.contains("localhost");
+        // Always an artifact: a provider pin hides history, and an
+        // `openai_base_url`/backend-api override is the wrong rail (#597).
+        if (t.starts_with("model_provider") && t.contains("leanctx-chatgpt"))
+            || (t.starts_with("openai_base_url") && local && t.contains("/backend-api"))
+        {
+            return CodexProxyState::Artifact;
+        }
+        if t.starts_with("chatgpt_base_url") && local {
+            chatgpt_rail = true;
+        }
+    }
+    match (chatgpt_rail, optin) {
+        (true, true) => CodexProxyState::OptInRouted,
+        (true, false) => CodexProxyState::Artifact,
+        (false, _) => CodexProxyState::Native,
+    }
 }
 
 fn check_codex_hooks_enabled(home: &std::path::Path) -> NamedCheck {
@@ -1549,29 +1586,63 @@ mod tests {
 
     #[test]
     fn codex_chatgpt_proxy_artifact_detects_only_top_level_entries() {
-        // #597: a top-level provider pin hides history → flagged.
-        assert!(codex_chatgpt_proxy_artifact(
-            "model_provider = \"leanctx-chatgpt\"\nmodel = \"gpt-5.5\"\n"
-        ));
-        // backend-api base-URL overrides break codex cloud/remote → flagged.
-        assert!(codex_chatgpt_proxy_artifact(
-            "openai_base_url = \"http://127.0.0.1:8765/backend-api/codex\"\n"
-        ));
-        assert!(codex_chatgpt_proxy_artifact(
-            "chatgpt_base_url = \"http://127.0.0.1:8765/backend-api\"\n"
-        ));
-        // Default provider → fine.
-        assert!(!codex_chatgpt_proxy_artifact(
-            "model_provider = \"openai\"\n"
-        ));
-        // API-key rail (/v1) is legitimate → not flagged.
-        assert!(!codex_chatgpt_proxy_artifact(
-            "openai_base_url = \"http://127.0.0.1:4444/v1\"\n"
-        ));
-        // A per-profile choice is the user's own → not flagged.
-        assert!(!codex_chatgpt_proxy_artifact(
-            "model = \"gpt-5.5\"\n\n[profiles.proxy]\nmodel_provider = \"leanctx-chatgpt\"\n"
-        ));
+        use CodexProxyState::*;
+        // #597: a top-level provider pin hides history → artifact, even with the
+        // opt-in on (lean-ctx never writes a provider pin since #597).
+        assert_eq!(
+            classify_codex_proxy_entries(
+                "model_provider = \"leanctx-chatgpt\"\nmodel = \"gpt-5.5\"\n",
+                false
+            ),
+            Artifact
+        );
+        assert_eq!(
+            classify_codex_proxy_entries("model_provider = \"leanctx-chatgpt\"\n", true),
+            Artifact,
+            "a provider pin hides history regardless of the opt-in"
+        );
+        // backend-api override on the API-key rail breaks codex cloud/remote → artifact.
+        assert_eq!(
+            classify_codex_proxy_entries(
+                "openai_base_url = \"http://127.0.0.1:8765/backend-api/codex\"\n",
+                true
+            ),
+            Artifact
+        );
+        // Bare chatgpt_base_url → proxy: a stale #597 leftover when the opt-in is
+        // off, the sanctioned rail (#603/#616) when it is on.
+        assert_eq!(
+            classify_codex_proxy_entries(
+                "chatgpt_base_url = \"http://127.0.0.1:8765/backend-api/\"\n",
+                false
+            ),
+            Artifact
+        );
+        assert_eq!(
+            classify_codex_proxy_entries(
+                "chatgpt_base_url = \"http://127.0.0.1:8765/backend-api/\"\n",
+                true
+            ),
+            OptInRouted
+        );
+        // Default provider → native.
+        assert_eq!(
+            classify_codex_proxy_entries("model_provider = \"openai\"\n", false),
+            Native
+        );
+        // API-key rail (/v1) is legitimate → native.
+        assert_eq!(
+            classify_codex_proxy_entries("openai_base_url = \"http://127.0.0.1:4444/v1\"\n", false),
+            Native
+        );
+        // A per-profile choice is the user's own → native.
+        assert_eq!(
+            classify_codex_proxy_entries(
+                "model = \"gpt-5.5\"\n\n[profiles.proxy]\nmodel_provider = \"leanctx-chatgpt\"\n",
+                false
+            ),
+            Native
+        );
     }
 
     #[test]
