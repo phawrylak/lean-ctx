@@ -3,7 +3,7 @@
 All notable changes to lean-ctx are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
-## [Unreleased]
+## [3.8.16] — 2026-06-30
 
 ### Added
 - **Agent navigation upgrades for coding agents (#607–#611).** A cohesive set of
