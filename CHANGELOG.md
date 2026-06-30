@@ -58,6 +58,17 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   the index in the background. The optional `LEAN_CTX_SEARCH_INDEX_COALESCE_MS`
   (default `0` = always verify) coalesces the stat-walk under bursty load on very
   large indexed trees. `ctx_read` was never affected (it is mtime + MD5 verified).
+- **No-auth dashboard no longer 403s behind a port-remapped Docker publish (#623).** In
+  no-auth mode every `/api/*` request is gated on a `Host` allowlist built from the
+  *bound* port. When a container binds `0.0.0.0:3333` but Docker publishes it on a
+  different host port (`-p 60000:3333`), the browser reaches `127.0.0.1:60000` and
+  sends `Host: 127.0.0.1:60000` — the *published* port, which the bind-port
+  allowlist (`127.0.0.1:3333`) rejected, so every API call returned 403 and the
+  dashboard's cards failed to load. The gate now accepts any **loopback** host
+  (`127.0.0.0/8`, `localhost`, `::1`) on **any port**: a loopback `Host` can't be a
+  DNS-rebinding target, so this is safe, and cross-origin/CSRF is still blocked by
+  the `Sec-Fetch-Site`/`Origin` checks. Port-remapped loopback publishes now work
+  out of the box without `LEAN_CTX_DASHBOARD_ALLOWED_HOSTS`.
 
 ## [3.8.17] — 2026-06-30
 

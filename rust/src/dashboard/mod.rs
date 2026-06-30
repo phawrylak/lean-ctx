@@ -341,6 +341,45 @@ fn host_allowed(host: &str, allowed: &[String]) -> bool {
     allowed.iter().any(|a| a.eq_ignore_ascii_case(host))
 }
 
+/// True when the `Host` header's hostname is a loopback literal
+/// (`localhost`, `127.0.0.0/8`, or `::1`), **regardless of port**.
+///
+/// A loopback `Host` is never a DNS-rebinding vector: the browser only sends one
+/// when the user navigated to a loopback URL directly (an attacker can't make
+/// their own hostname resolve to — and report a `Host` of — `127.0.0.1`). So in
+/// no-auth mode we accept loopback on any port, not just the bound one. This is
+/// what makes a port-remapped Docker publish work out of the box — e.g. the
+/// container binds `0.0.0.0:3333`, Docker publishes it as `-p 60000:3333`, and
+/// the host browser reaches `http://127.0.0.1:60000`, so the `Host` header is
+/// `127.0.0.1:60000` (the *published* port), which the bind-port allowlist
+/// (`127.0.0.1:3333`) would otherwise reject. Cross-origin/CSRF stays blocked by
+/// the `Sec-Fetch-Site`/`Origin` checks in `no_auth_request_ok`.
+fn host_is_loopback(host: &str) -> bool {
+    // Extract the hostname, dropping any `:port`. IPv6 literals are bracketed
+    // (`[::1]` / `[::1]:port`); a bare IPv6 (`::1`) can't carry a port.
+    let hostname = if let Some(rest) = host.strip_prefix('[') {
+        match rest.split_once(']') {
+            Some((inner, _)) => inner,
+            None => return false,
+        }
+    } else if host.matches(':').count() == 1 {
+        host.rsplit_once(':').map_or(host, |(h, _)| h)
+    } else {
+        // No colon (bare host[:no-port]) or multiple colons (unbracketed IPv6).
+        host
+    };
+    if hostname.eq_ignore_ascii_case("localhost") {
+        return true;
+    }
+    if let Ok(v4) = hostname.parse::<std::net::Ipv4Addr>() {
+        return v4.is_loopback();
+    }
+    if let Ok(v6) = hostname.parse::<std::net::Ipv6Addr>() {
+        return v6.is_loopback();
+    }
+    false
+}
+
 /// Token-free request gate for no-auth dashboards. Applied to the same sensitive
 /// endpoints the Bearer token guards (`/api/*`, `/metrics`). Blocks browser
 /// cross-origin/CSRF and DNS-rebinding without a credential:
@@ -364,7 +403,12 @@ fn no_auth_request_ok(header_section: &str, allowed_hosts: &[String]) -> bool {
     let Some(host) = header_line_value(header_section, "Host") else {
         return false;
     };
-    if !host_allowed(host, allowed_hosts) {
+    // Accept the explicit allowlist (loopback aliases for the bound port, the
+    // bound host, and any LEAN_CTX_DASHBOARD_ALLOWED_HOSTS entries) OR any
+    // loopback host on any port. The latter covers port-remapped Docker
+    // publishes (e.g. `-p 60000:3333` reached via `127.0.0.1:60000`) without a
+    // manual allowlist entry — loopback hosts are not a rebinding vector.
+    if !host_allowed(host, allowed_hosts) && !host_is_loopback(host) {
         return false;
     }
     if let Some(origin) = header_line_value(header_section, "Origin")
@@ -1346,6 +1390,53 @@ mod tests {
     fn no_auth_rejects_missing_host() {
         let req = "GET /api/stats HTTP/1.1\r\n\r\n";
         assert!(!no_auth_request_ok(req, &allowed_loopback()));
+    }
+
+    #[test]
+    fn host_is_loopback_covers_literals_on_any_port() {
+        assert!(host_is_loopback("127.0.0.1"));
+        assert!(host_is_loopback("127.0.0.1:3333"));
+        assert!(host_is_loopback("127.0.0.1:60000")); // port-remapped Docker publish
+        assert!(host_is_loopback("localhost"));
+        assert!(host_is_loopback("localhost:60000"));
+        assert!(host_is_loopback("LocalHost:8080"));
+        assert!(host_is_loopback("127.5.6.7:9999")); // whole 127.0.0.0/8 is loopback
+        assert!(host_is_loopback("[::1]"));
+        assert!(host_is_loopback("[::1]:60000"));
+        assert!(host_is_loopback("::1"));
+        // Non-loopback hosts must NOT be treated as loopback.
+        assert!(!host_is_loopback("evil.com"));
+        assert!(!host_is_loopback("evil.com:60000"));
+        assert!(!host_is_loopback("10.0.0.5:3333"));
+        assert!(!host_is_loopback("[2001:db8::1]:3333"));
+        assert!(!host_is_loopback("box.local:3333"));
+    }
+
+    #[test]
+    fn no_auth_allows_loopback_host_on_remapped_port() {
+        // Container binds 0.0.0.0:3333; Docker publishes -p 60000:3333; the host
+        // browser reaches 127.0.0.1:60000, so Host carries the *published* port,
+        // which the bind-port allowlist does not contain. It must still pass via
+        // the loopback-any-port rule (GH no-auth Docker port-remap).
+        let allowed = build_allowed_hosts("0.0.0.0", 3333);
+        assert!(!host_allowed("127.0.0.1:60000", &allowed));
+        let req = "GET /api/stats HTTP/1.1\r\nHost: 127.0.0.1:60000\r\n\
+                   Sec-Fetch-Site: same-origin\r\n\r\n";
+        assert!(no_auth_request_ok(req, &allowed));
+
+        // localhost on a remapped port works too.
+        let req2 = "GET /api/stats HTTP/1.1\r\nHost: localhost:60000\r\n\r\n";
+        assert!(no_auth_request_ok(req2, &allowed));
+    }
+
+    #[test]
+    fn no_auth_still_rejects_rebinding_on_remapped_port() {
+        // The loopback-any-port relaxation must not weaken DNS-rebinding defense:
+        // a non-loopback Host is rejected regardless of port.
+        let allowed = build_allowed_hosts("0.0.0.0", 3333);
+        let req = "GET /api/stats HTTP/1.1\r\nHost: evil.com:60000\r\n\
+                   Sec-Fetch-Site: same-origin\r\n\r\n";
+        assert!(!no_auth_request_ok(req, &allowed));
     }
 
     #[test]

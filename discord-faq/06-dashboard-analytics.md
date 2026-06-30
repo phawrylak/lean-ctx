@@ -41,7 +41,7 @@ No-auth mode is **not** unprotected. Instead of a token, the dashboard blocks br
 
 - **`Sec-Fetch-Site`** — requests the browser marks as `cross-site`/`same-site` are rejected; only `same-origin` and direct navigation (`none`) pass.
 - **`Origin`** — when present, must be same-origin as the dashboard.
-- **`Host` allowlist** — the request `Host` must be a loopback alias (`127.0.0.1`/`localhost`/`[::1]`), the host you bound to, or an entry in `LEAN_CTX_DASHBOARD_ALLOWED_HOSTS`. This stops DNS-rebinding attacks.
+- **`Host` allowlist** — the request `Host` must be a loopback host (`127.0.0.1`/`localhost`/`[::1]`, **on any port**), the host you bound to, or an entry in `LEAN_CTX_DASHBOARD_ALLOWED_HOSTS`. This stops DNS-rebinding attacks (loopback hosts can't be a rebinding target, so they're accepted regardless of port).
 
 Non-browser clients (curl, Prometheus scraping `/metrics`) don't send those headers and keep working, as long as they target an allowlisted host.
 
@@ -50,6 +50,9 @@ Non-browser clients (curl, Prometheus scraping `/metrics`) don't send those head
 ```bash
 lean-ctx dashboard --host=0.0.0.0 --no-auth
 docker run ... -p 127.0.0.1:3333:3333 ...
+# Remapping to a different host port works out of the box too — the Host is
+# still loopback, just on another port:
+docker run ... -p 127.0.0.1:60000:3333 ...   # reach it at http://127.0.0.1:60000
 ```
 
-If you reach the dashboard via a custom hostname, add it: `LEAN_CTX_DASHBOARD_ALLOWED_HOSTS=box.local:3333`. Avoid binding to `0.0.0.0` with no-auth on an untrusted network — browser attacks stay blocked, but any non-browser client that can reach the port has full access.
+If you reach the dashboard via a custom (non-loopback) hostname, add it: `LEAN_CTX_DASHBOARD_ALLOWED_HOSTS=box.local:3333`. Avoid binding to `0.0.0.0` with no-auth on an untrusted network — browser attacks stay blocked, but any non-browser client that can reach the port has full access.
